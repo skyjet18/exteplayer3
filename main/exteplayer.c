@@ -39,6 +39,7 @@
 
 #include <pthread.h>
 
+#include "strbuffer.h"
 #include "common.h"
 #include "misc.h"
 
@@ -99,6 +100,7 @@ static pthread_mutex_t playbackStartMtx;
 static int32_t g_windows_width = 1280;
 static int32_t g_windows_height = 720;
 static char *g_graphic_sub_path;
+static int tracks_cache_disabled = 0;
 
 const char* GetGraphicSubPath()
 {
@@ -284,7 +286,7 @@ static void SetNice(int prio)
 #endif
 }
 
-static int HandleTracks(const Manager_t *ptrManager, const PlaybackCmd_t playbackSwitchCmd, const char *argvBuff)
+static int HandleTracks(Manager_t *ptrManager, const PlaybackCmd_t playbackSwitchCmd, const char *argvBuff)
 {
     int commandRetVal = 0;
     
@@ -297,32 +299,53 @@ static int HandleTracks(const Manager_t *ptrManager, const PlaybackCmd_t playbac
     {
         case 'l': 
         {
-            TrackDescription_t *TrackList = NULL;
-            ptrManager->Command(g_player, MANAGER_LIST, &TrackList);
-            if( NULL != TrackList) 
-            {
-                int i = 0;
-                E2iStartMsg();
-                E2iSendMsg("{\"%c_%c\": [", argvBuff[0], argvBuff[1]);
-                for (i = 0; TrackList[i].Id >= 0; ++i) 
-                {
-                    if(0 < i)
-                    {
-                        E2iSendMsg(", ");
-                    }
-                    E2iSendMsg("{\"id\":%d,\"e\":\"%s\",\"n\":\"%s\"}", TrackList[i].Id , TrackList[i].Encoding, TrackList[i].Name);
-                    free(TrackList[i].Encoding);
-                    free(TrackList[i].Name);
-                }
-                E2iSendMsg("]}\n");
-                E2iEndMsg();
-                free(TrackList);
-            }
-            else
-            {
-                // not tracks 
-                E2iSendMsg("{\"%c_%c\": []}\n", argvBuff[0], argvBuff[1]);
-            }
+        	if( ptrManager->tracks_cache == NULL )
+        	{
+        		/* read tracks info into cache */
+        		ptrManager->tracks_cache = strbuffer_init( 1024 );
+        		char tmp_str[1024];
+
+				TrackDescription_t *TrackList = NULL;
+				ptrManager->Command(g_player, MANAGER_LIST, &TrackList);
+				if( NULL != TrackList)
+				{
+					int i = 0;
+
+					sprintf( tmp_str, "{\"%c_%c\": [", argvBuff[0], argvBuff[1]);
+					strbuffer_add( ptrManager->tracks_cache, tmp_str );
+
+					for (i = 0; TrackList[i].Id >= 0; ++i)
+					{
+						if(0 < i)
+						{
+							strbuffer_add( ptrManager->tracks_cache, ", " );
+						}
+
+						sprintf( tmp_str, "{\"id\":%d,\"e\":\"%s\",\"n\":\"%s\"}", TrackList[i].Id , TrackList[i].Encoding, TrackList[i].Name);
+						strbuffer_add( ptrManager->tracks_cache, tmp_str );
+
+						free(TrackList[i].Encoding);
+						free(TrackList[i].Name);
+					}
+					strbuffer_add( ptrManager->tracks_cache, "]}\n");
+					free(TrackList);
+				}
+				else
+				{
+					// not tracks
+					sprintf( tmp_str, "{\"%c_%c\": []}\n", argvBuff[0], argvBuff[1]);
+					strbuffer_add( ptrManager->tracks_cache, tmp_str );
+				}
+        	}
+        	E2iSendMsg("%s", ptrManager->tracks_cache->buffer );
+
+        	if( tracks_cache_disabled )
+        	{
+        		/* when tracks cache is disabled, then simply clean it's content */
+				strbuffer_free( ptrManager->tracks_cache );
+				ptrManager->tracks_cache = NULL;
+        	}
+
             break;
         }
         case 'c': 
@@ -424,7 +447,7 @@ static int ParseParams(int argc,char* argv[], PlayFiles_t *playbackFiles, int *p
     int digit_optind = 0;
     int aopt = 0, bopt = 0;
     char *copt = 0, *dopt = 0;
-    while ( (c = getopt(argc, argv, "G:W:H:A:V:U:we3dlsrimva:n:x:u:c:h:o:p:P:t:9:0:1:4:f:b:F:S:O:")) != -1) 
+    while ( (c = getopt(argc, argv, "G:W:H:A:V:U:we3dlsrimvCa:n:x:u:c:h:o:p:P:t:9:0:1:4:f:b:F:S:O:")) != -1)
     {
         switch (c) 
         {
@@ -542,6 +565,10 @@ static int ParseParams(int argc,char* argv[], PlayFiles_t *playbackFiles, int *p
             printf("Force rtmp protocol implementation\n");
             rtmp_proto_impl_set(atoi(optarg));
             break;
+        case 'C':
+            printf("Disabling tracks cache\n");
+            tracks_cache_disabled = 1;
+            break;
         case '0':
             ffmpeg_av_dict_set("video_rep_index", optarg, 0);
             break;
@@ -635,7 +662,7 @@ int main(int argc, char* argv[])
 
     if (0 != ParseParams(argc, argv, &playbackFiles, &audioTrackIdx, &subtitleTrackIdx, &linuxDvbBufferSizeMB))
     {
-        printf("Usage: exteplayer3 filePath [-u user-agent] [-c cookies] [-h headers] [-p prio] [-a] [-d] [-w] [-l] [-s] [-i] [-t audioTrackId] [-9 subtitleTrackId] [-x separateAudioUri] plabackUri\n");
+        printf("Usage: exteplayer3 filePath [-u user-agent] [-c cookies] [-h headers] [-p prio] [-a] [-d] [-w] [-l] [-s] [-i] [-C] [-t audioTrackId] [-9 subtitleTrackId] [-x separateAudioUri] plabackUri\n");
         printf("[-b size] Linux DVB output buffer size in MB\n");
         printf("[-a 0|1|2|3] AAC software decoding - 1 bit - AAC ADTS, 2 - bit AAC LATM\n");
         printf("[-e] EAC3 software decoding\n");
@@ -651,6 +678,7 @@ int main(int argc, char* argv[])
 #ifdef HAVE_FLV2MPEG4_CONVERTER
         printf("[-4 0|1] - disable/enable flv2mpeg4 converter\n");
 #endif
+        printf("[-C] disable tracks info cache\n");
         printf("[-i] play in infinity loop\n");
         printf("[-v] switch to live TS stream mode\n");
         printf("[-n 0|1|2] rtmp force protocol implementation auto(0) native/ffmpeg(1) or librtmp(2)\n");

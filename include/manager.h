@@ -3,6 +3,7 @@
 
 #include <stdio.h>
 #include <stdint.h>
+#include "strbuffer.h"
  
 typedef enum {
     MANAGER_ADD,
@@ -90,6 +91,7 @@ typedef struct Manager_s
 {
     char * Name;
     int (* Command) (/*Context_t*/void  *, ManagerCmd_t, void *);
+    strbuffer_t *tracks_cache;
     char ** Capabilities;
 
 } Manager_t;

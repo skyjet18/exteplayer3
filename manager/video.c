@@ -326,5 +326,6 @@ static int Command(void  *_context, ManagerCmd_t command, void * argument) {
 struct Manager_s VideoManager = {
     "Video",
     &Command,
+	NULL,
     NULL
 };
