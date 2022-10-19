@@ -98,7 +98,7 @@ typedef enum {RTMP_NATIVE, RTMP_LIBRTMP, RTMP_NONE} eRTMPProtoImplType;
 /* Varaibles                     */
 /* ***************************** */
 
-static pthread_mutex_t mutex;
+static pthread_rwlock_t mutex;
 static pthread_mutex_t seek_mutex;
 
 static pthread_t PlayThread;
@@ -138,25 +138,35 @@ void progressive_playback_set(int32_t val)
     progressive_playback = val;
 }
 
-static void getMutex(const char *filename __attribute__((unused)), const char *function __attribute__((unused)), int32_t line)
+#define getMutex(...) getMutex_uni(0, ##__VA_ARGS__)
+#define getMutex_wr(...) getMutex_uni(1, ##__VA_ARGS__)
+
+static void getMutex_uni(int type, const char *filename __attribute__((unused)), const char *function __attribute__((unused)), int32_t line)
 {
     ffmpeg_printf(100, "::%d requesting mutex\n", line);
     static bool mutexInitialized = false;
 
     if (!mutexInitialized)
     {
-        pthread_mutex_init(&mutex, NULL);
+        pthread_rwlock_init(&mutex, NULL);
         mutexInitialized = true;
     }
 
-    pthread_mutex_lock(&mutex);
+    if(type == 0)
+    {
+        pthread_rwlock_rdlock(&mutex);
+    }
+    else
+    {
+        pthread_rwlock_wrlock(&mutex);
+    }
 
     ffmpeg_printf(100, "::%d received mutex\n", line);
 }
 
 static void releaseMutex(const char *filename __attribute__((unused)), const const char *function __attribute__((unused)), int32_t line) 
 {
-    pthread_mutex_unlock(&mutex);
+    pthread_rwlock_unlock(&mutex);
 
     ffmpeg_printf(100, "::%d released mutex\n", line);
 }
@@ -815,7 +825,13 @@ static void FFMPEGThread(Context_t *context)
         {
             LinuxDvbBuffSetStamp(stamp);
         }
-        if (!isWaitingForFinish && (ffmpegStatus = av_read_frame(avContextTab[cAVIdx], &packet)) == 0 )
+
+        if( !isWaitingForFinish )
+        {
+            ffmpegStatus = av_read_frame(avContextTab[cAVIdx], &packet);
+        }
+
+        if (!isWaitingForFinish && (ffmpegStatus == 0) )
         {
             int64_t pts = 0;
             int64_t dts = 0;
@@ -1357,7 +1373,7 @@ static void FFMPEGThread(Context_t *context)
             if( 0 != ffmpegStatus )
             {
                 static char errbuf[256];
-                
+
                 if( 0 == av_strerror(ffmpegStatus, errbuf, sizeof(errbuf)) )
                 {
                     /* In this way we inform user about error within the core
@@ -2051,7 +2067,7 @@ int32_t container_ffmpeg_update_tracks(Context_t *context, char *filename, int32
         return cERR_CONTAINER_FFMPEG_NO_ERROR;
     }
     
-    getMutex(__FILE__, __FUNCTION__,__LINE__);
+    getMutex_wr(__FILE__, __FUNCTION__,__LINE__);
     
     if (initial && context->manager->subtitle)
     {
@@ -2771,7 +2787,7 @@ static int32_t container_ffmpeg_stop(Context_t *context)
     hasPlayThreadStarted = 0;
     terminating = 1;
 
-    getMutex(__FILE__, __FUNCTION__,__LINE__);
+    getMutex_wr(__FILE__, __FUNCTION__,__LINE__);
     
     free_all_stored_avcodec_context();
     
@@ -2974,7 +2990,7 @@ static int32_t container_ffmpeg_get_length(Context_t *context, int64_t *length)
 static int32_t container_ffmpeg_switch_audio(Context_t *context, int32_t *arg)
 {
     ffmpeg_printf(10, "track %d\n", *arg);
-    getMutex(__FILE__, __FUNCTION__,__LINE__);
+    getMutex_wr(__FILE__, __FUNCTION__,__LINE__);
     if (context->manager->audio)
     {
         Track_t *Tracks = NULL;
