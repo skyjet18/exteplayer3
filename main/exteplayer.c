@@ -447,7 +447,7 @@ static int ParseParams(int argc,char* argv[], PlayFiles_t *playbackFiles, int *p
     int digit_optind = 0;
     int aopt = 0, bopt = 0;
     char *copt = 0, *dopt = 0;
-    while ( (c = getopt(argc, argv, "G:W:H:A:V:U:we3dlsrimvCa:n:x:u:c:h:o:p:P:t:9:0:1:4:f:b:F:S:O:")) != -1)
+    while ( (c = getopt(argc, argv, "G:W:H:A:V:U:we3dlsrimvCa:n:x:u:c:h:o:p:P:t:9:0:1:4:f:b:F:S:O:T:")) != -1)
     {
         switch (c) 
         {
@@ -612,6 +612,12 @@ static int ParseParams(int argc,char* argv[], PlayFiles_t *playbackFiles, int *p
                 map_inter_file_path(playbackFiles->szFirstMoovAtomFile);
             }
             break;
+
+        case 'T':
+        	PlaybackHandler.httpTimeout = (uint32_t) strtoul(optarg, NULL, 10);
+            printf("Setting http timeout to %u ms\n", PlaybackHandler.httpTimeout);
+            break;
+
         default:
             printf ("?? getopt returned character code 0%o ??\n", c);
             ret = -1;
@@ -662,7 +668,7 @@ int main(int argc, char* argv[])
 
     if (0 != ParseParams(argc, argv, &playbackFiles, &audioTrackIdx, &subtitleTrackIdx, &linuxDvbBufferSizeMB))
     {
-        printf("Usage: exteplayer3 filePath [-u user-agent] [-c cookies] [-h headers] [-p prio] [-a] [-d] [-w] [-l] [-s] [-i] [-C] [-t audioTrackId] [-9 subtitleTrackId] [-x separateAudioUri] plabackUri\n");
+        printf("Usage: exteplayer3 filePath [-u user-agent] [-c cookies] [-h headers] [-p prio] [-a] [-d] [-w] [-l] [-s] [-i] [-C] [-T timeout] [-t audioTrackId] [-9 subtitleTrackId] [-x separateAudioUri] plabackUri\n");
         printf("[-b size] Linux DVB output buffer size in MB\n");
         printf("[-a 0|1|2|3] AAC software decoding - 1 bit - AAC ADTS, 2 - bit AAC LATM\n");
         printf("[-e] EAC3 software decoding\n");
@@ -679,6 +685,7 @@ int main(int argc, char* argv[])
         printf("[-4 0|1] - disable/enable flv2mpeg4 converter\n");
 #endif
         printf("[-C] disable tracks info cache\n");
+        printf("[-T] set http timeout\n");
         printf("[-i] play in infinity loop\n");
         printf("[-v] switch to live TS stream mode\n");
         printf("[-n 0|1|2] rtmp force protocol implementation auto(0) native/ffmpeg(1) or librtmp(2)\n");
