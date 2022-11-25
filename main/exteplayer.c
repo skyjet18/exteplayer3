@@ -646,6 +646,29 @@ static int ParseParams(int argc,char* argv[], PlayFiles_t *playbackFiles, int *p
     return ret;
 }
 
+/* *********************************************************************** */
+/* This thread is used in init phase because ffmpeg is blocking by default */
+/* *********************************************************************** */
+
+typedef struct
+{
+	PlayFiles_t *playbackFiles;
+	int ret;
+	int init_finished;
+} PlaybackInitParams_t;
+
+static void *PlaybackInitThread(PlaybackInitParams_t *params)
+{
+    char threadname[17];
+    strncpy(threadname, __func__, sizeof(threadname));
+    threadname[16] = 0;
+    prctl (PR_SET_NAME, (unsigned long)&threadname);
+
+	params->ret = g_player->playback->Command(g_player, PLAYBACK_OPEN, params->playbackFiles);
+	params->init_finished = 1;
+	return NULL;
+}
+
 int main(int argc, char* argv[]) 
 {
     pthread_t termThread;
@@ -771,7 +794,60 @@ int main(int argc, char* argv[])
         g_player->playback->noprobe = 1;
     }
 
-    commandRetVal = g_player->playback->Command(g_player, PLAYBACK_OPEN, &playbackFiles);
+    /*
+    PLAYBACK_OPEN can block (possibly forever) when for example network source is not available or returns invalid data and it is not possible to guess used codec (simulated using hls)
+    During this state it is not possible to stop the player
+
+    This dirty hack solves this by running PLAYBACK_OPEN in a thread and runs a very simple loop that waits only for quit command from ServiceApp.
+    It is not possible to run full command loop, because we don't have enough info about stream in this state and some commands will crash.
+
+    This is very ugly solution, but it works ...
+    */
+
+//    commandRetVal = g_player->playback->Command(g_player, PLAYBACK_OPEN, &playbackFiles);
+    {
+    	pthread_t itid;
+    	pthread_attr_t tattr;
+    	PlaybackInitParams_t params;
+
+    	memset( &params, 0, sizeof( PlaybackInitParams_t ));
+    	params.playbackFiles = &playbackFiles;
+    	pthread_attr_init(&tattr);
+    	pthread_attr_setdetachstate(&tattr, 1);
+    	pthread_create(&itid, &tattr, (void * (*)(void *)) PlaybackInitThread, (void *) &params);
+
+    	while( params.init_finished == 0 )
+    	{
+            if( NULL == fgets(argvBuff, sizeof(argvBuff)-1 , stdin) )
+            {
+                /* wait for data - max 1s */
+                kbhit();
+                continue;
+            }
+
+            if(0 == argvBuff[0])
+            {
+                continue;
+            }
+
+            switch(argvBuff[0])
+            {
+				case 'q':
+				{
+					/* received stop command during init state, co just cancel init thread and quit */
+			    	pthread_cancel(itid);
+			    	exit(11);
+				}
+				break;
+
+				default:
+					break;
+            }
+    	}
+
+    	commandRetVal = params.ret;
+    }
+
     E2iSendMsg("{\"PLAYBACK_OPEN\":{\"OutputName\":\"%s\", \"file\":\"%s\", \"sts\":%d}}\n", g_player->output->Name, playbackFiles.szFirstFile, commandRetVal);
     if(commandRetVal < 0)
     {
