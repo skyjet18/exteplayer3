@@ -447,7 +447,7 @@ static int ParseParams(int argc,char* argv[], PlayFiles_t *playbackFiles, int *p
     int digit_optind = 0;
     int aopt = 0, bopt = 0;
     char *copt = 0, *dopt = 0;
-    while ( (c = getopt(argc, argv, "G:W:H:A:V:U:we3dlsrimvCa:n:x:u:c:h:o:p:P:t:9:0:1:4:f:b:F:S:O:T:")) != -1)
+    while ( (c = getopt(argc, argv, "G:W:H:A:V:U:we3dlsrimvCa:n:x:u:c:h:o:p:P:t:9:0:1:4:5:6:7:f:b:F:S:O:T:")) != -1)
     {
         switch (c) 
         {
@@ -580,6 +580,19 @@ static int ParseParams(int argc,char* argv[], PlayFiles_t *playbackFiles, int *p
             flv2mpeg4_converter_set(atoi(optarg));
 #endif
             break;
+
+        case '5':
+            ffmpeg_av_dict_set("cenc_decryption_key", optarg, 0);
+            break;
+
+        case '6':
+            ffmpeg_av_dict_set("cenc_decryption_video_key", optarg, 0);
+            break;
+
+        case '7':
+            ffmpeg_av_dict_set("cenc_decryption_audio_key", optarg, 0);
+            break;
+
         case 'f':
         {
             char *ffopt = strdup(optarg);
@@ -723,6 +736,9 @@ int main(int argc, char* argv[])
         printf("[-x separateAudioUri]\n");
         printf("[-0 idx] video MPEG-DASH representation index\n");
         printf("[-1 idx] audio MPEG-DASH representation index\n");
+        printf("[-5 idx] all stream MPEG-DASH cenc decryption key\n");
+        printf("[-6 idx] video MPEG-DASH stream index cenc decryption key\n");
+        printf("[-7 idx] audio MPEG-DASH stream index cenc decryption key\n");
         printf("[-f ffopt=ffval] any other ffmpeg option\n");
         printf("[-F path to additional file with moov atom data (used for mp4 playback in progressive download mode)\n");
         printf("[-O moov atom offset in the original file (used for mp4 playback in progressive download mode)\n");
