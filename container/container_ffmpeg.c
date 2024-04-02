@@ -1960,11 +1960,14 @@ int32_t container_ffmpeg_init(Context_t *context, PlayFiles_t *playFilesNames)
     wrapped_register_all();
     avformat_network_init();
 
-#if FFMPEG_DEBUG_LEVEL >= 10
-    av_log_set_level( AV_LOG_DEBUG );
-#else
-    av_log_set_callback( ffmpeg_silen_callback );
-#endif
+    if(AV_DEBUG_LEVEL > 0)
+    {
+        av_log_set_level( AV_DEBUG_LEVEL );
+    }
+    else
+    {
+        av_log_set_callback( ffmpeg_silen_callback );
+    }
 
     context->playback->abortRequested = 0;
     int32_t res = container_ffmpeg_init_av_context(context, playFilesNames->szFirstFile, playFilesNames->iFirstFileSize, \

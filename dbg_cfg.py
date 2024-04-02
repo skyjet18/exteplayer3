@@ -37,9 +37,11 @@ debug_modules = [
 ]
 
 lines = ['#include <stdio.h>']
-lines.append('#define log_error(fmt, x...) do { printf("[%s:%s] " fmt, __FILE__, __FUNCTION__, ## x); } while (0)')
-lines.append('#define log_printf(maxlevel, level, fmt, x...) do { if (maxlevel >= level) printf("[%s:%s] " fmt, __FILE__, __FUNCTION__, ## x); } while (0)')
+lines.append('#define log_error(silent, fmt, x...) do { if(!(*silent)) printf("[%s:%s] " fmt, __FILE__, __FUNCTION__, ## x); } while (0)')
+lines.append('#define log_printf(maxlevel, level, fmt, x...) do { if (*maxlevel >= level) printf("[%s:%s] " fmt, __FILE__, __FUNCTION__, ## x); } while (0)')
+lines.append('int set_log_level(const char *level_str);')
 lines.append('')
+lines.append('extern int AV_DEBUG_LEVEL;')
 
 for item in debug_modules:
     lines.append('')
@@ -47,26 +49,18 @@ for item in debug_modules:
     lines.append(' * %s' % item['name'])
     lines.append(' *******************************************/')
     debug_name = '%s_DEBUG_LEVEL' % item['name'].upper()
-    lines.append('#define %s %d' % (debug_name, item['lvl']))
+#    lines.append('int %s = %d;' % (debug_name, item['lvl']))
+    lines.append('extern int %s;' % debug_name)
 
     silent_name = '%s_SILENT' % item['name'].upper()
-    silent_def = '#define %s' % silent_name
-    if not item['silent']: silent_def = '// ' + silent_def
+    silent_def = 'extern int %s;' % silent_name
+#    silent_def = 'int %s = %d;' % (silent_name, 1 if item['silent'] else 0)
+#    if not item['silent']: silent_def = '// ' + silent_def
     lines.append(silent_def)
 
     lines.append('')
-    lines.append('#if %s' % debug_name)
-    lines.append('#define %s_printf(...) log_printf(%s, __VA_ARGS__)' % (item['name'], debug_name))
-    lines.append('#else')
-    lines.append('#define %s_printf(...)' % item['name'])
-    lines.append('#endif')
-
-    lines.append('')
-    lines.append('#ifndef %s' % silent_name)
-    lines.append('#define %s_err(...) log_error(__VA_ARGS__)' % item['name'])
-    lines.append('#else')
-    lines.append('#define %s_err(...)' % item['name'])
-    lines.append('#endif')
+    lines.append('#define %s_printf(...) log_printf(&%s, __VA_ARGS__)' % (item['name'], debug_name))
+    lines.append('#define %s_err(...) log_error(&%s, __VA_ARGS__)' % (item['name'], silent_name))
 
 f = open('include/debug.h', "w")
 f.write('\n'.join(lines))
