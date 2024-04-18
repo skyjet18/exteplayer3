@@ -87,7 +87,7 @@ static int32_t PreparCodecData(unsigned char *data, unsigned int cd_len, unsigne
         unsigned char tmp[4096];
         unsigned int tmp_len = 0;
 
-        h265_printf(10, "H265 have codec data..!");
+        h265_printf(10, "H265 have codec data..!\n");
 
         if (cd_len > 3 && (data[0] || data[1] || data[2] > 1))
         {
@@ -96,7 +96,7 @@ static int32_t PreparCodecData(unsigned char *data, unsigned int cd_len, unsigne
                 int i;
                 if (data[0] != 0) 
                 {
-                    h265_printf(10, "Unsupported extra data version %d, decoding may fail", (int)data[0]);
+                    h265_printf(10, "Unsupported extra data version %d, decoding may fail\n", (int)data[0]);
                 }
                 
                 *NalLength = (data[21] & 3) + 1;
@@ -107,7 +107,7 @@ static int32_t PreparCodecData(unsigned char *data, unsigned int cd_len, unsigne
                     int j;
                     if (pos + 3 > cd_len) 
                     {
-                        h265_printf(10, "Buffer underrun in extra header (%d >= %u)", pos + 3, cd_len);
+                        h265_printf(10, "Buffer underrun in extra header (%d >= %u)\n", pos + 3, cd_len);
                         break;
                     }
                     // ignore flags + NAL type (1 byte)
@@ -200,7 +200,30 @@ static int writeData(void* _call)
         return 0;
     }
     
-    if( call->InfoFlags & 0x1) // TS container
+    h265_printf(10, "H265 private_size: %u\n", call->private_size);
+    h265_printf(10, "H265 private_data: %X %X %X %X %X %X\n",
+        call->private_size > 0 ? call->private_data[0] : 0,
+        call->private_size > 1 ? call->private_data[1] : 0,
+        call->private_size > 2 ? call->private_data[2] : 0,
+        call->private_size > 3 ? call->private_data[3] : 0,
+        call->private_size > 4 ? call->private_data[4] : 0,
+        call->private_size > 5 ? call->private_data[5] : 0 );
+
+    h265_printf(10, "H265 len: %u\n", call->len);
+    h265_printf(10, "H265 data: %X %X %X %X %X %X\n",
+        call->len > 0 ? call->data[0] : 0,
+        call->len > 1 ? call->data[1] : 0,
+        call->len > 2 ? call->data[2] : 0,
+        call->len > 3 ? call->data[3] : 0,
+        call->len > 4 ? call->data[4] : 0,
+        call->len > 5 ? call->data[5] : 0 );
+
+    if( (call->InfoFlags & 0x1) &&
+        (
+            (call->private_size == 0) ||
+            (call->private_size > 2 && call->private_data[0] == 0x00 && call->private_data[0] == 0x00 && call->private_data[2] == 0x01)
+        )
+    )   // TS Container
     {
         h265_printf(10, "H265 simple inject method!\n");
         uint32_t PacketLength = 0;
