@@ -66,6 +66,7 @@
 /* Makros/Constants              */
 /* ***************************** */
 
+#define HAVE_CH_LAYOUT (LIBAVUTIL_VERSION_INT >= AV_VERSION_INT(59, 0, 100))
 
 /* Some STB with old kernels have problem with default 
  * read/write functions in ffmpeg which use open/read
@@ -616,8 +617,13 @@ static void FFMPEGThread(Context_t *context)
     SwrContext *swr = NULL;
     AVFrame *decoded_frame = NULL;
     int32_t out_sample_rate = 44100;
-    int32_t out_channels = 2;
+#if HAVE_CH_LAYOUT
+    AVChannelLayout out_channel_layout;
+    av_channel_layout_default(&out_channel_layout, 2);
+#else
     uint64_t out_channel_layout = AV_CH_LAYOUT_STEREO;
+#endif
+    int32_t out_channels = 2;
     uint32_t cAVIdx = 0;
 
     // for seek
@@ -977,7 +983,11 @@ static void FFMPEGThread(Context_t *context)
                 }
                 
                 pcmPrivateData_t pcmExtradata;
+#if HAVE_CH_LAYOUT
+                pcmExtradata.channels              = get_codecpar(audioTrack->stream)->ch_layout.nb_channels;
+#else
                 pcmExtradata.channels              = get_codecpar(audioTrack->stream)->channels;
+#endif
                 pcmExtradata.bits_per_coded_sample = get_codecpar(audioTrack->stream)->bits_per_coded_sample;
                 pcmExtradata.sample_rate           = get_codecpar(audioTrack->stream)->sample_rate;
                 pcmExtradata.bit_rate              = get_codecpar(audioTrack->stream)->bit_rate;
@@ -1117,6 +1127,15 @@ static void FFMPEGThread(Context_t *context)
                             }
 
                             swr = swr_alloc();
+#if HAVE_CH_LAYOUT
+                            out_channels = c->ch_layout.nb_channels;
+                            if( !av_channel_layout_check(&c->ch_layout) )
+                            {
+                                av_channel_layout_default( &c->ch_layout, out_channels );
+                            }
+
+                            av_channel_layout_copy(&out_channel_layout, &c->ch_layout);
+#else
                             out_channels = c->channels;
 
                             if (c->channel_layout == 0)
@@ -1124,7 +1143,8 @@ static void FFMPEGThread(Context_t *context)
                                 c->channel_layout = av_get_default_channel_layout( c->channels );
                             }
                             out_channel_layout = c->channel_layout;
-                            
+#endif
+
                             uint8_t downmix = stereo_software_decoder && out_channels > 2 ? 1 : 0;
 #ifdef __sh__
                             // player2 won't play mono
@@ -1133,14 +1153,26 @@ static void FFMPEGThread(Context_t *context)
                                 downmix = 1;
                             }
 #endif
+
+#if HAVE_CH_LAYOUT
+                            if(downmix)
+                            {
+                                av_channel_layout_default(&out_channel_layout, 2);
+                                out_channels = 2;
+                            }
+
+                            av_opt_set_chlayout(swr, "in_chlayout", &c->ch_layout,	0);
+                            av_opt_set_chlayout(swr, "out_chlayout", &out_channel_layout,	0);
+#else
                             if(downmix)
                             {
                                 out_channel_layout = AV_CH_LAYOUT_STEREO_DOWNMIX;
                                 out_channels = 2;
                             }
-                            
-                            av_opt_set_int(swr, "in_channel_layout",	c->channel_layout,	0);
-                            av_opt_set_int(swr, "out_channel_layout",	out_channel_layout,	0);
+
+                            av_opt_set_int(swr, "in_channel_layout",    c->channel_layout,	0);
+                            av_opt_set_int(swr, "out_channel_layout",   out_channel_layout,	0);
+#endif
                             av_opt_set_int(swr, "in_sample_rate",		c->sample_rate,		0);
                             av_opt_set_int(swr, "out_sample_rate",		out_sample_rate,	0);
                             av_opt_set_int(swr, "in_sample_fmt",		c->sample_fmt,		0);
@@ -1150,8 +1182,17 @@ static void FFMPEGThread(Context_t *context)
                             e = swr_init(swr);
                             if (e < 0) 
                             {
+#if HAVE_CH_LAYOUT
+                                char icl[128];
+                                char ocl[128];
+                                av_channel_layout_describe(&c->ch_layout, icl, sizeof(icl-1));
+                                av_channel_layout_describe(&out_channel_layout, ocl, sizeof(ocl-1));
+                                ffmpeg_err("swr_init: %d (icl=%s ocl=%s isr=%d osr=%d isf=%d osf=%d\n",
+                                    -e, icl, ocl, c->sample_rate, out_sample_rate, c->sample_fmt, AV_SAMPLE_FMT_S16);
+#else
                                 ffmpeg_err("swr_init: %d (icl=%d ocl=%d isr=%d osr=%d isf=%d osf=%d\n",
                                     -e, (int32_t)c->channel_layout, (int32_t)out_channel_layout, c->sample_rate, out_sample_rate, c->sample_fmt, AV_SAMPLE_FMT_S16);
+#endif
                                 swr_free(&swr);
                                 swr = NULL;
                             }
@@ -1178,7 +1219,11 @@ static void FFMPEGThread(Context_t *context)
                         
                         //////////////////////////////////////////////////////////////////////
                         // Update pcmExtradata according to decode parameters
+#if HAVE_CH_LAYOUT
+                        pcmExtradata.channels              = out_channel_layout.nb_channels;
+#else
                         pcmExtradata.channels              = av_get_channel_layout_nb_channels(out_channel_layout);
+#endif
                         pcmExtradata.bits_per_coded_sample = 16;
                         pcmExtradata.sample_rate           = out_sample_rate;
                         // The data described by the sample format is always in native-endian order
@@ -2347,7 +2392,11 @@ int32_t container_ffmpeg_update_tracks(Context_t *context, char *filename, int32
 
                             int32_t object_type = 2; // LC
                             int32_t sample_index = aac_get_sample_rate_index(get_codecpar(stream)->sample_rate);
+#if HAVE_CH_LAYOUT
+                            int32_t chan_config = get_chan_config(get_codecpar(stream)->ch_layout.nb_channels);
+#else
                             int32_t chan_config = get_chan_config(get_codecpar(stream)->channels);
+#endif
                             ffmpeg_printf(1,"aac object_type %d\n", object_type);
                             ffmpeg_printf(1,"aac sample_index %d\n", sample_index);
                             ffmpeg_printf(1,"aac chan_config %d\n", chan_config);
