@@ -2982,7 +2982,7 @@ static int32_t container_ffmpeg_switch_audio(Context_t *context, int32_t *arg)
     releaseMutex(__FILE__, __FUNCTION__,__LINE__);
     
     /* Hellmaster1024: nothing to do here!*/
-    int64_t sec = -1;
+    int64_t sec = 0;
     context->playback->Command(context, PLAYBACK_SEEK, (void*)&sec);
     return cERR_CONTAINER_FFMPEG_NO_ERROR;
 }
@@ -2996,7 +2996,7 @@ static int32_t container_ffmpeg_switch_subtitle(Context_t *context, int32_t *arg
      * we seek to force ffmpeg to read once again the same data
      * but now we will not ignore subtitle frame
      */
-    int64_t sec = -1;
+    int64_t sec = 0;
     context->playback->Command(context, PLAYBACK_SEEK, (void*)&sec);
     return cERR_CONTAINER_FFMPEG_NO_ERROR;
 }
