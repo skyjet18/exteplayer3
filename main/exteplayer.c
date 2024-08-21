@@ -260,6 +260,43 @@ static char *map_inter_file_path(const char *filename)
     return ret;
 }
 
+/**
+ * This is workaround for images where ServiceApp doesn't support suburi parameter used to pass second (audio) file for playback.
+ * We will handle suburi parameter here, so this will work with any ServiceApp version.
+ */
+static void process_suburi(PlayFiles_t *play_files)
+{
+    if(play_files->szSecondFile)
+    {
+        return;
+    }
+
+    char *orig_file = play_files->szFirstFile;
+
+    if( strncmp(orig_file, "http://", 7) != 0 && strncmp(orig_file, "https://", 8) != 0 )
+    {
+        return;
+    }
+
+    const char *p = strstr(orig_file, "&suburi=");
+
+    if( p )
+    {
+        size_t part_len = (size_t) (p - orig_file);
+
+        play_files->szFirstFile = malloc(part_len + 1);
+        memcpy(play_files->szFirstFile, orig_file, part_len);
+        play_files->szFirstFile[part_len] = '\0';
+
+        part_len = strlen(p + 8);
+        play_files->szSecondFile = malloc(part_len + 1);
+        memcpy(play_files->szSecondFile, p+8, part_len);
+        play_files->szSecondFile[part_len] = '\0';
+
+        free(orig_file);
+    }
+}
+
 static int kbhit(void)
 {
     struct timeval tv;
@@ -769,6 +806,8 @@ int main(int argc, char* argv[])
         exit(1);
     }
     
+    process_suburi(&playbackFiles);
+
     g_player = malloc(sizeof(Context_t));
     if(NULL == g_player)
     {
