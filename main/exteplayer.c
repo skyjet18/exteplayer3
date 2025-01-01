@@ -752,6 +752,9 @@ int main(int argc, char* argv[])
     char argvBuff[256];
     memset(argvBuff, '\0', sizeof(argvBuff));
     int commandRetVal = -1;
+    int64_t start_pts = 0;
+    int64_t container_start_pts = 0;
+    int start_pts_checked = 0;
 
     /* inform client that we can handle additional commands */
     E2iSendMsg("{\"EPLAYER3_EXTENDED\":{\"version\":%d}}\n", 172);
@@ -967,6 +970,10 @@ int main(int argc, char* argv[])
                 commandRetVal = HandleTracks(g_player->manager->subtitle, PLAYBACK_SWITCH_SUBTITLE, cmd);
             }
             HandleTracks(g_player->manager->subtitle, (PlaybackCmd_t)-1, "sc");
+
+            /* get stream start position to properly calculate current position */
+            g_player->playback->Command(g_player, PLAYBACK_PTS, &start_pts);
+            g_player->container->selectedContainer->Command(g_player->container, CONTAINER_LAST_PTS, &container_start_pts);
         }
 
         while(g_player->playback->isPlaying && 0 == PlaybackDieNow(0))
@@ -1098,6 +1105,7 @@ int main(int argc, char* argv[])
                 sscanf(argvBuff+2, "%d", &seek);
                 
                 commandRetVal = g_player->playback->Command(g_player, PLAYBACK_PTS, &pts);
+                pts -= start_pts;
                 CurrentSec = (int32_t)(pts / 90000);
                 if (0 == commandRetVal)
                 {
@@ -1145,13 +1153,40 @@ int main(int argc, char* argv[])
             {
                 int64_t pts = 0;
                 commandRetVal = g_player->playback->Command(g_player, PLAYBACK_PTS, &pts);
+
                 if (0 == commandRetVal)
                 {
+                    if( start_pts_checked == 0 && start_pts == 0 && pts != 0 )
+                    {
+                        /* check if PTS is correct and if not, try to calculate correct one */
+                        int64_t length = 0;
+                        commandRetVal = g_player->playback->Command(g_player, PLAYBACK_LENGTH, (void*)&length);
+
+                        if( pts < 0 || pts > (length * 90000))
+                        {
+                            start_pts = pts;
+                        }
+                        start_pts_checked = 1;
+                    }
+
+                    if( start_pts_checked && start_pts != 0 && (pts - start_pts) < 0)
+                    {
+                        /* looks like pts fix doesn't work for this stream, so better disable it */
+                        start_pts = 0;
+                    }
+
+                    pts -= start_pts;
+
                     int64_t lastPts = 0;
                     commandRetVal = 1;
                     if (g_player->container && g_player->container->selectedContainer)
                     {
                         commandRetVal = g_player->container->selectedContainer->Command(g_player->container, CONTAINER_LAST_PTS, &lastPts);
+
+                        if( start_pts != 0 )
+                        {
+                            lastPts -= container_start_pts;
+                        }
                     }
                     
                     if (0 == commandRetVal && lastPts != INVALID_PTS_VALUE)
