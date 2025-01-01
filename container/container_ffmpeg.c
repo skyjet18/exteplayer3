@@ -2847,22 +2847,37 @@ static int32_t container_ffmpeg_seek(Context_t *context, int64_t sec, uint8_t ab
     if (!absolute) 
     {
         ffmpeg_printf(10, "seeking %"PRId64" sec\n", sec);
-        if (sec == 0)
+
+        int64_t length = 0;
+
+        context->playback->Command(context, PLAYBACK_LENGTH, (void*)&length);
+
+        int64_t currPts = -1;
+        int ret = context->playback->Command(context, PLAYBACK_PTS, &currPts);
+        if (ret != 0)
+        {
+            ffmpeg_err("fail to get current PTS\n");
+            return cERR_CONTAINER_FFMPEG_ERR;
+        }
+        int64_t cur_sec = currPts / 90000;
+
+//        ffmpeg_err("cur_sec = %lld\n", (long long) cur_sec);
+//        ffmpeg_err("length = %lld\n", (long long) length);
+
+        /* 
+         * - 0s relative seek is used when switching subtitle or audio tracks to properly flush/reload queues
+         * - in some types of live streams this can result in hang or seek behind the end of the stream
+         * - try to detect such streams - mostly they have incorrect (negative) length or current position is behind the end
+         * - in these cases just ignore seek command
+         */
+
+        if (sec == 0 && cur_sec > length)
         {
             ffmpeg_err("sec = 0 ignoring\n");
             return cERR_CONTAINER_FFMPEG_ERR;
         }
-        else
-        {
-            int64_t currPts = -1;
-            int32_t ret = context->playback->Command(context, PLAYBACK_PTS, &currPts);
-            if (ret != 0)
-            {
-                ffmpeg_err("fail to get current PTS\n");
-                return cERR_CONTAINER_FFMPEG_ERR;
-            }
-            sec += currPts / 90000;
-        }
+
+        sec += cur_sec;
     }
     
     ffmpeg_printf(10, "goto %"PRId64" sec\n", sec);
