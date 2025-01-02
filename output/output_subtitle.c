@@ -167,6 +167,61 @@ static char * json_string_escape(char *str)
     return tmp;
 }
 
+static char * remove_ass_formating(char *str)
+{
+    char *out = str;
+    int   state = 0;
+    char *p;
+
+    /* remove tags in format {\xxx} from text - they are not supported by neither enigma nor subssupport */
+    for( p = str; *p; p++ )
+    {
+        switch( state )
+        {
+            case 0:
+                if( *p == '{' )
+                {
+                    state = 1;
+                }
+                else
+                {
+                    if( out < p )
+                    {
+                        *out = *p;
+                    }
+                    out++;
+                }
+                break;
+
+            case 1:
+                if( *p == '\\' )
+                {
+                    state = 2;
+                }
+                else
+                {
+                    state = 0;
+                    *out = '{';
+                    out++;
+                    *out = *p;
+                    out++;
+                }
+                break;
+
+            case 2:
+                if( *p == '}' )
+                {
+                    state = 0;
+                }
+                break;
+        }
+    }
+
+    *out = '\0';
+
+    return str;
+}
+
 static int Flush()
 {
     if (g_subWriter)
@@ -232,10 +287,10 @@ static int Write(void *_context, void *data)
     {
         case SUBTITLE_CODEC_ID_SUBRIP:
         case SUBTITLE_CODEC_ID_WEBVTT:
-            E2iSendMsg("{\"s_a\":{\"id\":%d,\"s\":%"PRId64",\"e\":%"PRId64",\"t\":\"%s\"}}\n", out->trackId, out->pts / 90, out->pts / 90 + out->durationMS, json_string_escape((char *)out->data));
+            E2iSendMsg("{\"s_a\":{\"id\":%d,\"s\":%"PRId64",\"e\":%"PRId64",\"t\":\"%s\"}}\n", out->trackId, out->pts / 90, out->pts / 90 + out->durationMS, json_string_escape( remove_ass_formating((char *)out->data) ));
         break;
         case SUBTITLE_CODEC_ID_ASS:
-            E2iSendMsg("{\"s_a\":{\"id\":%d,\"s\":%"PRId64",\"e\":%"PRId64",\"t\":\"%s\"}}\n", out->trackId, out->pts / 90, out->pts / 90 + out->durationMS, ass_get_text((char *)out->data));
+            E2iSendMsg("{\"s_a\":{\"id\":%d,\"s\":%"PRId64",\"e\":%"PRId64",\"t\":\"%s\"}}\n", out->trackId, out->pts / 90, out->pts / 90 + out->durationMS, remove_ass_formating( ass_get_text((char *)out->data) ));
         break;
         case SUBTITLE_CODEC_ID_PGS:
         case SUBTITLE_CODEC_ID_DVB:
