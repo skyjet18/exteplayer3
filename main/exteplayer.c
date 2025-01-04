@@ -972,7 +972,6 @@ int main(int argc, char* argv[])
             HandleTracks(g_player->manager->subtitle, (PlaybackCmd_t)-1, "sc");
 
             /* get stream start position to properly calculate current position */
-            g_player->playback->Command(g_player, PLAYBACK_PTS, &start_pts);
             g_player->container->selectedContainer->Command(g_player->container, CONTAINER_LAST_PTS, &container_start_pts);
         }
 
@@ -1162,7 +1161,7 @@ int main(int argc, char* argv[])
                         int64_t length = 0;
                         commandRetVal = g_player->playback->Command(g_player, PLAYBACK_LENGTH, (void*)&length);
 
-                        if( pts < 0 || pts > (length * 90000))
+                        if( length > 0 && (pts < 0 || pts > (length * 90000)))
                         {
                             start_pts = pts;
                         }
