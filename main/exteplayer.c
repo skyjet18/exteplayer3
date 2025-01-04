@@ -757,7 +757,7 @@ int main(int argc, char* argv[])
     int start_pts_checked = 0;
 
     /* inform client that we can handle additional commands */
-    E2iSendMsg("{\"EPLAYER3_EXTENDED\":{\"version\":%d}}\n", 173);
+    E2iSendMsg("{\"EPLAYER3_EXTENDED\":{\"version\":%d}}\n", 174);
 
     PlayFiles_t playbackFiles;
     memset(&playbackFiles, 0x00, sizeof(playbackFiles));
