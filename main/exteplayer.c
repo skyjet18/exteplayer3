@@ -810,6 +810,8 @@ int main(int argc, char* argv[])
         exit(1);
     }
     
+    ffmpeg_av_dict_set("fake_last_subtitle", "1", 0);
+
     process_suburi(&playbackFiles);
 
     g_player = malloc(sizeof(Context_t));
