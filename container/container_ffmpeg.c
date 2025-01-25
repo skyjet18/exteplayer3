@@ -2946,6 +2946,7 @@ static int32_t container_ffmpeg_get_length(Context_t *context, int64_t *length)
         return cERR_CONTAINER_FFMPEG_ERR;
     }
 
+    context->container->selectedContainer->Command(context, CONTAINER_UPDATE_DURATION, NULL);
     context->manager->video->Command(context, MANAGER_GET_TRACK, &videoTrack);
     context->manager->audio->Command(context, MANAGER_GET_TRACK, &audioTrack);
 
@@ -3095,6 +3096,125 @@ static int32_t container_ffmpeg_get_info(Context_t* context, char ** infoString)
     return cERR_CONTAINER_FFMPEG_NO_ERROR;
 }
 
+
+static int32_t container_ffmpeg_update_duration(Context_t *context)
+{
+    if (terminating)
+    {
+        return cERR_CONTAINER_FFMPEG_NO_ERROR;
+    }
+
+    getMutex(__FILE__, __FUNCTION__,__LINE__);
+    ffmpeg_printf(10, "Updating durations\n");
+
+    uint32_t cAVIdx = 0;
+    for(cAVIdx=0; cAVIdx<IPTV_AV_CONTEXT_MAX_NUM; cAVIdx+=1)
+    {
+        if(NULL == avContextTab[cAVIdx])
+        {
+            break;
+        }
+
+        ffmpeg_printf(10, "Updating duration for context #%u\n", cAVIdx);
+        AVFormatContext *avContext = avContextTab[cAVIdx];
+
+        int32_t n;
+
+        for (n = 0; n < avContext->nb_streams; n++)
+        {
+            ffmpeg_printf(10, "Updating duration for stream #%d\n", n);
+            Track_t *track = NULL;
+            AVStream *stream = avContext->streams[n];
+
+            /* some values in track are unset and therefor copyTrack segfaults.
+             * so set it by default to NULL!
+             */
+
+            switch (get_codecpar(stream)->codec_type)
+            {
+                case AVMEDIA_TYPE_VIDEO:
+                {
+                    ffmpeg_printf(10, "Requesting video track\n");
+                    context->manager->video->Command(context, MANAGER_GET_TRACK, &track);
+
+                    if( track )
+                    {
+                        ffmpeg_printf(10, "Old duration: %"PRId64"\n", track->duration);
+
+                        track->duration = (int64_t)av_rescale(stream->duration, (int64_t)stream->time_base.num * 1000, stream->time_base.den);
+                        if(stream->duration == AV_NOPTS_VALUE || 0 == strncmp(avContext->iformat->name, "dash", 4))
+                        {
+                            ffmpeg_printf(10, "Stream has no duration so we take the duration from context\n");
+                            track->duration = (int64_t) avContext->duration / 1000;
+                        }
+
+                        ffmpeg_printf(10, "New duration: %"PRId64"\n", track->duration);
+                    }
+                    else
+                    {
+                        ffmpeg_printf(10, "Video track not found\n");
+                    }
+                }
+                break;
+
+                case AVMEDIA_TYPE_AUDIO:
+                {
+                    context->manager->audio->Command(context, MANAGER_GET_TRACK, &track);
+
+                    if( track )
+                    {
+                        ffmpeg_printf(10, "Old duration: %"PRId64"\n", track->duration);
+
+                        track->duration = (int64_t)av_rescale(stream->duration, (int64_t)stream->time_base.num * 1000, stream->time_base.den);
+
+                        if(stream->duration == AV_NOPTS_VALUE)
+                        {
+                            ffmpeg_printf(10, "Stream has no duration so we take the duration from context\n");
+                            track->duration = (int64_t) avContext->duration / 1000;
+                        }
+
+                        ffmpeg_printf(10, "New duration: %"PRId64"\n", track->duration);
+                    }
+                    else
+                    {
+                        ffmpeg_printf(10, "Audio track not found\n");
+                    }
+                }
+                break;
+
+                case AVMEDIA_TYPE_SUBTITLE:
+                {
+                    context->manager->subtitle->Command(context, MANAGER_GET_TRACK, &track);
+                    if( track )
+                    {
+                        ffmpeg_printf(10, "Old duration: %"PRId64"\n", track->duration);
+
+                        track->duration = (int64_t)av_rescale(stream->duration, (int64_t)stream->time_base.num * 1000, stream->time_base.den);
+
+                        if(stream->duration == AV_NOPTS_VALUE)
+                        {
+                            ffmpeg_printf(10, "Stream has no duration so we take the duration from context\n");
+                            track->duration = (int64_t) avContext->duration / 1000;
+                        }
+
+                        ffmpeg_printf(10, "New duration: %"PRId64"\n", track->duration);
+                    }
+                    else
+                    {
+                        ffmpeg_printf(10, "Subtitle track not found\n");
+                    }
+
+                    break;
+                }
+                break;
+            }
+        } /* for */
+    }
+
+    releaseMutex(__FILE__, __FUNCTION__,__LINE__);
+    return cERR_CONTAINER_FFMPEG_NO_ERROR;
+}
+
 static int32_t Command(void  *_context, ContainerCmd_t command, void *argument)
 {
     Context_t  *context = (Context_t*) _context;
@@ -3185,6 +3305,11 @@ static int32_t Command(void  *_context, ContainerCmd_t command, void *argument)
         *((int32_t*)argument) = size;
         break;
     }   
+    case CONTAINER_UPDATE_DURATION:
+    {
+        ret = container_ffmpeg_update_duration(context);
+        break;
+    }
     default:
         ffmpeg_err("ContainerCmd %d not supported!\n", command);
         ret = cERR_CONTAINER_FFMPEG_ERR;
