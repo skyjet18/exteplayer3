@@ -286,7 +286,7 @@ static int writeData(void* _call)
             if (ic >= IOVEC_SIZE)
             {
                 h264_err(">> Drop data due to ic overflow\n");
-                exit(-1);
+//                exit(-1);
                 break;
             }
             
