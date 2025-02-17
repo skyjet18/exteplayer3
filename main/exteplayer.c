@@ -746,6 +746,7 @@ int main(int argc, char* argv[])
     
     int audioTrackIdx = -1;
     int subtitleTrackIdx = -1;
+    int pts_check_nr = 0;
     
     uint32_t linuxDvbBufferSizeMB = 0; 
     
@@ -1165,6 +1166,17 @@ int main(int argc, char* argv[])
                         E2iSendMsg("{\"J\":{\"ms\":%"PRId64"}}\n", pts / 90);
                     }
                 }
+
+                pts_check_nr++;
+
+                if( pts_check_nr > 10 )
+                {
+                    pts_check_nr = 0;
+                    int64_t length = 0;
+                    commandRetVal = g_player->playback->Command(g_player, PLAYBACK_LENGTH, (void*)&length);
+                    E2iSendMsg("{\"PLAYBACK_LENGTH\":{\"length\":%"PRId64", \"sts\":%d}}\n", length, commandRetVal);
+                }
+
                 break;
             }
             case 'i':
