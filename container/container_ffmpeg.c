@@ -493,10 +493,11 @@ static char* Codec2Encoding(int32_t codec_id, int32_t media_type, uint8_t *extra
 #endif
         return "S_TEXT/ASS"; /* Hellmaster1024: seems to be ASS instead of SSA */
     case AV_CODEC_ID_DVD_SUBTITLE:
-    case AV_CODEC_ID_MOV_TEXT:
     case AV_CODEC_ID_DVB_TELETEXT:
 //    case CODEC_ID_DVB_TELETEXT:
 //        return "S_TEXT/SRT"; /* fixme */
+    case AV_CODEC_ID_MOV_TEXT:
+        return "S_TEXT/MOV";
     case AV_CODEC_ID_TEXT: ///< raw UTF-8 text
         return "S_TEXT/UTF-8";
     case AV_CODEC_ID_SRT:
@@ -2606,6 +2607,7 @@ int32_t container_ffmpeg_update_tracks(Context_t *context, char *filename, int32
                     get_codecpar(stream)->codec_id != AV_CODEC_ID_TEXT &&
                     get_codecpar(stream)->codec_id != AV_CODEC_ID_SRT &&
                     get_codecpar(stream)->codec_id != AV_CODEC_ID_WEBVTT &&
+                    get_codecpar(stream)->codec_id != AV_CODEC_ID_MOV_TEXT &&
                     ((get_codecpar(stream)->codec_id != AV_CODEC_ID_HDMV_PGS_SUBTITLE &&
                       get_codecpar(stream)->codec_id != AV_CODEC_ID_DVB_SUBTITLE &&
                       get_codecpar(stream)->codec_id != AV_CODEC_ID_XSUB) ||
