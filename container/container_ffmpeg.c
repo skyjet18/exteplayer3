@@ -1891,6 +1891,12 @@ int32_t container_ffmpeg_init_av_context(Context_t *context, char *filename, uin
             av_dict_set(&avio_opts, "reconnect_at_eof", "1", 0);
             av_dict_set(&avio_opts, "reconnect_streamed", "1", 0);
         }
+
+        if( strncmp(filename, "http://127.0.0.1", 16) == 0 )
+        {
+            /* when using with ArchivCZSK, then indicate DRM support */
+            av_dict_set(&avio_opts, "headers", "X-DRM-Api-Level: 1\r\n", AV_DICT_APPEND);
+        }
     }
     
     pavio_opts = &avio_opts;
