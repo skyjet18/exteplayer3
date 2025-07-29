@@ -220,7 +220,7 @@ static char *map_inter_file_path(const char *filename)
             rewind(f);
 
             filename2 = malloc(file_size+2);
-            size_t num = fread(filename2, file_size, 1, f);
+            size_t num = fread(filename2, 1, file_size, f);
             fclose(f);
 
             if (num > 0 && filename2[num-1] == '\n')
