@@ -195,70 +195,107 @@ static int32_t PreparCodecData(unsigned char *data, unsigned int cd_len, unsigne
         h264_printf(10, "H264 have codec data..!\n");
         if (cd_len > 7 && data[0] == 1)
         {
-            unsigned short len = (data[6] << 8) | data[7];
-            if (cd_len >= (len + 8))
+            /* avcC: alle SPS und alle PPS uebernehmen - nicht nur die ersten.
+             * Manche Sender (z. B. Sky) nutzen eine zweite PPS fuer B-Slices
+             * mit gewichteter Praediktion; ohne sie zerfaellt das Bild. */
+            unsigned int num_sps = data[5] & 0x1f;
+            unsigned int num_pps = 0;
+            unsigned int n = 0;
+            cd_pos = 6;
+            ret = 0;
+            for (n = 0; n < num_sps && ret == 0; ++n)
             {
-                unsigned int i=0;
-                uint8_t profile_num[] = { 66, 77, 88, 100 };
-                uint8_t profile_cmp[2] = { 0x67, 0x00 };
-                const char *profile_str[] = { "baseline", "main", "extended", "high" };
-                memcpy(tmp, Head, sizeof(Head));
-                tmp_len += 4;
-                memcpy(tmp + tmp_len, data + 8, len);
-                for (i = 0; i < 4; ++i)
+                unsigned short len;
+                if (cd_len < cd_pos + 2)
                 {
-                    profile_cmp[1] = profile_num[i];
-                    if (!memcmp(tmp+tmp_len, profile_cmp, 2))
+                    h264_printf(10, "codec_data too short(2)");
+                    ret = -2;
+                    break;
+                }
+                len = (data[cd_pos] << 8) | data[cd_pos + 1];
+                cd_pos += 2;
+                if (cd_len < cd_pos + len || tmp_len + sizeof(Head) + len > sizeof(tmp))
+                {
+                    h264_printf(10, "codec_data too short(2)");
+                    ret = -2;
+                    break;
+                }
+                memcpy(tmp + tmp_len, Head, sizeof(Head));
+                tmp_len += sizeof(Head);
+                memcpy(tmp + tmp_len, data + cd_pos, len);
+                {
+                    unsigned int i=0;
+                    uint8_t profile_num[] = { 66, 77, 88, 100 };
+                    uint8_t profile_cmp[2] = { 0x67, 0x00 };
+                    const char *profile_str[] = { "baseline", "main", "extended", "high" };
+                    for (i = 0; i < 4 && len > 3; ++i)
                     {
-                        uint8_t level_org = tmp[tmp_len + 3];
-                        if (level_org > 0x29)
+                        profile_cmp[1] = profile_num[i];
+                        if (!memcmp(tmp+tmp_len, profile_cmp, 2))
                         {
-                            h264_printf(10, "H264 %s profile@%d.%d patched down to 4.1!", profile_str[i], level_org / 10 , level_org % 10);
-                            tmp[tmp_len+3] = 0x29; // level 4.1
+                            uint8_t level_org = tmp[tmp_len + 3];
+                            if (level_org > 0x29)
+                            {
+                                h264_printf(10, "H264 %s profile@%d.%d patched down to 4.1!", profile_str[i], level_org / 10 , level_org % 10);
+                                tmp[tmp_len+3] = 0x29; // level 4.1
+                            }
+                            else
+                            {
+                                h264_printf(10, "H264 %s profile@%d.%d", profile_str[i], level_org / 10 , level_org % 10);
+                            }
+                            break;
                         }
-                        else
-                        {
-                            h264_printf(10, "H264 %s profile@%d.%d", profile_str[i], level_org / 10 , level_org % 10);
-                        }
-                        break;
                     }
                 }
                 tmp_len += len;
-                cd_pos = 8 + len;
-                if (cd_len > (cd_pos + 2))
-                {
-                    len = (data[cd_pos + 1] << 8) | data[cd_pos + 2];
-                    cd_pos += 3;
-                    if (cd_len >= (cd_pos+len))
-                    {
-                        memcpy(tmp+tmp_len, "\x00\x00\x00\x01", 4);
-                        tmp_len += 4;
-                        memcpy(tmp+tmp_len, data+cd_pos, len);
-                        tmp_len += len;
-                        
-                        CodecData = malloc(tmp_len);
-                        memcpy(CodecData, tmp, tmp_len);
-                        CodecDataLen = tmp_len;
-                        
-                        *NalLength = (data[4] & 0x03) + 1;
-                        ret = 0;
-                    }
-                    else
-                    {
-                        h264_printf(10, "codec_data too short(4)");
-                        ret = -4;
-                    }
-                }
-                else
-                {
-                    h264_printf(10,  "codec_data too short(3)");
-                    ret = -3;
-                }
+                cd_pos += len;
             }
-            else
+            if (ret == 0 && cd_len < cd_pos + 1)
             {
-                h264_printf(10, "codec_data too short(2)");
-                ret = -2;
+                h264_printf(10, "codec_data too short(3)");
+                ret = -3;
+            }
+            if (ret == 0)
+            {
+                num_pps = data[cd_pos];
+                cd_pos += 1;
+            }
+            for (n = 0; n < num_pps && ret == 0; ++n)
+            {
+                unsigned short len;
+                if (cd_len < cd_pos + 2)
+                {
+                    h264_printf(10, "codec_data too short(4)");
+                    ret = -4;
+                    break;
+                }
+                len = (data[cd_pos] << 8) | data[cd_pos + 1];
+                cd_pos += 2;
+                if (cd_len < cd_pos + len || tmp_len + 4 + len > sizeof(tmp))
+                {
+                    h264_printf(10, "codec_data too short(4)");
+                    ret = -4;
+                    break;
+                }
+                memcpy(tmp+tmp_len, "\x00\x00\x00\x01", 4);
+                tmp_len += 4;
+                memcpy(tmp+tmp_len, data+cd_pos, len);
+                tmp_len += len;
+                cd_pos += len;
+            }
+            if (ret == 0 && (num_sps == 0 || num_pps == 0))
+            {
+                h264_printf(10, "codec_data without SPS/PPS");
+                ret = -3;
+            }
+            if (ret == 0)
+            {
+                CodecData = malloc(tmp_len);
+                memcpy(CodecData, tmp, tmp_len);
+                CodecDataLen = tmp_len;
+
+                *NalLength = (data[4] & 0x03) + 1;
+                h264_printf(10, "H264 codec data: %u SPS, %u PPS, %u bytes", num_sps, num_pps, tmp_len);
             }
         }
         else if (cd_len <= 7)
