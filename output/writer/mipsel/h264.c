@@ -182,100 +182,135 @@ static int32_t UpdateExtraData(uint8_t **ppExtraData, uint32_t *pExtraDataSize, 
     return 0;
 }
 
-static int32_t PreparCodecData(unsigned char *data, unsigned int cd_len, unsigned int *NalLength)
-{
-    h264_printf(10, "H264 check codec data..!\n");
-    int32_t ret = -100;
-    if (data)
-    {
-        unsigned char tmp[2048];
-        unsigned int tmp_len = 0;
+#define AVCC_TMP_SIZE 2048
 
-        unsigned int cd_pos = 0;
-        h264_printf(10, "H264 have codec data..!\n");
-        if (cd_len > 7 && data[0] == 1)
+/* Limit the level of a SPS to 4.1, as done before for the first SPS. */
+static void LimitSpsLevel(unsigned char *sps, unsigned int len)
+{
+    static const uint8_t profile_num[] = { 66, 77, 88, 100 };
+    static const char *const profile_str[] = { "baseline", "main", "extended", "high" };
+
+    if (len <= 3 || sps[0] != 0x67)
+    {
+        return;
+    }
+    for (unsigned int i = 0; i < 4; ++i)
+    {
+        if (sps[1] == profile_num[i])
         {
-            unsigned short len = (data[6] << 8) | data[7];
-            if (cd_len >= (len + 8))
+            uint8_t level_org = sps[3];
+            if (level_org > 0x29)
             {
-                unsigned int i=0;
-                uint8_t profile_num[] = { 66, 77, 88, 100 };
-                uint8_t profile_cmp[2] = { 0x67, 0x00 };
-                const char *profile_str[] = { "baseline", "main", "extended", "high" };
-                memcpy(tmp, Head, sizeof(Head));
-                tmp_len += 4;
-                memcpy(tmp + tmp_len, data + 8, len);
-                for (i = 0; i < 4; ++i)
-                {
-                    profile_cmp[1] = profile_num[i];
-                    if (!memcmp(tmp+tmp_len, profile_cmp, 2))
-                    {
-                        uint8_t level_org = tmp[tmp_len + 3];
-                        if (level_org > 0x29)
-                        {
-                            h264_printf(10, "H264 %s profile@%d.%d patched down to 4.1!", profile_str[i], level_org / 10 , level_org % 10);
-                            tmp[tmp_len+3] = 0x29; // level 4.1
-                        }
-                        else
-                        {
-                            h264_printf(10, "H264 %s profile@%d.%d", profile_str[i], level_org / 10 , level_org % 10);
-                        }
-                        break;
-                    }
-                }
-                tmp_len += len;
-                cd_pos = 8 + len;
-                if (cd_len > (cd_pos + 2))
-                {
-                    len = (data[cd_pos + 1] << 8) | data[cd_pos + 2];
-                    cd_pos += 3;
-                    if (cd_len >= (cd_pos+len))
-                    {
-                        memcpy(tmp+tmp_len, "\x00\x00\x00\x01", 4);
-                        tmp_len += 4;
-                        memcpy(tmp+tmp_len, data+cd_pos, len);
-                        tmp_len += len;
-                        
-                        CodecData = malloc(tmp_len);
-                        memcpy(CodecData, tmp, tmp_len);
-                        CodecDataLen = tmp_len;
-                        
-                        *NalLength = (data[4] & 0x03) + 1;
-                        ret = 0;
-                    }
-                    else
-                    {
-                        h264_printf(10, "codec_data too short(4)");
-                        ret = -4;
-                    }
-                }
-                else
-                {
-                    h264_printf(10,  "codec_data too short(3)");
-                    ret = -3;
-                }
+                h264_printf(10, "H264 %s profile@%d.%d patched down to 4.1!", profile_str[i], level_org / 10 , level_org % 10);
+                sps[3] = 0x29; // level 4.1
             }
             else
             {
-                h264_printf(10, "codec_data too short(2)");
-                ret = -2;
+                h264_printf(10, "H264 %s profile@%d.%d", profile_str[i], level_org / 10 , level_org % 10);
             }
+            return;
         }
-        else if (cd_len <= 7)
+    }
+}
+
+/* Append "count" parameter sets (16 bit length + data each) from avcC
+ * to "out" as Annex B NAL units. Returns 0, or -1 if the data is truncated. */
+static int AppendParamSets(const unsigned char *data, unsigned int cd_len, unsigned int *cd_pos,
+                           unsigned int count, unsigned char *out, unsigned int *out_len, int is_sps)
+{
+    for (unsigned int n = 0; n < count; ++n)
+    {
+        unsigned int pos = *cd_pos;
+        unsigned int len;
+
+        if (cd_len < pos + 2)
         {
-            h264_printf(10, "codec_data too short(1)");
-            ret = -1;
+            return -1;
         }
-        else
+        len = (data[pos] << 8) | data[pos + 1];
+        pos += 2;
+        if (cd_len < pos + len || *out_len + sizeof(Head) + len > AVCC_TMP_SIZE)
         {
-            h264_printf(10, "wrong avcC version %d!", data[0]);
+            return -1;
         }
+        memcpy(out + *out_len, Head, sizeof(Head));
+        *out_len += sizeof(Head);
+        memcpy(out + *out_len, data + pos, len);
+        if (is_sps)
+        {
+            LimitSpsLevel(out + *out_len, len);
+        }
+        *out_len += len;
+        *cd_pos = pos + len;
+    }
+    return 0;
+}
+
+static int32_t PreparCodecData(unsigned char *data, unsigned int cd_len, unsigned int *NalLength)
+{
+    unsigned char tmp[AVCC_TMP_SIZE];
+    unsigned int tmp_len = 0;
+    unsigned int cd_pos = 6;
+    unsigned int num_sps = 0;
+    unsigned int num_pps = 0;
+    int32_t ret = 0;
+
+    h264_printf(10, "H264 check codec data..!\n");
+    if (!data)
+    {
+        *NalLength = 0;
+        return -100;
+    }
+    h264_printf(10, "H264 have codec data..!\n");
+    if (cd_len <= 7)
+    {
+        h264_printf(10, "codec_data too short(1)");
+        return -1;
+    }
+    if (data[0] != 1)
+    {
+        h264_printf(10, "wrong avcC version %d!", data[0]);
+        return -100;
+    }
+
+    /* Pass on all SPS and all PPS from avcC, not only the first ones.
+     * Some live streams use a second PPS (e.g. weighted bi-prediction
+     * for B slices) and never repeat it in-band. */
+    num_sps = data[5] & 0x1f;
+    if (AppendParamSets(data, cd_len, &cd_pos, num_sps, tmp, &tmp_len, 1) != 0)
+    {
+        h264_printf(10, "codec_data too short(2)");
+        ret = -2;
+    }
+    else if (cd_len < cd_pos + 1)
+    {
+        h264_printf(10, "codec_data too short(3)");
+        ret = -3;
     }
     else
     {
-        *NalLength = 0;
+        num_pps = data[cd_pos];
+        cd_pos += 1;
+        if (AppendParamSets(data, cd_len, &cd_pos, num_pps, tmp, &tmp_len, 0) != 0)
+        {
+            h264_printf(10, "codec_data too short(4)");
+            ret = -4;
+        }
+        else if (num_sps == 0 || num_pps == 0)
+        {
+            h264_printf(10, "codec_data without SPS/PPS");
+            ret = -3;
+        }
     }
-    
+
+    if (ret == 0)
+    {
+        CodecData = malloc(tmp_len);
+        memcpy(CodecData, tmp, tmp_len);
+        CodecDataLen = tmp_len;
+        *NalLength = (data[4] & 0x03) + 1;
+        h264_printf(10, "H264 codec data: %u SPS, %u PPS, %u bytes", num_sps, num_pps, tmp_len);
+    }
     return ret;
 }
 
