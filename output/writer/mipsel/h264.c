@@ -189,12 +189,13 @@ static void LimitSpsLevel(unsigned char *sps, unsigned int len)
 {
     static const uint8_t profile_num[] = { 66, 77, 88, 100 };
     static const char *const profile_str[] = { "baseline", "main", "extended", "high" };
+    unsigned int i;
 
     if (len <= 3 || sps[0] != 0x67)
     {
         return;
     }
-    for (unsigned int i = 0; i < 4; ++i)
+    for (i = 0; i < 4; ++i)
     {
         if (sps[1] == profile_num[i])
         {
@@ -218,7 +219,8 @@ static void LimitSpsLevel(unsigned char *sps, unsigned int len)
 static int AppendParamSets(const unsigned char *data, unsigned int cd_len, unsigned int *cd_pos,
                            unsigned int count, unsigned char *out, unsigned int *out_len, int is_sps)
 {
-    for (unsigned int n = 0; n < count; ++n)
+    unsigned int n;
+    for (n = 0; n < count; ++n)
     {
         unsigned int pos = *cd_pos;
         unsigned int len;
