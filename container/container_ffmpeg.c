@@ -1065,6 +1065,75 @@ static void radio_metadata_update(AVFormatContext *av, AVStream *stream,
         av_free(message);
 }
 
+/* DreamOS live A/V start sync: in live TS audio can trail video by >1 s and
+ * Dreambox drops it as late. Hold the output at start until enough audio is
+ * buffered (PTS gap + 800 ms). EP3_LIVE_SYNC=0 disables it. */
+#include <time.h>
+static volatile int     ls_state  = 0;   /* 0 not started, 1 holding, 2 done/off */
+static volatile int64_t ls_last_v = INVALID_PTS_VALUE;
+static volatile int64_t ls_last_a = INVALID_PTS_VALUE;
+
+static int64_t ls_now_ms(void)
+{
+    struct timespec ts; clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (int64_t)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
+}
+
+static void *ls_thread(void *arg)
+{
+    Context_t *context = (Context_t *)arg;
+    int64_t t0 = ls_now_ms(), maxgap = 0, need = -1;
+    while (ls_state == 1 && context->playback && context->playback->isPlaying)
+    {
+        int64_t el = ls_now_ms() - t0;
+        need = -1;
+        if (ls_last_v != INVALID_PTS_VALUE && ls_last_a != INVALID_PTS_VALUE)
+        {
+            int64_t gap = (ls_last_v - ls_last_a) / 90;
+            if (gap > maxgap) maxgap = gap;
+            need = maxgap > 200 ? maxgap + 800 : 0;
+            if (need > 5000) need = 5000;
+        }
+        else if (el >= 2000)
+            need = 0;                     /* no audio seen: do not hold video */
+        if ((need >= 0 && el >= need) || el >= 6000)
+            break;
+        usleep(50000);
+    }
+    if (ls_state == 1)
+    {
+        ls_state = 2;
+        if (context->playback && context->playback->isPlaying && !context->playback->isPaused)
+            context->output->Command(context, OUTPUT_CONTINUE, NULL);
+        printf("{\"log\":\"live sync: audio gap %lld ms, held %lld ms\"}\n", (long long)maxgap, (long long)(ls_now_ms() - t0));
+    }
+    return NULL;
+}
+
+static void ls_on_video(Context_t *context, int64_t pts)
+{
+    if (pts != INVALID_PTS_VALUE) ls_last_v = pts;
+    if (ls_state != 0) return;
+    const char *env = getenv("EP3_LIVE_SYNC");
+    if ((env && env[0] == '0') || !avContextTab[0] ||
+        (avContextTab[0]->duration != AV_NOPTS_VALUE && avContextTab[0]->duration > 0))
+    {
+        ls_state = 2;
+        return;
+    }
+    ls_state = 1;
+    context->output->Command(context, OUTPUT_PAUSE, NULL);
+    pthread_t th;
+    pthread_attr_t at; pthread_attr_init(&at);
+    pthread_attr_setdetachstate(&at, PTHREAD_CREATE_DETACHED);
+    if (pthread_create(&th, &at, ls_thread, context) != 0)
+    {
+        ls_state = 2;
+        context->output->Command(context, OUTPUT_CONTINUE, NULL);
+    }
+    pthread_attr_destroy(&at);
+}
+
 static void FFMPEGThread(Context_t *context) 
 {
     char *lastRadioMessage[IPTV_AV_CONTEXT_MAX_NUM] = {NULL, NULL};
@@ -1464,6 +1533,7 @@ static void FFMPEGThread(Context_t *context)
                         avOut.infoFlags = 1; // TS container
                     }
 
+                    ls_on_video(context, pts);
                     if (Write(context->output->video->Write, context, &avOut, pts) < 0)
                     {
                         ffmpeg_err("writing data to video device failed\n");
@@ -1475,6 +1545,7 @@ static void FFMPEGThread(Context_t *context)
                 uint8_t skipPacket = 0;
                 currentAudioPts = audioTrack->pts = pts = calcPts(cAVIdx, audioTrack->stream, packet.pts);
                 dts = calcDts(cAVIdx, audioTrack->stream, packet.dts);
+                if (currentAudioPts != INVALID_PTS_VALUE) ls_last_a = currentAudioPts;
 
                 if ((currentAudioPts != INVALID_PTS_VALUE) && (currentAudioPts > latestPts) && (!videoTrack))
                 {
