@@ -342,8 +342,8 @@ static void SetBuffering()
     }
     
     // make fgets not blocking 
-    int flags = fcntl(stdin->_fileno, F_GETFL, 0); 
-    fcntl(stdin->_fileno, F_SETFL, flags | O_NONBLOCK); 
+    int flags = fcntl(fileno(stdin), F_GETFL, 0);
+    fcntl(fileno(stdin), F_SETFL, flags | O_NONBLOCK);
 }
 
 static void SetNice(int prio)
