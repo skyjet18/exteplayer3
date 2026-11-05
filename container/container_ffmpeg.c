@@ -681,6 +681,11 @@ static char* searchMeta(void * metadata, char* ourTag)
 /* Worker Thread                */
 /* **************************** */
 
+static int network_read_retry(int64_t start, int64_t now)
+{
+    return now >= start && now - start < 10 * AV_TIME_BASE;
+}
+
 static void FFMPEGThread(Context_t *context) 
 {
     char threadname[17];
@@ -722,6 +727,7 @@ static void FFMPEGThread(Context_t *context)
 #endif
     int32_t out_channels = 2;
     uint32_t cAVIdx = 0;
+    int64_t readErrorSince[IPTV_AV_CONTEXT_MAX_NUM] = {0, 0};
 
     // for seek
     int64_t seek_target_seconds = 0;
@@ -815,6 +821,7 @@ static void FFMPEGThread(Context_t *context)
                 uint32_t i = 0;
                 for(; i<IPTV_AV_CONTEXT_MAX_NUM; i+=1)
                 {
+                    readErrorSince[i] = 0;
                     multiContextLastPts[i] = INVALID_PTS_VALUE;
                     if(NULL != avContextTab[i])
                     {
@@ -921,6 +928,7 @@ static void FFMPEGThread(Context_t *context)
 
         if (!isWaitingForFinish && (ffmpegStatus == 0) )
         {
+            readErrorSince[cAVIdx] = 0;
             int64_t pts = 0;
             int64_t dts = 0;
             Track_t *videoTrack = NULL;
@@ -1465,6 +1473,30 @@ static void FFMPEGThread(Context_t *context)
         }
         else 
         {
+            if (ffmpegStatus < 0 && ffmpegStatus != AVERROR_EOF &&
+                ffmpegStatus != AVERROR_EXIT && !PlaybackDieNow(0) &&
+                avContextTab[cAVIdx]->url &&
+                (!strncmp(avContextTab[cAVIdx]->url, "http://", 7) ||
+                 !strncmp(avContextTab[cAVIdx]->url, "https://", 8)))
+            {
+                int64_t now = av_gettime_relative();
+                if (!readErrorSince[cAVIdx])
+                {
+                    readErrorSince[cAVIdx] = now;
+                    ffmpeg_err("Network read failed (%d), retrying for up to 10 seconds\n", ffmpegStatus);
+                }
+                if (network_read_retry(readErrorSince[cAVIdx], now))
+                {
+                    if (avContextTab[cAVIdx]->pb)
+                    {
+                        avContextTab[cAVIdx]->pb->eof_reached = 0;
+                        avContextTab[cAVIdx]->pb->error = 0;
+                    }
+                    releaseMutex(__FILE__, __FUNCTION__,__LINE__);
+                    usleep(100000);
+                    continue;
+                }
+            }
             if( 0 != ffmpegStatus )
             {
                 static char errbuf[256];
@@ -1616,6 +1648,12 @@ int SAM_ReadFunc(void *ptr, uint8_t *buffer, int lSize)
         
         io->iOffset += ret;
     }
+    if (ret == 0 && !progressive_playback)
+    {
+        if (ferror(io->pFile) || (io->pMoovFile && ferror(io->pMoovFile)))
+            return AVERROR(errno ? errno : EIO);
+        return AVERROR_EOF;
+    }
     return ret;
 }
 
@@ -1626,7 +1664,14 @@ int64_t SAM_SeekFunc(void *ptr, int64_t pos, int whence)
     int64_t ret = -1;
     if (!io->pMoovFile)
     {
-        if( AVSEEK_SIZE != whence )
+        if (whence == AVSEEK_SIZE)
+        {
+            struct stat st;
+            if (fstat(fileno(io->pFile), &st) < 0)
+                return AVERROR(errno);
+            return st.st_size;
+        }
+        else
         {
             ret = (int64_t)fseeko(io->pFile, (off_t)pos, whence);
             if(0 == ret)
@@ -1978,6 +2023,7 @@ int32_t container_ffmpeg_init_av_context(Context_t *context, char *filename, uin
 
     	sprintf( num, "%u000", context->playback->httpTimeout );
         av_dict_set(&avio_opts, "timeout", num, 0); // default is 10s
+        av_dict_set(&avio_opts, "rw_timeout", num, 0);
         av_dict_set(&avio_opts, "reconnect", "1", 0);
         if (context->playback->isTSLiveMode) // special mode for live TS stream with skip packet 
         {
@@ -2865,7 +2911,7 @@ static int32_t container_ffmpeg_play(Context_t *context)
 static int32_t container_ffmpeg_stop(Context_t *context) 
 {
     int32_t ret = cERR_CONTAINER_FFMPEG_NO_ERROR;
-    int32_t wait_time = 10; // we give 1s to close otherwise we will force close
+    int32_t wait_time = 200; // Allow up to one second for the worker to stop.
 
     ffmpeg_printf(10, "\n");
 
@@ -2883,7 +2929,7 @@ static int32_t container_ffmpeg_stop(Context_t *context)
     while ( (hasPlayThreadStarted != 0) && (--wait_time) > 0 ) 
     {
         ffmpeg_printf(10, "Waiting for ffmpeg thread to terminate itself, will try another %d times\n", wait_time);
-        usleep(100000);
+        usleep(5000);
     }
 
     if (wait_time == 0) 
