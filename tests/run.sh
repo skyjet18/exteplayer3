@@ -4,15 +4,18 @@ set -eu
 : "${FFMPEG_BUILD:?Set FFMPEG_BUILD to the configured native FFmpeg build}"
 cd "$(dirname "$0")/.."
 tmp=$(mktemp -d)
-trap 'rm -f "$tmp/manager" "$tmp/container" "$tmp/output" "$tmp/dvb" "$tmp/pts"; rmdir "$tmp"' EXIT HUP INT TERM
+trap 'rm -f "$tmp/manager" "$tmp/container" "$tmp/output" "$tmp/dvb" "$tmp/pts" "$tmp/pcm_export"; rmdir "$tmp"' EXIT HUP INT TERM
 cc=${CC:-cc}
-for test in manager container output dvb pts; do
+for test in manager container output dvb pts pcm_export; do
     sources="tests/${test}_test.c tools/debug.c"
     if [ "$test" = manager ]; then
         sources="$sources manager/manager.c manager/audio.c manager/video.c manager/subtitle.c"
     fi
     if [ "$test" = output ]; then
         sources="$sources output/writer/common/pes.c output/writer/common/misc.c output/writer/mipsel/h264.c output/writer/mipsel/writer.c"
+    fi
+    if [ "$test" = pcm_export ]; then
+        sources="$sources tools/pcm_export.c"
     fi
     libs=""
     if [ "$test" = container ]; then
@@ -23,6 +26,6 @@ for test in manager container output dvb pts; do
     $cc -g -fsanitize=undefined -ffunction-sections -fdata-sections \
         -Wno-deprecated-declarations -Iinclude -Iexternal \
         -I"$FFMPEG_BUILD" -I"$FFMPEG_SOURCE" $sources \
-        -Wl,--gc-sections -pthread $libs -o "$tmp/$test"
+        -Wl,--gc-sections -pthread $libs ${FFMPEG_EXTRA_LIBS:-} -o "$tmp/$test"
     timeout 20 "$tmp/$test"
 done

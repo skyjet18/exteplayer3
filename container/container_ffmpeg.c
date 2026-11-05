@@ -62,6 +62,7 @@
 #include "debug.h"
 #include "aac.h"
 #include "pcm.h"
+#include "pcm_export.h"
 #include "pts_clock.h"
 #include "ffmpeg_metadata.h"
 
@@ -122,6 +123,13 @@ static bool g_do_seek_target_seconds = false;
 static bool g_zero_seek = false;
 static void *g_stamp;
 static PtsClock ptsClock;
+static int pcm_audio_export_enabled;
+static PcmExport pcmExport = {.fd = -1};
+
+void pcm_audio_export_set(int enabled)
+{
+    pcm_audio_export_enabled = enabled != 0;
+}
 
 /* ***************************** */
 /* Prototypes                    */
@@ -1060,6 +1068,7 @@ static void radio_metadata_update(AVFormatContext *av, AVStream *stream,
 static void FFMPEGThread(Context_t *context) 
 {
     char *lastRadioMessage[IPTV_AV_CONTEXT_MAX_NUM] = {NULL, NULL};
+    int pcm_export_failed = 0;
     pts_clock_reset(&ptsClock, 0);
     if (avContextTab[0] && (use_custom_io[0] || avContextTab[0]->duration > 0) &&
         avContextTab[0]->start_time != AV_NOPTS_VALUE)
@@ -1723,6 +1732,7 @@ static void FFMPEGThread(Context_t *context)
 #endif
                                 swr_free(&swr);
                                 swr = NULL;
+                                continue;
                             }
                         }
                         
@@ -1744,6 +1754,12 @@ static void FFMPEGThread(Context_t *context)
                         
                         currentAudioPts = audioTrack->pts = pts = calcPts(cAVIdx, audioTrack->stream, next_out_pts);
                         out_samples = swr_convert(swr, &output[0], out_samples, (const uint8_t **) &decoded_frame->data[0], in_samples);
+                        if (out_samples < 0)
+                        {
+                            ffmpeg_err("PCM resampling failed: %d\n", out_samples);
+                            av_freep(&output[0]);
+                            continue;
+                        }
                         
                         //////////////////////////////////////////////////////////////////////
                         // Update pcmExtradata according to decode parameters
@@ -1778,6 +1794,20 @@ static void FFMPEGThread(Context_t *context)
                         if (!context->playback->BackWard && Write(context->output->audio->Write, context, &avOut, pts) < 0)
                         {
                             ffmpeg_err("writing data to audio device failed\n");
+                        }
+                        if (pcm_audio_export_enabled && !pcm_export_failed && !context->playback->BackWard)
+                        {
+                            int result = pcm_export_write(&pcmExport, output[0], avOut.len,
+                                pcmExtradata.sample_rate, pcmExtradata.channels,
+                                pcmExtradata.codec_id == AV_CODEC_ID_PCM_S16BE);
+                            if (result < 0)
+                            {
+                                ffmpeg_err("PCM export disabled for this session: %s\n", strerror(errno));
+                                pcm_export_failed = 1;
+                                pcm_export_close(&pcmExport);
+                            }
+                            else if (result && pcmExport.dropped_chunks == 1)
+                                ffmpeg_printf(0, "PCM export dropping chunks: reader absent, slow or disconnected\n");
                         }
                         av_freep(&output[0]);
                     }
@@ -1994,6 +2024,11 @@ static void FFMPEGThread(Context_t *context)
         unsigned int i;
         for (i = 0; i < IPTV_AV_CONTEXT_MAX_NUM; i++)
             av_free(lastRadioMessage[i]);
+    }
+    if (pcm_audio_export_enabled)
+    {
+        ffmpeg_printf(0, "PCM export dropped %"PRIu64" chunks\n", pcmExport.dropped_chunks);
+        pcm_export_close(&pcmExport);
     }
     hasPlayThreadStarted = 0;
     context->playback->isPlaying = 0;
@@ -2593,6 +2628,11 @@ int32_t container_ffmpeg_init(Context_t *context, PlayFiles_t *playFilesNames)
         return cERR_CONTAINER_FFMPEG_RUNNING;
     }
 
+    if (pcm_audio_export_enabled && pcm_export_init(&pcmExport, PCM_EXPORT_PATH) < 0)
+    {
+        ffmpeg_err("cannot initialize PCM export: %s\n", strerror(errno));
+        return cERR_CONTAINER_FFMPEG_INIT;
+    }
     /* initialize ffmpeg */
     wrapped_register_all();
     avformat_network_init();
@@ -2898,7 +2938,7 @@ int32_t container_ffmpeg_update_tracks(Context_t *context, char *filename, int32
                         track.duration = context_duration_ms(avContext);
                     }
                     
-                    if(!strncmp(encoding, "A_IPCM", 6) || !strncmp(encoding, "A_LPCM", 6))
+                    if(pcm_audio_export_enabled || !strncmp(encoding, "A_IPCM", 6) || !strncmp(encoding, "A_LPCM", 6))
                     {
                         track.inject_as_pcm = 1;
                         track.avCodecCtx = wrapped_avcodec_get_context(cAVIdx, stream);
@@ -2917,7 +2957,12 @@ int32_t container_ffmpeg_update_tracks(Context_t *context, char *filename, int32
                             }
                             else
                             {
-                               ffmpeg_printf(10, "AVCODEC__INIT__FAILED error[%d]\n", errorCode);
+                               ffmpeg_err("AVCODEC__INIT__FAILED error[%d]\n", errorCode);
+                               if (pcm_audio_export_enabled)
+                               {
+                                   releaseMutex(__FILE__, __FUNCTION__,__LINE__);
+                                   return cERR_CONTAINER_FFMPEG_INIT;
+                               }
                             }
                         }
                     }
@@ -3359,6 +3404,7 @@ static int32_t container_ffmpeg_stop(Context_t *context)
 
     getMutex_wr(__FILE__, __FUNCTION__,__LINE__);
     
+    pcm_export_close(&pcmExport);
     free_all_stored_avcodec_context();
     
     uint32_t i = 0;
