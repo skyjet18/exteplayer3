@@ -23,6 +23,7 @@
 
 #include <stdlib.h>
 #include <string.h>
+#include <pthread.h>
 
 #include "manager.h"
 #include "common.h"
@@ -48,6 +49,7 @@ static const char FILENAME[] = __FILE__;
 static Track_t *Tracks = NULL;
 static int TrackCount = 0;
 static int CurrentTrack = 0; //TRACK[0] as default.
+static pthread_mutex_t track_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 static void (* updatedTrackInfoFnc)(void) = NULL;
 
@@ -64,7 +66,12 @@ static int ManagerAdd(Context_t  *context, Track_t track) {
 
     if (Tracks == NULL) 
     {
-        Tracks = malloc(sizeof(Track_t) * TRACKWRAP);
+        Tracks = calloc(TRACKWRAP, sizeof(Track_t));
+        if (!Tracks)
+        {
+            video_mgr_err("allocating tracks failed\n");
+            return cERR_VIDEO_MGR_ERROR;
+        }
         int i;
         for (i = 0; i < TRACKWRAP; i++)
         {
@@ -83,6 +90,7 @@ static int ManagerAdd(Context_t  *context, Track_t track) {
     {
         if (Tracks[i].Id == track.Id) 
         {
+            replaceTrack(&Tracks[i], &track);
             Tracks[i].pending = 0;
             return cERR_VIDEO_MGR_NO_ERROR;
         }
@@ -178,7 +186,10 @@ static int Command(void  *_context, ManagerCmd_t command, void * argument) {
 
     video_mgr_printf(10, "\n");
 
-    switch(command) 
+    if (command == MANAGER_LIST)
+        container_ffmpeg_update_tracks(context, context->playback->uri, 0);
+    pthread_mutex_lock(&track_mutex);
+    switch(command)
     {
     case MANAGER_ADD:
     {
@@ -188,7 +199,6 @@ static int Command(void  *_context, ManagerCmd_t command, void * argument) {
     }
     case MANAGER_LIST: 
     {
-        container_ffmpeg_update_tracks(context, context->playback->uri, 0);
         *((char***)argument) = (char **)ManagerList(context);
         break;
     }
@@ -303,9 +313,11 @@ static int Command(void  *_context, ManagerCmd_t command, void * argument) {
     }
     case MANAGER_UPDATED_TRACK_INFO:
     {
-        if (updatedTrackInfoFnc != NULL)
-            updatedTrackInfoFnc();
-        break;
+        void (*notify)(void) = updatedTrackInfoFnc;
+        pthread_mutex_unlock(&track_mutex);
+        if (notify)
+            notify();
+        return ret;
     }
     case MANAGER_REGISTER_UPDATED_TRACK_INFO:
     {
@@ -319,6 +331,7 @@ static int Command(void  *_context, ManagerCmd_t command, void * argument) {
     }
 
     video_mgr_printf(10, "returning %d\n", ret);
+    pthread_mutex_unlock(&track_mutex);
     return ret;
 }
 
