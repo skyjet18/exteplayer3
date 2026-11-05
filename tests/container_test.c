@@ -9,6 +9,22 @@ int main(void)
     assert(network_read_retry(100, 100 + 10 * AV_TIME_BASE - 1));
     assert(!network_read_retry(100, 100 + 10 * AV_TIME_BASE));
     assert(!network_read_retry(100, 99));
+    assert(ts_seek_position(500, 1000, 188000, 188) == 94000);
+    assert(ts_seek_position(500, 1000, 192000, 192) == 96000);
+    assert(ts_seek_position(500, 1000, 204000, 204) == 102000);
+    assert(ts_seek_position(1000, 1000, 188000, 188) == 187812);
+    assert(ts_seek_position(500, AV_NOPTS_VALUE, 188000, 188) == -1);
+    assert(ts_seek_position(-1, 1000, 188000, 188) == -1);
+    assert(ts_seek_position(500, 1000, 188000, 189) == -1);
+    {
+        AVFormatContext av = {0};
+        av.duration = AV_NOPTS_VALUE;
+        assert(!context_duration_ms(&av));
+        av.duration = -1000;
+        assert(!context_duration_ms(&av));
+        av.duration = 1234567;
+        assert(context_duration_ms(&av) == 1234);
+    }
     io.pFile = tmpfile();
     assert(io.pFile);
     assert(fwrite("abc", 1, 3, io.pFile) == 3);
