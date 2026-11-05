@@ -42,12 +42,22 @@ system FFmpeg. Apply its accompanying logical commits:
 | `f9924289f9` | ATSC PMT type `0x87` identifies E-AC-3 without requiring probe packets. |
 | `0ebaa163bc` | Short DASH timeline-window bounds and opt-in initial sparse-subtitle discard. |
 | `6d59900cf0` | Safe initial delay for availability-clock DASH duration templates without a manifest delay. |
+| `89c9657d5a` | Fractional DASH seeks, shared seek origin and bounded transient live-fragment recovery. |
+| `f7e8840943` | Stable HLS stream association, discard state and seeks across changed segment layouts. |
+| `2fad38b831` | Generated-media HTTP tests for live DASH recovery/startup/ranges and HLS ad transitions. |
 
 The player requests `hls_quality_mode`, `hls_audio_default_only` and
 `dash_subtitle_default_discard` through AVOptions. These option defaults remain
 unchanged for other callers. Automatic HLS preselection is bypassed for an
 explicit program or active resolution limit so the player can inspect all
 eligible programs after probing.
+
+Live DASH media-fragment opens now retry transient failures globally, with at
+most two retries separated by interruptible 400 ms delays. VOD, initialization
+sections and permanent authorization failures are not retried. Exhaustion keeps
+the existing demuxer skip/error behavior; individual network opens still obey
+their normal IO timeout policy. HLS association retains absent track identities
+and selected/discarded state without merging multiple audio tracks.
 
 ## Optional decoded PCM export
 
@@ -96,6 +106,10 @@ python3 tests/integration.py \
   --player /path/to/test-output/exteplayer3-host \
   --ffmpeg "$FFMPEG_BUILD/ffmpeg"
 make -C "$FFMPEG_BUILD" fate-hls-selection fate-mpegts-probe fate-dash-live
+make -C "$FFMPEG_BUILD" libavformat/tests/dash_http
+python3 "$FFMPEG_SOURCE/tests/dash_http.py" \
+  --ffmpeg "$FFMPEG_BUILD/ffmpeg" \
+  --driver "$FFMPEG_BUILD/libavformat/tests/dash_http"
 ```
 
 The six UBSan harnesses cover manager ownership/locking, custom IO and selection,
@@ -117,6 +131,16 @@ They verify actual aligned HTTP Range requests and approximate seek position,
 which HLS variant is fetched, strict CLI parsing, full radio JSON, embedded
 MP4/MKV forced-subtitle selection/disable, and bounded host shutdown.
 
+The companion HTTP fixture additionally needs DASH demuxing/muxing and libxml2.
+It verifies exact fragment retry counts, delay/cancellation bounds, shared media
+origin during delayed multi-representation startup, progress beyond a rotating
+short manifest's original window, byte-range versus standalone downloads, and
+A/V -> video-only ad -> A/V HLS playback. Its two DASH representations are audio;
+it does not certify receiver A/V lip sync or arbitrary provider manifest changes.
+The HLS FATE test separately exercises index/type changes, ID3 insertion, multiple
+audio identities, late codec probing, ambiguous/duplicate IDs, codec/time-base
+updates and seeks/discard checks while a selected track is absent.
+
 For end-to-end PCM testing, compile an **isolated, unused** FIFO path into the
 test binary, then pass that same path to the integration fixture:
 
@@ -136,8 +160,9 @@ The isolated HTTP helper excludes ASan global registration, which otherwise
 retains unrelated player command handlers; it retains UBSan instrumentation.
 
 Known unrelated baseline: the existing FFmpeg `fate-mpegtsenc` AAC-dejitter
-expectations fail against the unchanged muxer. All four companion commits'
-new FATE coverage passes; this series does not alter that muxer behavior.
+expectations fail against the unchanged muxer. All three companion FATE targets
+and the generated-media HTTP fixture pass; this series does not alter that muxer
+behavior.
 
 ## Backport provenance and exclusions
 
@@ -183,6 +208,33 @@ Intentional exclusions/adaptations:
   after callbacks that temporarily release the container lock.
 - No VTi packaging scripts, receiver paths, glibc ABI shims or serviceapp/UI
   changes are imported. These commits do not build or install an IPK.
+
+### Complete FFmpeg patch-file audit
+
+All 13 `exteplayer3-build/ffmpeg-*.patch` files were compared hunk by hunk at the
+same reference revision. Existing local improvements were retained rather than
+replaced with older fork implementations:
+
+| Reference patch | Disposition |
+|---|---|
+| `ffmpeg-cenc-drm-support.patch` | MOV KID/default keys, DASH propagation and loopback DRM support already exist. Do not copy key-value logging or per-track timestamp zeroing. |
+| `ffmpeg-dash-avsync-fix.patch` | Existing shared timestamp origin and timeline reload-position handling supersede it. `89c9657d5a` also uses that shared origin for seeks. |
+| `ffmpeg-dash-header-parsing-manifest-freeze-fix.patch` | Not imported: delayed-header/rotating-window HTTP tests pass without freezing refresh, including progression beyond the original window. This is representative coverage, not a proof for every provider. |
+| `ffmpeg-dash-http-options.patch` | Existing segment seekability and persistent/reuse handling cover its useful behavior. HTTP tests verify standalone downloads and distinct single-file initialization/media ranges. |
+| `ffmpeg-dash-live-edge-delay-fix.patch` | Initial live delay adapted in `6d59900cf0`; bounded transient media-open retries added globally in `89c9657d5a`. Do not copy repeated fixed manifest waits. |
+| `ffmpeg-dash-short-buffer-startup-fix.patch` | Adapted in `0ebaa163bc`, preserving a common media-time start instead of aligning unrelated segment counters. |
+| `ffmpeg-dash-subtitle-starvation-fix.patch` | `0ebaa163bc` plus player `c4b8db6`; initial sparse-subtitle discard remains opt-in for generic FFmpeg callers. |
+| `ffmpeg-eac3-stream-type-fix.patch` | `f9924289f9`, with native PMT/probe regression coverage. |
+| `ffmpeg-hls-discontinuity-starvation-fix.patch` | Identity-preserving association adapted in `f7e8840943`, including absent selected tracks and seeks. Existing discontinuity timestamp normalization retained; no type-only merging, recursive packet skipping, cross-rendition sequence ordering or forced fairness. |
+| `ffmpeg-hls-native-preselect.patch` | `8a5ed2f3aa`, without a fixed 128-rendition cap or reuse of the broken-playlist flag. |
+| `ffmpeg-hls-sequence-wrap-resync-fix.patch` | `8a5ed2f3aa`, preserving bounded tolerance and VOD behavior. |
+| `ffmpeg-hls-sequence-wrap-resync-fix-6.1.1.patch` | Same useful resync behavior as the previous patch, not an additional feature. |
+| `ffmpeg-skyjet183-upstream-sync.patch` | XML ampersand handling, oldest-valid segment, EVENT duration and WebVTT suffix handling already exist. Remaining fractional seek precision and related time-unit fixes adapted in `89c9657d5a`. |
+
+No additional player runtime option is needed for these follow-up companions.
+Native FATE, actual HTTP fixtures, all six player UBSan harnesses and the complete
+ASan/UBSan player integration suite pass with the updated libraries. Receiver
+and cross-toolchain limitations below still apply.
 
 ## Receiver validation still required
 
