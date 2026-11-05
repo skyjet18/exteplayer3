@@ -63,6 +63,8 @@ extern void      opus_software_decoder_set(const int32_t val);
 extern void            rtmp_proto_impl_set(const int32_t val);
 extern void        flv2mpeg4_converter_set(const int32_t val);
 extern void        sel_program_id_set(const int32_t val);
+extern void adaptive_quality_set(int32_t mode, int32_t default_audio);
+extern void h264_resolution_limit_set(int32_t width, int32_t height);
 
 extern void pcm_resampling_set(int32_t val);
 extern void stereo_software_decoder_set(int32_t val);
@@ -514,10 +516,11 @@ static int ParseParams(int argc,char* argv[], PlayFiles_t *playbackFiles, int *p
 {   
     int ret = 0;
     int c;
+    int quality = 0, default_audio = 0;
     int digit_optind = 0;
     int aopt = 0, bopt = 0;
     char *copt = 0, *dopt = 0;
-    while ( (c = getopt(argc, argv, "G:W:H:A:V:U:we3dlsrimvCa:j:n:x:u:c:h:o:p:P:t:9:0:1:4:5:6:7:f:b:F:S:O:T:L:")) != -1)
+    while ( (c = getopt(argc, argv, "G:W:H:A:V:U:we3dlsrimvCa:j:n:x:u:c:h:o:p:P:t:9:0:1:4:5:6:7:f:b:F:S:O:T:L:Q:D:M:")) != -1)
     {
         switch (c) 
         {
@@ -601,6 +604,44 @@ static int ParseParams(int argc,char* argv[], PlayFiles_t *playbackFiles, int *p
         case 'P':
             sel_program_id_set(atoi(optarg));
             break;
+        case 'Q':
+        case 'D':
+        {
+            char *end;
+            long value;
+            errno = 0;
+            value = strtol(optarg, &end, 10);
+            if (errno || end == optarg || *end || value < 0 || value > (c == 'Q' ? 2 : 1))
+            {
+                printf("Invalid -%c value: %s\n", c, optarg);
+                ret = -1;
+            }
+            else if (c == 'Q')
+                quality = value;
+            else
+                default_audio = value;
+            break;
+        }
+        case 'M':
+        {
+            char *end, *height_start;
+            long width, height;
+            errno = 0;
+            width = strtol(optarg, &end, 10);
+            int width_valid = end != optarg && *end == 'x';
+            height_start = *end == 'x' ? end + 1 : end;
+            height = strtol(height_start, &end, 10);
+            if (errno || !width_valid ||
+                end == height_start || *end || width < 0 || height < 0 ||
+                width > INT32_MAX || height > INT32_MAX || (!width != !height))
+            {
+                printf("Invalid H.264 limit (expected WIDTHxHEIGHT): %s\n", optarg);
+                ret = -1;
+            }
+            else
+                h264_resolution_limit_set(width, height);
+            break;
+        }
         case 't':
             *pAudioTrackIdx = atoi(optarg);
             break;
@@ -708,7 +749,8 @@ static int ParseParams(int argc,char* argv[], PlayFiles_t *playbackFiles, int *p
         }
     }
     
-    if (0 == ret && optind < argc) 
+    adaptive_quality_set(quality, default_audio);
+    if (0 == ret && optind < argc)
     {
         playbackFiles->szFirstFile = map_inter_file_path(argv[optind]);
         printf("file: [%s]\n", playbackFiles->szFirstFile);
@@ -771,6 +813,9 @@ int main(int argc, char* argv[])
         printf("[-b size] Linux DVB output buffer size in MB\n");
         printf("[-a 0|1|2|3] AAC software decoding - 1 bit - AAC ADTS, 2 - bit AAC LATM\n");
         printf("[-j ms] AAC PTS dejitter threshold in ms, 0 - disabled (default 60)\n");
+        printf("[-Q 0|1|2] HLS/DASH quality: auto/highest (0 or 2), lowest (1)\n");
+        printf("[-D 0|1] Keep only default HLS audio renditions (default 0)\n");
+        printf("[-M WIDTHxHEIGHT] Automatic H.264 resolution limit (default 0x0: disabled)\n");
         printf("[-e] EAC3 software decoding\n");
         printf("[-3] AC3 software decoding\n");
         printf("[-d] DTS software decoding\n");
