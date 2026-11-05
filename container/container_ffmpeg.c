@@ -855,6 +855,40 @@ static int network_read_retry(int64_t start, int64_t now)
     return now >= start && now - start < 10 * AV_TIME_BASE;
 }
 
+static int64_t context_duration_ms(AVFormatContext *av)
+{
+    return av->duration > 0 && av->duration != AV_NOPTS_VALUE ? av->duration / 1000 : 0;
+}
+
+static int64_t ts_seek_position(int64_t time_us, int64_t duration_us,
+                                int64_t bytes, int packet_size)
+{
+    int64_t target;
+    if (time_us < 0 || duration_us <= 0 || bytes <= 0 ||
+        (packet_size != 188 && packet_size != 192 && packet_size != 204))
+        return -1;
+    target = av_rescale(time_us, bytes, duration_us);
+    if (target < 0)
+        return -1;
+    if (target >= bytes)
+        target = bytes > packet_size ? bytes - packet_size : 0;
+    return target / packet_size * packet_size;
+}
+
+static int fast_http_ts_seek(AVFormatContext *av, int64_t relative_us)
+{
+    int64_t packet_size, target;
+    if (!av->pb || !(av->pb->seekable & AVIO_SEEKABLE_NORMAL) ||
+        !av->iformat || strcmp(av->iformat->name, "mpegts") ||
+        !av->url || (strncmp(av->url, "http://", 7) && strncmp(av->url, "https://", 8)) ||
+        av_opt_get_int(av->priv_data, "ts_packetsize", 0, &packet_size) < 0)
+        return -1;
+    target = ts_seek_position(relative_us, av->duration, avio_size(av->pb), packet_size);
+    if (target < 0)
+        return -1;
+    return avformat_seek_file(av, -1, INT64_MIN, target, INT64_MAX, AVSEEK_FLAG_BYTE);
+}
+
 static void FFMPEGThread(Context_t *context) 
 {
     pts_clock_reset(&ptsClock, 0);
@@ -999,6 +1033,7 @@ static void FFMPEGThread(Context_t *context)
             if (do_seek_target_seconds)
             {
                 ffmpeg_printf(10, "seek_target_seconds[%"PRId64"]\n", seek_target_seconds);
+                int64_t relative_us = seek_target_seconds;
                 uint32_t i = 0;
                 for(; i<IPTV_AV_CONTEXT_MAX_NUM; i+=1)
                 {
@@ -1006,16 +1041,19 @@ static void FFMPEGThread(Context_t *context)
                     multiContextLastPts[i] = INVALID_PTS_VALUE;
                     if(NULL != avContextTab[i])
                     {
+                        int64_t target_us = relative_us;
                         if (i == 1)
                         {
                             prev_seek_time_sec = seek_target_seconds;
                         }
                         if (avContextTab[i]->start_time != AV_NOPTS_VALUE)
                         {
-                            seek_target_seconds += avContextTab[i]->start_time;
+                            target_us = av_sat_add64(target_us, avContextTab[i]->start_time);
                         }
-                        //av_seek_frame(avContextTab[i], -1, seek_target_seconds, 0);
-                        avformat_seek_file(avContextTab[i], -1, INT64_MIN, seek_target_seconds, INT64_MAX, 0);
+                        if (!(zero_seek && !use_custom_io[i] && avContextTab[i]->duration <= 0) &&
+                            (zero_seek || fast_http_ts_seek(avContextTab[i], relative_us) < 0) &&
+                            avformat_seek_file(avContextTab[i], -1, INT64_MIN, target_us, INT64_MAX, 0) < 0)
+                            ffmpeg_err("timestamp seek failed for context %u\n", i);
                     }
                     else
                     {
@@ -2625,7 +2663,7 @@ int32_t container_ffmpeg_update_tracks(Context_t *context, char *filename, int32
                     if(stream->duration == AV_NOPTS_VALUE || 0 == strncmp(avContext->iformat->name, "dash", 4)) 
                     {
                         ffmpeg_printf(10, "Stream has no duration so we take the duration from context\n");
-                        track.duration = (int64_t) avContext->duration / 1000;
+                        track.duration = context_duration_ms(avContext);
                     }
                     
                     if (context->manager->video)
@@ -2680,7 +2718,7 @@ int32_t container_ffmpeg_update_tracks(Context_t *context, char *filename, int32
                     if(stream->duration == AV_NOPTS_VALUE) 
                     {
                         ffmpeg_printf(10, "Stream has no duration so we take the duration from context\n");
-                        track.duration = (int64_t) avContext->duration / 1000;
+                        track.duration = context_duration_ms(avContext);
                     }
                     
                     if(!strncmp(encoding, "A_IPCM", 6) || !strncmp(encoding, "A_LPCM", 6))
@@ -2985,7 +3023,7 @@ int32_t container_ffmpeg_update_tracks(Context_t *context, char *filename, int32
                     if(stream->duration == AV_NOPTS_VALUE) 
                     {
                         ffmpeg_printf(10, "Stream has no duration so we take the duration from context\n");
-                        track.duration = (int64_t) avContext->duration / 1000;
+                        track.duration = context_duration_ms(avContext);
                     }
 
                     ffmpeg_printf(1, "subtitle codec %d\n", get_codecpar(stream)->codec_id);
@@ -3278,6 +3316,11 @@ static int32_t container_ffmpeg_seek(Context_t *context, int64_t sec, uint8_t ab
         return cERR_CONTAINER_FFMPEG_NO_ERROR;
     }
 
+    if (sec > INT64_MAX / AV_TIME_BASE)
+    {
+        ffmpeg_err("seek target is out of range\n");
+        return cERR_CONTAINER_FFMPEG_ERR;
+    }
     getSeekMutex();
     g_zero_seek = zero_seek;
     g_seek_target_seconds = sec * AV_TIME_BASE;
@@ -3318,9 +3361,9 @@ static int32_t container_ffmpeg_get_length(Context_t *context, int64_t *length)
 
     if (current != NULL) 
     {
-        if (current->duration == 0)
+        if (current->duration <= 0)
         {
-            return cERR_CONTAINER_FFMPEG_ERR;
+            return cERR_CONTAINER_FFMPEG_NO_ERROR;
         }
         else
         {
@@ -3331,7 +3374,7 @@ static int32_t container_ffmpeg_get_length(Context_t *context, int64_t *length)
     {
         if (avContextTab[0] != NULL)
         {
-            *length = avContextTab[0]->duration / 1000;
+            *length = context_duration_ms(avContextTab[0]) / 1000;
         } 
         else
         {
@@ -3500,7 +3543,7 @@ static int32_t container_ffmpeg_update_duration(Context_t *context)
                         if(stream->duration == AV_NOPTS_VALUE || 0 == strncmp(avContext->iformat->name, "dash", 4))
                         {
                             ffmpeg_printf(10, "Stream has no duration so we take the duration from context\n");
-                            track->duration = (int64_t) avContext->duration / 1000;
+                            track->duration = context_duration_ms(avContext);
                         }
 
                         ffmpeg_printf(10, "New duration: %"PRId64"\n", track->duration);
@@ -3525,7 +3568,7 @@ static int32_t container_ffmpeg_update_duration(Context_t *context)
                         if(stream->duration == AV_NOPTS_VALUE)
                         {
                             ffmpeg_printf(10, "Stream has no duration so we take the duration from context\n");
-                            track->duration = (int64_t) avContext->duration / 1000;
+                            track->duration = context_duration_ms(avContext);
                         }
 
                         ffmpeg_printf(10, "New duration: %"PRId64"\n", track->duration);
@@ -3549,7 +3592,7 @@ static int32_t container_ffmpeg_update_duration(Context_t *context)
                         if(stream->duration == AV_NOPTS_VALUE)
                         {
                             ffmpeg_printf(10, "Stream has no duration so we take the duration from context\n");
-                            track->duration = (int64_t) avContext->duration / 1000;
+                            track->duration = context_duration_ms(avContext);
                         }
 
                         ffmpeg_printf(10, "New duration: %"PRId64"\n", track->duration);
