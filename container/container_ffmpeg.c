@@ -1083,6 +1083,10 @@ static void *ls_thread(void *arg)
 {
     Context_t *context = (Context_t *)arg;
     int64_t t0 = ls_now_ms(), maxgap = 0, need = -1;
+    /* safety margin on top of the measured gap; the watch below resyncs later
+     * if it was not enough, so keep zapping fast. EP3_LIVE_SYNC_MARGIN=ms */
+    const char *menv = getenv("EP3_LIVE_SYNC_MARGIN");
+    int64_t margin = menv ? atoi(menv) : 400;
     while (ls_state == 1 && context->playback && context->playback->isPlaying)
     {
         int64_t el = ls_now_ms() - t0;
@@ -1091,12 +1095,12 @@ static void *ls_thread(void *arg)
         {
             int64_t gap = (ls_last_v - ls_last_a) / 90;
             if (gap > maxgap) maxgap = gap;
-            need = maxgap > 200 ? maxgap + 800 : 0;
-            if (need > 5000) need = 5000;
+            need = maxgap > 200 ? maxgap + margin : 0;
+            if (need > 3000) need = 3000;
         }
         else if (el >= 2000)
             need = 0;                     /* no audio seen: do not hold video */
-        if ((need >= 0 && el >= need) || el >= 6000)
+        if ((need >= 0 && el >= need) || el >= 3500)
             break;
         usleep(50000);
     }
