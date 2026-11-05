@@ -106,5 +106,6 @@ typedef struct ManagerHandler_s
 
 void freeTrack(Track_t* track);
 void copyTrack(Track_t* to, Track_t* from);
+void replaceTrack(Track_t* to, Track_t* from);
 
 #endif

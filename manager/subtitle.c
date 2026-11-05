@@ -24,6 +24,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <assert.h>
+#include <pthread.h>
 
 #include "manager.h"
 #include "common.h"
@@ -52,6 +53,7 @@ static Track_t * Tracks = NULL;
 static int TrackSlotCount = 0;
 static int TrackCount = 0;
 static int CurrentTrack = -1; //no as default.
+static pthread_mutex_t track_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 /* ***************************** */
 /* Prototypes                    */
@@ -97,6 +99,7 @@ static int ManagerAdd(Context_t *context, Track_t track)
     {
         if (Tracks[i].Id == track.Id)
         {
+            replaceTrack(&Tracks[i], &track);
             Tracks[i].pending = 0;
             return cERR_SUBTITLE_MGR_NO_ERROR;
         }
@@ -194,6 +197,9 @@ static int32_t Command(void  *_context, ManagerCmd_t command, void *argument)
 
     subtitle_mgr_printf(50, "%s::%s %d\n", FILENAME, __FUNCTION__, command);
 
+    if (command == MANAGER_LIST)
+        container_ffmpeg_update_tracks(context, context->playback->uri, 0);
+    pthread_mutex_lock(&track_mutex);
     switch(command)
     {
     case MANAGER_ADD:
@@ -204,7 +210,6 @@ static int32_t Command(void  *_context, ManagerCmd_t command, void *argument)
     }
     case MANAGER_LIST:
     {
-        container_ffmpeg_update_tracks(context, context->playback->uri, 0);
         *((char***)argument) = (char **)ManagerList(context);
         break;
     }
@@ -333,6 +338,8 @@ static int32_t Command(void  *_context, ManagerCmd_t command, void *argument)
     }
 
     subtitle_mgr_printf(50, "%s:%s: returning %d\n", FILENAME, __FUNCTION__,ret);
+
+    pthread_mutex_unlock(&track_mutex);
     return ret;
 }
 

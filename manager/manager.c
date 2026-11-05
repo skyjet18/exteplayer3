@@ -117,4 +117,15 @@ void freeTrack(Track_t *track)
             track->aacbuf = NULL;
         }
     }
+
+}
+
+void replaceTrack(Track_t *to, Track_t *from)
+{
+    Track_t replacement;
+    copyTrack(&replacement, from);
+    if (to->aacbuf == replacement.aacbuf)
+        to->aacbuf = NULL;
+    freeTrack(to);
+    *to = replacement;
 }

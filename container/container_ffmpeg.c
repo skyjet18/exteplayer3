@@ -98,8 +98,8 @@ typedef enum {RTMP_NATIVE, RTMP_LIBRTMP, RTMP_NONE} eRTMPProtoImplType;
 /* Varaibles                     */
 /* ***************************** */
 
-static pthread_rwlock_t mutex;
-static pthread_mutex_t seek_mutex;
+static pthread_rwlock_t mutex = PTHREAD_RWLOCK_INITIALIZER;
+static pthread_mutex_t seek_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 static pthread_t PlayThread;
 static int32_t hasPlayThreadStarted = 0;
@@ -144,14 +144,6 @@ void progressive_playback_set(int32_t val)
 static void getMutex_uni(int type, const char *filename __attribute__((unused)), const char *function __attribute__((unused)), int32_t line)
 {
     ffmpeg_printf(100, "::%d requesting mutex\n", line);
-    static bool mutexInitialized = false;
-
-    if (!mutexInitialized)
-    {
-        pthread_rwlock_init(&mutex, NULL);
-        mutexInitialized = true;
-    }
-
     if(type == 0)
     {
         pthread_rwlock_rdlock(&mutex);
@@ -173,17 +165,6 @@ static void releaseMutex(const char *filename __attribute__((unused)), const con
 
 static void getSeekMutex()
 {
-    static bool mutexInitialized = false;
-    /* This is not perfect solution because 
-     * there could be race conditions and theoretically pthread_mutex_init
-     * could be called twice, but anyway
-     */
-    if (!mutexInitialized)
-    {
-        pthread_mutex_init(&seek_mutex, NULL);
-        mutexInitialized = true;
-    }
-
     pthread_mutex_lock(&seek_mutex);
 }
 
