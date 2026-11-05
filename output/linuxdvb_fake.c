@@ -53,8 +53,14 @@
 #define cERR_LINUXDVB_NO_ERROR      0
 #define cERR_LINUXDVB_ERROR        -1
 
-static const char VIDEODEV[] = "/tmp/e2i_video0";
-static const char AUDIODEV[] = "/tmp/e2i_audio0";
+#ifndef EXTEPLAYER_FAKE_VIDEO
+#define EXTEPLAYER_FAKE_VIDEO "/tmp/e2i_video0"
+#endif
+#ifndef EXTEPLAYER_FAKE_AUDIO
+#define EXTEPLAYER_FAKE_AUDIO "/tmp/e2i_audio0"
+#endif
+static const char VIDEODEV[] = EXTEPLAYER_FAKE_VIDEO;
+static const char AUDIODEV[] = EXTEPLAYER_FAKE_AUDIO;
 
 static int videofd 	= -1;
 static int audiofd 	= -1;
