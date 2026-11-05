@@ -264,6 +264,9 @@ static int32_t mp3_software_decode = 0;
 static int32_t rtmp_proto_impl = 0; // 0 - auto, 1 - native, 2 - librtmp
 
 static int32_t g_sel_program_id = -1;
+static int32_t g_quality_mode;
+static int32_t g_default_audio_only;
+static int32_t g_h264_max_width, g_h264_max_height;
 
 #ifdef HAVE_FLV2MPEG4_CONVERTER
 static int32_t flv2mpeg4_converter = 1;
@@ -283,6 +286,114 @@ static void ffmpeg_silen_callback(void *avcl, int level, const char *fmt, va_lis
 void sel_program_id_set(const int32_t val)
 {
     g_sel_program_id = val;
+}
+
+void adaptive_quality_set(int32_t mode, int32_t default_audio)
+{
+    g_quality_mode = mode;
+    g_default_audio_only = default_audio;
+}
+
+void h264_resolution_limit_set(int32_t width, int32_t height)
+{
+    g_h264_max_width = width;
+    g_h264_max_height = height;
+}
+
+static int video_allowed(AVStream *stream)
+{
+    AVCodecParameters *par = get_codecpar(stream);
+    return par->codec_type == AVMEDIA_TYPE_VIDEO &&
+           !(stream->disposition & AV_DISPOSITION_ATTACHED_PIC) &&
+           (par->codec_id != AV_CODEC_ID_H264 ||
+            ((!g_h264_max_width || par->width <= g_h264_max_width) &&
+             (!g_h264_max_height || par->height <= g_h264_max_height)));
+}
+
+static int64_t variant_bandwidth(AVDictionary *metadata)
+{
+    AVDictionaryEntry *tag = av_dict_get(metadata, "variant_bitrate", NULL, 0);
+    char *end;
+    long long value;
+    if (!tag)
+        return 0;
+    errno = 0;
+    value = strtoll(tag->value, &end, 10);
+    if (errno || *end || value < 0)
+    {
+        ffmpeg_err("invalid variant bandwidth: %s\n", tag->value);
+        return 0;
+    }
+    return value;
+}
+
+static AVProgram *select_program(AVFormatContext *av)
+{
+    AVProgram *best = NULL, *audio = NULL;
+    int64_t bandwidth = 0;
+    unsigned int i, j;
+    for (i = 0; i < av->nb_programs; i++)
+    {
+        AVProgram *p = av->programs[i];
+        int64_t candidate;
+        int has_video = 0, has_audio = 0;
+        if (!p->nb_stream_indexes)
+            continue;
+        if (g_sel_program_id > 0)
+        {
+            if (p->id == g_sel_program_id)
+                return p;
+            continue;
+        }
+        for (j = 0; j < p->nb_stream_indexes; j++)
+        {
+            AVStream *stream = av->streams[p->stream_index[j]];
+            has_audio |= get_codecpar(stream)->codec_type == AVMEDIA_TYPE_AUDIO;
+            has_video |= get_codecpar(stream)->codec_type == AVMEDIA_TYPE_VIDEO &&
+                         !(stream->disposition & AV_DISPOSITION_ATTACHED_PIC);
+            if (video_allowed(stream))
+                break;
+        }
+        if (j == p->nb_stream_indexes)
+        {
+            if (!has_video && has_audio && !audio)
+                audio = p;
+            continue;
+        }
+        candidate = variant_bandwidth(p->metadata);
+        if (!best || (g_quality_mode == 1 ? candidate < bandwidth : candidate > bandwidth))
+        {
+            best = p;
+            bandwidth = candidate;
+        }
+    }
+    return best ? best : (g_sel_program_id > 0 ? NULL : audio);
+}
+
+static int select_dash_video(AVFormatContext *av)
+{
+    int best = -1;
+    int64_t bandwidth = 0, resolution = 0;
+    unsigned int i;
+    for (i = 0; i < av->nb_streams; i++)
+    {
+        AVStream *stream = av->streams[i];
+        AVCodecParameters *par = get_codecpar(stream);
+        int64_t candidate, pixels;
+        if (!video_allowed(stream))
+            continue;
+        candidate = variant_bandwidth(stream->metadata);
+        pixels = (int64_t)par->width * par->height;
+        if (best < 0 ||
+            (g_quality_mode == 1 ? candidate < bandwidth : candidate > bandwidth) ||
+            (candidate == bandwidth && (g_quality_mode == 1 ? pixels < resolution : pixels > resolution)))
+        {
+            best = i;
+            bandwidth = candidate;
+            resolution = pixels;
+        }
+    }
+    return best;
 }
 
 void wma_software_decoder_set(const int32_t val)
@@ -2138,6 +2249,10 @@ int32_t container_ffmpeg_init_av_context(Context_t *context, char *filename, uin
         }
     }
     
+    if (g_sel_program_id <= 0 && !g_h264_max_width && !g_h264_max_height)
+        av_dict_set(&avio_opts, "hls_quality_mode", g_quality_mode == 1 ? "1" : "2", 0);
+    if (g_default_audio_only)
+        av_dict_set(&avio_opts, "hls_audio_default_only", "1", 0);
     pavio_opts = &avio_opts;
     
     if ((err = avformat_open_input(&avContextTab[AVIdx], filename, fmt, pavio_opts)) != 0)
@@ -2363,39 +2478,21 @@ int32_t container_ffmpeg_update_tracks(Context_t *context, char *filename, int32
         {
             uint32_t n = 0;
             ffmpeg_printf(1, "cAVIdx[%d]: stream with multi programs: num of programs %d\n", cAVIdx, avContext->nb_programs);
-            for (n = 0; n < avContext->nb_programs && (0 == nb_stream_indexes || stream_index == NULL); n++)
+            AVProgram *selected = select_program(avContext);
+            if (!selected)
             {
-                AVProgram *p = avContext->programs[n];
-                if (p->nb_stream_indexes)
-                {
-                    if (g_sel_program_id > 0)
-                    {
-                        if (g_sel_program_id == p->id)
-                        {
-                            stream_index = p->stream_index;
-                            nb_stream_indexes = p->nb_stream_indexes;
-                            ffmpeg_printf(1, "cAVIdx[%d]: select PROGRAM ID: %d\n", cAVIdx, (int32_t)p->id);
-                            break;
-                        }
-                    }
-                    else
-                    {
-                        uint32_t m = 0;
-                        for (m = 0; m < p->nb_stream_indexes; m++)
-                        {
-                            AVStream *s = avContext->streams[p->stream_index[m]];
-                            if (get_codecpar(s)->codec_type == AVMEDIA_TYPE_VIDEO && get_codecpar(s)->width > 0)
-                            {
-                                ffmpeg_printf(1, "cAVIdx[%d]: PROGRAM ID: %d, width [%d]\n", cAVIdx, (int32_t)p->id, (int32_t)get_codecpar(s)->width);
-                                stream_index = p->stream_index;
-                                nb_stream_indexes = p->nb_stream_indexes;
-                                break;
-                            }
-                        }
-                    }
-                }
+                ffmpeg_err("no playable program matches the selection and video limits\n");
+                releaseMutex(__FILE__, __FUNCTION__,__LINE__);
+                return cERR_CONTAINER_FFMPEG_STREAM;
             }
+            stream_index = selected->stream_index;
+            nb_stream_indexes = selected->nb_stream_indexes;
         }
+        int dash_video = -1;
+        int auto_dash = g_sel_program_id <= 0 && avContext->iformat &&
+                        !strcmp(avContext->iformat->name, "dash");
+        if (auto_dash)
+            dash_video = select_dash_video(avContext);
         
         int32_t n = 0;
         for (n = 0; n < avContext->nb_streams; n++) 
@@ -2404,6 +2501,13 @@ int32_t container_ffmpeg_update_tracks(Context_t *context, char *filename, int32
             AVStream *stream = avContext->streams[n];
             int32_t version = 0;
             char *encoding = NULL;
+            if (get_codecpar(stream)->codec_type == AVMEDIA_TYPE_VIDEO &&
+                ((auto_dash && n != dash_video) ||
+                 (g_sel_program_id <= 0 && !video_allowed(stream))))
+            {
+                stream->discard = AVDISCARD_ALL;
+                continue;
+            }
             
             if (nb_stream_indexes > 0 && stream_index != NULL)
             {
