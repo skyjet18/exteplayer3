@@ -293,6 +293,8 @@ int LinuxDvbPlay(Context_t  *context, char *type) {
         else
         {
             linuxdvb_printf(20, "found writer %s for encoding %s\n", writer->caps->name, Encoding);
+            if (writer->reset)
+                writer->reset();
             ret = ioctl( videofd, VIDEO_SET_STREAMTYPE, LinuxDvbMapStreamType(writer->caps->dvbStreamType, true));
             if (ret < 0) ret = ioctl( videofd, VIDEO_SET_STREAMTYPE, LinuxDvbMapStreamType(writer->caps->dvbStreamType, false));
             if (ret < 0)
@@ -779,7 +781,7 @@ int LinuxDvbSwitch(Context_t  *context, char *type)
 
     linuxdvb_printf(10, "exiting\n");
 
-    return cERR_LINUXDVB_NO_ERROR;
+    return ret;
 }
 
 static int Write(void  *_context, void *_out)

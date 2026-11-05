@@ -20,6 +20,8 @@
 #include <errno.h>
 #include <poll.h>
 #include <stdint.h>
+#include <pthread.h>
+#include <libavutil/time.h>
 
 #include "playback.h"
 #include "debug.h"
@@ -36,6 +38,18 @@
 #define cMaxSpeed_fr   -320 /* fixme: revise */
 
 #define MAX_PLAYBACK_DIE_NOW_CALLBACKS 10
+
+static pthread_mutex_t continue_mutex = PTHREAD_MUTEX_INITIALIZER;
+static int64_t last_continue_us;
+
+int64_t PlaybackLastContinue(void)
+{
+    int64_t value;
+    pthread_mutex_lock(&continue_mutex);
+    value = last_continue_us;
+    pthread_mutex_unlock(&continue_mutex);
+    return value;
+}
 
 /* ***************************** */
 /* Varaibles                     */
@@ -318,6 +332,9 @@ static int32_t PlaybackContinue(Context_t  *context)
         context->output->Command(context, OUTPUT_CONTINUE, NULL);
 
         context->playback->isPaused     = 0;
+        pthread_mutex_lock(&continue_mutex);
+        last_continue_us = av_gettime_relative();
+        pthread_mutex_unlock(&continue_mutex);
         //context->playback->isPlaying  = 1;
         context->playback->isForwarding = 0;
         context->playback->BackWard     = 0;

@@ -26,12 +26,12 @@ static Mpeg4P2Context * mpeg4p2_context_open()
 
 static void mpeg4p2_write(Context_t *ctx, Mpeg4P2Context *mpeg4p2_ctx, Track_t *track, int64_t start_time, int64_t *currentVideoPts, int64_t *latestPts, AVPacket *pkt)
 {
-    *currentVideoPts = track->pts = doCalcPts(start_time, mpeg4p2_ctx->ctx->time_base_out, pkt->pts);
+    *currentVideoPts = track->pts = calcConvertedPts(track->stream, mpeg4p2_ctx->ctx->time_base_out, pkt->pts, 0);
     if ((*currentVideoPts > *latestPts) && (*currentVideoPts != INVALID_PTS_VALUE)) {
         *latestPts = *currentVideoPts;
     }
 
-    track->dts = doCalcPts(start_time, mpeg4p2_ctx->ctx->time_base_out, pkt->dts);
+    track->dts = calcConvertedPts(track->stream, mpeg4p2_ctx->ctx->time_base_out, pkt->dts, 1);
 
     AudioVideoOut_t avOut;
     avOut.data       = pkt->data;
@@ -120,4 +120,3 @@ static void mpeg4p2_context_close(Mpeg4P2Context *context)
         return;
     }
 }
-
