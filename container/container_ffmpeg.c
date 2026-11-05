@@ -1583,6 +1583,12 @@ static void FFMPEGThread(Context_t *context)
                     while(packet.size > 0)
 #endif
                     {
+                        Track_t *selected = NULL;
+                        context->manager->audio->Command(context, MANAGER_GET_TRACK, &selected);
+                        if (!selected || selected->avCodecCtx != c ||
+                            selected->AVIdx != cAVIdx || selected->Id != pid)
+                            break;
+                        audioTrack = selected;
                         if(do_seek_target_seconds || do_seek_target_bytes)
                         {
                             break;
@@ -2030,10 +2036,10 @@ static void FFMPEGThread(Context_t *context)
         ffmpeg_printf(0, "PCM export dropped %"PRIu64" chunks\n", pcmExport.dropped_chunks);
         pcm_export_close(&pcmExport);
     }
-    hasPlayThreadStarted = 0;
     context->playback->isPlaying = 0;
     PlaybackDieNow(1);
     ffmpeg_printf(10, "terminating\n");
+    hasPlayThreadStarted = 0;
 }
 
 /* **************************** */
@@ -2227,8 +2233,14 @@ int32_t container_ffmpeg_init_av_context(Context_t *context, char *filename, uin
        0 == strncmp(filename, "file://", 7))
     {
         AVIOContext *avio_ctx = NULL;
-        custom_io_tab[AVIdx] = malloc(sizeof(CustomIOCtx_t));
-        sizeof(custom_io_tab[AVIdx], 0x00, sizeof(CustomIOCtx_t));
+        custom_io_tab[AVIdx] = calloc(1, sizeof(CustomIOCtx_t));
+        if (!custom_io_tab[AVIdx])
+        {
+            ffmpeg_err("cannot allocate custom IO context\n");
+            avformat_free_context(avContextTab[AVIdx]);
+            avContextTab[AVIdx] = NULL;
+            return cERR_CONTAINER_FFMPEG_NOMEM;
+        }
         
         custom_io_tab[AVIdx]->szFile = filename;
         custom_io_tab[AVIdx]->iFileSize = fileSize;
@@ -2943,6 +2955,12 @@ int32_t container_ffmpeg_update_tracks(Context_t *context, char *filename, int32
                     {
                         track.inject_as_pcm = 1;
                         track.avCodecCtx = wrapped_avcodec_get_context(cAVIdx, stream);
+                        if (!track.avCodecCtx && pcm_audio_export_enabled)
+                        {
+                            ffmpeg_err("cannot allocate software audio decoder for PCM export\n");
+                            releaseMutex(__FILE__, __FUNCTION__,__LINE__);
+                            return cERR_CONTAINER_FFMPEG_NOMEM;
+                        }
                         if (track.avCodecCtx)
                         {
                             ffmpeg_printf(10, " Handle inject_as_pcm = %d\n", track.inject_as_pcm);

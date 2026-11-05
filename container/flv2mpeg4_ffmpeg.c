@@ -13,7 +13,8 @@ typedef struct
     int extradatasize;
     
     Context_t *out_ctx;
-    Track_t   *track;
+    /* Only scalar fields are used while an output callback releases the lock. */
+    Track_t    track;
 } Flv2Mpeg4Context;
 
 
@@ -28,14 +29,14 @@ static int flv2mpeg4_context_write_packet_cb(void *usr_data, int keyframe, int p
     AudioVideoOut_t avOut;
     avOut.data       = (char *)buf;
     avOut.len        = size;
-    avOut.pts        = ctx->track->pts;
-    avOut.dts        = ctx->track->dts;
+    avOut.pts        = ctx->track.pts;
+    avOut.dts        = ctx->track.dts;
     avOut.extradata  = ctx->extradata;
     avOut.extralen   = ctx->extradatasize;
-    avOut.frameRate  = ctx->track->frame_rate;
-    avOut.timeScale  = ctx->track->TimeScale;
-    avOut.width      = ctx->track->width;
-    avOut.height     = ctx->track->height;
+    avOut.frameRate  = ctx->track.frame_rate;
+    avOut.timeScale  = ctx->track.TimeScale;
+    avOut.width      = ctx->track.width;
+    avOut.height     = ctx->track.height;
     avOut.type       = "video";
 
     if (Write(ctx->out_ctx->output->video->Write, ctx->out_ctx, &avOut, avOut.pts) < 0)
@@ -79,6 +80,11 @@ static int flv2mpeg4_write_packet(Context_t *out_ctx, Flv2Mpeg4Context *mpeg4p2_
     }
     
     *pts_current = track->pts = calcPts(cAVIdx, track->stream, pkt->pts);
+    if (*pts_current == INVALID_PTS_VALUE)
+    {
+        ffmpeg_err("cannot convert FLV packet without a valid presentation timestamp\n");
+        return -1;
+    }
     if ((*pts_current > *pts_latest) && (*pts_current != INVALID_PTS_VALUE))
     {
         *pts_latest = *pts_current;
@@ -86,7 +92,7 @@ static int flv2mpeg4_write_packet(Context_t *out_ctx, Flv2Mpeg4Context *mpeg4p2_
     track->dts = calcDts(cAVIdx, track->stream, pkt->dts);
     
     mpeg4p2_ctx->out_ctx = out_ctx;    
-    mpeg4p2_ctx->track = track;
+    mpeg4p2_ctx->track = *track;
 
     uint32_t time_ms = (uint32_t)(track->pts / 90);
     
