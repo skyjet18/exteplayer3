@@ -452,7 +452,24 @@ static int writeData(void* _call)
             private_data = NULL;
         }
         
-        if (CodecData != NULL)
+        /* stream has its own SPS/PPS: do not prepend avcC ones, they can differ
+         * (re-cut TV recordings) and break the picture */
+        if (!sps_pps_in_stream && NalLengthBytes >= 1 && NalLengthBytes <= 4)
+        {
+            uint32_t p = 0;
+            while (p + NalLengthBytes < (uint32_t)call->len)
+            {
+                uint32_t nl = 0, k;
+                for (k = 0; k < NalLengthBytes; k++) nl = (nl << 8) | call->data[p + k];
+                uint8_t t = call->data[p + NalLengthBytes] & 0x1f;
+                if (t == 7 || t == 8) { sps_pps_in_stream = 1; break; }
+                /* zero or corrupt NAL length */
+                if (nl == 0 || nl > (uint32_t)call->len - p - NalLengthBytes) break;
+                p += NalLengthBytes + nl;
+            }
+        }
+
+        if (CodecData != NULL && !sps_pps_in_stream)
         {
             iov[ic].iov_base  = CodecData;
             iov[ic++].iov_len = CodecDataLen;
