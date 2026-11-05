@@ -9,6 +9,39 @@ int main(void)
     assert(network_read_retry(100, 100 + 10 * AV_TIME_BASE - 1));
     assert(!network_read_retry(100, 100 + 10 * AV_TIME_BASE));
     assert(!network_read_retry(100, 99));
+    {
+        AVStream stream = {0};
+        assert(!subtitle_is_forced(&stream));
+        av_dict_set(&stream.metadata, "language", "eng", 0);
+        assert(!subtitle_is_forced(&stream));
+        av_dict_set(&stream.metadata, "title", "English [FORCED]", 0);
+        assert(subtitle_is_forced(&stream));
+        av_dict_set(&stream.metadata, "title", "unforced", 0);
+        assert(!subtitle_is_forced(&stream));
+        stream.disposition = AV_DISPOSITION_FORCED;
+        assert(subtitle_is_forced(&stream));
+        av_dict_free(&stream.metadata);
+    }
+    {
+        AVFormatContext *av = avformat_alloc_context();
+        AVInputFormat adaptive = {.name = "dash"}, embedded = {.name = "matroska"};
+        AVStream *one = avformat_new_stream(av, NULL);
+        AVStream *two = avformat_new_stream(av, NULL);
+        one->codecpar->codec_type = two->codecpar->codec_type = AVMEDIA_TYPE_SUBTITLE;
+        one->id = 1;
+        two->id = 2;
+        av->iformat = &adaptive;
+        select_subtitle_stream(av, 2);
+        assert(one->discard == AVDISCARD_ALL && two->discard == AVDISCARD_DEFAULT);
+        select_subtitle_stream(av, -1);
+        assert(one->discard == AVDISCARD_ALL && two->discard == AVDISCARD_ALL);
+        av->iformat = &embedded;
+        one->discard = two->discard = AVDISCARD_DEFAULT;
+        select_subtitle_stream(av, -1);
+        assert(one->discard == AVDISCARD_DEFAULT && two->discard == AVDISCARD_DEFAULT);
+        av->iformat = NULL;
+        avformat_free_context(av);
+    }
     assert(ts_seek_position(500, 1000, 188000, 188) == 94000);
     assert(ts_seek_position(500, 1000, 192000, 192) == 96000);
     assert(ts_seek_position(500, 1000, 204000, 204) == 102000);

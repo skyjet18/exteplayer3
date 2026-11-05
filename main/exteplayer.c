@@ -393,7 +393,10 @@ static int HandleTracks(Manager_t *ptrManager, const PlaybackCmd_t playbackSwitc
 							strbuffer_add( ptrManager->tracks_cache, ", " );
 						}
 
-						sprintf( tmp_str, "{\"id\":%d,\"e\":\"%s\",\"n\":\"%s\"}", TrackList[i].Id , TrackList[i].Encoding, TrackList[i].Name);
+						if ('s' == argvBuff[0])
+							sprintf(tmp_str, "{\"id\":%d,\"e\":\"%s\",\"n\":\"%s\",\"f\":%d}", TrackList[i].Id, TrackList[i].Encoding, TrackList[i].Name, TrackList[i].is_forced);
+						else
+							sprintf(tmp_str, "{\"id\":%d,\"e\":\"%s\",\"n\":\"%s\"}", TrackList[i].Id, TrackList[i].Encoding, TrackList[i].Name);
 						strbuffer_add( ptrManager->tracks_cache, tmp_str );
 
 						free(TrackList[i].Encoding);
@@ -427,7 +430,11 @@ static int HandleTracks(Manager_t *ptrManager, const PlaybackCmd_t playbackSwitc
             ptrManager->Command(g_player, MANAGER_GET_TRACK_DESC, &track);
             if (NULL != track) 
             {
-                if ('a' == argvBuff[0] || 's' == argvBuff[0])
+                if ('s' == argvBuff[0])
+                {
+                    E2iSendMsg("{\"s_c\":{\"id\":%d,\"e\":\"%s\",\"n\":\"%s\",\"f\":%d}}\n", track->Id, track->Encoding, track->Name, track->is_forced);
+                }
+                else if ('a' == argvBuff[0])
                 {
                     E2iSendMsg("{\"%c_%c\":{\"id\":%d,\"e\":\"%s\",\"n\":\"%s\"}}\n", argvBuff[0], argvBuff[1], track->Id , track->Encoding, track->Name);
                 }
@@ -443,7 +450,11 @@ static int HandleTracks(Manager_t *ptrManager, const PlaybackCmd_t playbackSwitc
             else
             {
                 // no tracks
-                if ('a' == argvBuff[0] || 's' == argvBuff[0])
+                if ('s' == argvBuff[0])
+                {
+                    E2iSendMsg("{\"s_c\":{\"id\":-1,\"e\":\"\",\"n\":\"\",\"f\":0}}\n");
+                }
+                else if ('a' == argvBuff[0])
                 {
                     E2iSendMsg("{\"%c_%c\":{\"id\":%d,\"e\":\"%s\",\"n\":\"%s\"}}\n", argvBuff[0], argvBuff[1], -1, "", "");
                 }

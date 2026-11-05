@@ -42,6 +42,7 @@
 #include <pthread.h>
 #include <sys/prctl.h>
 #include <stdint.h>
+#include <ctype.h>
 
 #include <libavutil/avutil.h>
 #include <libavutil/time.h>
@@ -394,6 +395,36 @@ static int select_dash_video(AVFormatContext *av)
         }
     }
     return best;
+}
+
+static int subtitle_is_forced(AVStream *stream)
+{
+    AVDictionaryEntry *title;
+    const char *p;
+    if (stream->disposition & AV_DISPOSITION_FORCED)
+        return 1;
+    title = av_dict_get(stream->metadata, "title", NULL, 0);
+    if (!title)
+        return 0;
+    for (p = title->value; *p; p++)
+    {
+        if ((p == title->value || !isalnum((unsigned char)p[-1])) &&
+            !strncasecmp(p, "forced", 6) && !isalnum((unsigned char)p[6]))
+            return 1;
+    }
+    return 0;
+}
+
+static void select_subtitle_stream(AVFormatContext *av, int id)
+{
+    unsigned int i;
+    if (!av->iformat || (strcmp(av->iformat->name, "hls") &&
+                         strcmp(av->iformat->name, "dash")))
+        return;
+    for (i = 0; i < av->nb_streams; i++)
+        if (get_codecpar(av->streams[i])->codec_type == AVMEDIA_TYPE_SUBTITLE)
+            av->streams[i]->discard = av->streams[i]->id == id ?
+                AVDISCARD_DEFAULT : AVDISCARD_ALL;
 }
 
 void wma_software_decoder_set(const int32_t val)
@@ -2468,7 +2499,7 @@ int32_t container_ffmpeg_update_tracks(Context_t *context, char *filename, int32
     
     getMutex_wr(__FILE__, __FUNCTION__,__LINE__);
     
-    if (initial && context->manager->subtitle)
+    if (context->manager->subtitle)
     {
         context->manager->subtitle->Command(context, MANAGER_GET_TRACK, &currSubtitleTrack);
     }
@@ -2488,12 +2519,10 @@ int32_t container_ffmpeg_update_tracks(Context_t *context, char *filename, int32
         context->manager->audio->Command(context, MANAGER_INIT_UPDATE, NULL);
     }
     
-#if 0
     if (context->manager->subtitle)
     {
         context->manager->subtitle->Command(context, MANAGER_INIT_UPDATE, NULL);
     }
-#endif
 
     ffmpeg_printf(20, "dump format\n");
     av_dump_format(avContextTab[0], 0, filename, 0);
@@ -2507,6 +2536,8 @@ int32_t container_ffmpeg_update_tracks(Context_t *context, char *filename, int32
             break;
         }
         AVFormatContext *avContext = avContextTab[cAVIdx];
+        select_subtitle_stream(avContext, currSubtitleTrack && currSubtitleTrack->AVIdx == cAVIdx ?
+                               currSubtitleTrack->Id : -1);
         uint32_t *stream_index = NULL;
         uint32_t nb_stream_indexes = 0;
         
@@ -3004,10 +3035,12 @@ int32_t container_ffmpeg_update_tracks(Context_t *context, char *filename, int32
                 {
                     ffmpeg_printf(10, "subtitle with not supported codec codec_id[%u]\n", (uint32_t)get_codecpar(stream)->codec_id);
                 }
-                else if (initial && context->manager->subtitle)
+                else if (context->manager->subtitle)
                 {
                     AVDictionaryEntry *lang = NULL;
                     memset(&track, 0, sizeof(track));
+                    track.AVIdx = cAVIdx;
+                    track.is_forced = subtitle_is_forced(stream);
 
                     ffmpeg_printf(10, "CODEC_TYPE_SUBTITLE %d\n", get_codecpar(stream)->codec_type);
                     
@@ -3420,6 +3453,18 @@ static int32_t container_ffmpeg_switch_audio(Context_t *context, int32_t *arg)
 static int32_t container_ffmpeg_switch_subtitle(Context_t *context, int32_t *arg)
 {
     ffmpeg_printf(10, "track %d\n", *arg);
+    getMutex_wr(__FILE__, __FUNCTION__,__LINE__);
+    if (context->manager->subtitle)
+    {
+        Track_t *selected = NULL;
+        int i;
+        context->manager->subtitle->Command(context, MANAGER_GET_TRACK, &selected);
+        for (i = 0; i < IPTV_AV_CONTEXT_MAX_NUM; i++)
+            if (avContextTab[i])
+                select_subtitle_stream(avContextTab[i],
+                    selected && selected->AVIdx == i ? selected->Id : -1);
+    }
+    releaseMutex(__FILE__, __FUNCTION__,__LINE__);
     
     /* This is made to flush inside the buffer because 
      * subtitles frame was already read and ignored
