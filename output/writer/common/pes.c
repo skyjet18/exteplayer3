@@ -98,9 +98,10 @@ void UpdatePesHeaderPayloadSize(uint8_t *data, int32_t size)
     data[5] = size & 0xFF;
 }
 
-int32_t InsertPesHeader(uint8_t *data, int32_t size, uint8_t stream_id, uint64_t pts, int32_t pic_start_code)
+int32_t InsertPesHeaderWithDts(uint8_t *data, int32_t size, uint8_t stream_id, uint64_t pts, uint64_t dts, int32_t pic_start_code)
 {
     BitPacker_t ld2 = {data, 0, 32};
+    int with_dts = pts != INVALID_PTS_VALUE && dts != INVALID_PTS_VALUE && pts != dts;
 
     PutBits(&ld2,0x0  ,8);
     PutBits(&ld2,0x0  ,8);
@@ -108,7 +109,7 @@ int32_t InsertPesHeader(uint8_t *data, int32_t size, uint8_t stream_id, uint64_t
     PutBits(&ld2,stream_id ,8);  // Stream_id = Audio Stream
 
     if (size > 0) {
-        size += 3 + (pts != INVALID_PTS_VALUE ? 5:0) + (pic_start_code ? (5) : 0);
+        size += 3 + (pts != INVALID_PTS_VALUE ? 5:0) + (with_dts ? 5:0) + (pic_start_code ? (5) : 0);
     }
 
     if (size > MAX_PES_PACKET_SIZE || size < 0)
@@ -130,7 +131,7 @@ int32_t InsertPesHeader(uint8_t *data, int32_t size, uint8_t stream_id, uint64_t
 
     if (pts != INVALID_PTS_VALUE)
     {
-        PutBits(&ld2,0x2 ,2);
+        PutBits(&ld2,with_dts ? 0x3 : 0x2 ,2);
     }
     else
     {
@@ -147,7 +148,7 @@ int32_t InsertPesHeader(uint8_t *data, int32_t size, uint8_t stream_id, uint64_t
 
     if (pts!=INVALID_PTS_VALUE)
     {
-        PutBits(&ld2,0x5,8);
+        PutBits(&ld2,with_dts ? 10 : 5,8);
     }
     else
     {
@@ -157,7 +158,7 @@ int32_t InsertPesHeader(uint8_t *data, int32_t size, uint8_t stream_id, uint64_t
 
     if (pts!=INVALID_PTS_VALUE)
     {
-        PutBits(&ld2,0x2,4);
+        PutBits(&ld2,with_dts ? 0x3 : 0x2,4);
         PutBits(&ld2,(pts>>30) & 0x7,3);
         PutBits(&ld2,0x1,1);
         PutBits(&ld2,(pts>>15) & 0x7fff,15);
@@ -165,7 +166,16 @@ int32_t InsertPesHeader(uint8_t *data, int32_t size, uint8_t stream_id, uint64_t
         PutBits(&ld2,pts & 0x7fff,15);
         PutBits(&ld2,0x1,1);
     }
-    //14 = 9+5
+    if (with_dts)
+    {
+        PutBits(&ld2,0x1,4);
+        PutBits(&ld2,(dts>>30) & 0x7,3);
+        PutBits(&ld2,0x1,1);
+        PutBits(&ld2,(dts>>15) & 0x7fff,15);
+        PutBits(&ld2,0x1,1);
+        PutBits(&ld2,dts & 0x7fff,15);
+        PutBits(&ld2,0x1,1);
+    }
 
     if (pic_start_code)
     {
@@ -180,4 +190,9 @@ int32_t InsertPesHeader(uint8_t *data, int32_t size, uint8_t stream_id, uint64_t
     FlushBits(&ld2);
 
     return (ld2.Ptr - data);
+}
+
+int32_t InsertPesHeader(uint8_t *data, int32_t size, uint8_t stream_id, uint64_t pts, int32_t pic_start_code)
+{
+    return InsertPesHeaderWithDts(data, size, stream_id, pts, INVALID_PTS_VALUE, pic_start_code);
 }

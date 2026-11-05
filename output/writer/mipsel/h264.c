@@ -72,6 +72,8 @@ static unsigned char           *CodecData     = NULL;
 static unsigned int            CodecDataLen   = 0;
 static int                     avc3 = 0;
 static int                     sps_pps_in_stream = 0;
+static uint8_t                 *last_private_data;
+static unsigned int            last_private_size;
 /* ***************************** */
 /* Prototypes                    */
 /* ***************************** */
@@ -200,15 +202,7 @@ static void LimitSpsLevel(unsigned char *sps, unsigned int len)
         if (sps[1] == profile_num[i])
         {
             uint8_t level_org = sps[3];
-            if (level_org > 0x29)
-            {
-                h264_printf(10, "H264 %s profile@%d.%d patched down to 4.1!", profile_str[i], level_org / 10 , level_org % 10);
-                sps[3] = 0x29; // level 4.1
-            }
-            else
-            {
-                h264_printf(10, "H264 %s profile@%d.%d", profile_str[i], level_org / 10 , level_org % 10);
-            }
+            h264_printf(10, "H264 %s profile@%d.%d", profile_str[i], level_org / 10 , level_org % 10);
             return;
         }
     }
@@ -318,6 +312,12 @@ static int32_t PreparCodecData(unsigned char *data, unsigned int cd_len, unsigne
 
 static int reset()
 {
+    free(last_private_data);
+    last_private_data = NULL;
+    last_private_size = 0;
+    free(CodecData);
+    CodecData = NULL;
+    CodecDataLen = 0;
     initialHeader = 1;
     avc3 = 0;
     sps_pps_in_stream = 0;
@@ -361,6 +361,25 @@ static int writeData(void* _call)
         return 0;
     }
 
+    if (call->private_data && call->private_size &&
+        (last_private_size != call->private_size ||
+         memcmp(last_private_data, call->private_data, call->private_size)))
+    {
+        uint8_t *copy = malloc(call->private_size);
+        if (!copy)
+        {
+            h264_err("allocating codec data failed\n");
+            return -1;
+        }
+        memcpy(copy, call->private_data, call->private_size);
+        free(last_private_data);
+        last_private_data = copy;
+        last_private_size = call->private_size;
+        initialHeader = 1;
+        avc3 = 0;
+        sps_pps_in_stream = 0;
+    }
+
     /* AnnexA */
     if( !avc3 && ((1 < call->private_size && 0 == call->private_data[0]) || 
         (call->len > 3) && ((call->data[0] == 0x00 && call->data[1] == 0x00 && call->data[2] == 0x00 && call->data[3] == 0x01) ||
@@ -382,7 +401,7 @@ static int writeData(void* _call)
             i += 1;
         }
         
-        if (InsertPrivData && call->private_size > 0 /*&& initialHeader*/) // some rtsp streams can update codec data at runtime
+        if (InsertPrivData && call->private_data && call->private_size > 0 && initialHeader)
         {
             initialHeader = 0;
             iov[ic].iov_base  = call->private_data;
@@ -394,7 +413,7 @@ static int writeData(void* _call)
         iov[ic++].iov_len = call->len;
         PacketLength     += call->len;
         
-        iov[0].iov_len = InsertPesHeader(PesHeader, -1, MPEG_VIDEO_PES_START_CODE, VideoPts, FakeStartCode);
+        iov[0].iov_len = InsertPesHeaderWithDts(PesHeader, -1, MPEG_VIDEO_PES_START_CODE, VideoPts, call->Dts, FakeStartCode);
         
         return call->WriteV(call->fd, iov, ic);
     }
@@ -409,7 +428,7 @@ static int writeData(void* _call)
     ic = 0;
     iov[ic++].iov_base = PesHeader;
     
-    if (!avc3)
+    if (!avc3 && initialHeader)
     {
         if (CodecData)
         {
@@ -447,10 +466,10 @@ static int writeData(void* _call)
         uint32_t pos = 0;
         do
         {
-            if (ic >= IOVEC_SIZE)
+            if (ic + 2 > IOVEC_SIZE)
             {
                 h264_err(">> Drop data due to ic overflow\n");
-                break;
+                return -1;
             }
             
             uint32_t pack_len = 0;
@@ -479,7 +498,7 @@ static int writeData(void* _call)
         } while ((pos + NalLengthBytes) < call->len);
         
         h264_printf (10, "<<<< PacketLength [%d]\n", PacketLength);
-        iov[0].iov_len = InsertPesHeader(PesHeader, -1, MPEG_VIDEO_PES_START_CODE, VideoPts, 0);
+        iov[0].iov_len = InsertPesHeaderWithDts(PesHeader, -1, MPEG_VIDEO_PES_START_CODE, VideoPts, call->Dts, 0);
         
         len = call->WriteV(call->fd, iov, ic);
         PacketLength += iov[0].iov_len;
