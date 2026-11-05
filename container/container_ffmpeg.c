@@ -2505,6 +2505,7 @@ int32_t container_ffmpeg_init_av_context(Context_t *context, char *filename, uin
         av_dict_set(&avio_opts, "hls_audio_default_only", "1", 0);
     pavio_opts = &avio_opts;
     
+    av_dict_set(&avio_opts, "dash_subtitle_default_discard", "1", 0);
     if ((err = avformat_open_input(&avContextTab[AVIdx], filename, fmt, pavio_opts)) != 0)
     {
         if (rtmp_proto_impl == 0 && //err == AVERROR_UNKNOWN && 
