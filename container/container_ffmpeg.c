@@ -1106,6 +1106,62 @@ static void *ls_thread(void *arg)
         if (context->playback && context->playback->isPlaying && !context->playback->isPaused)
             context->output->Command(context, OUTPUT_CONTINUE, NULL);
         printf("{\"log\":\"live sync: audio gap %lld ms, held %lld ms\"}\n", (long long)maxgap, (long long)(ls_now_ms() - t0));
+        fflush(stdout);
+    }
+    else
+        return NULL;
+
+    /* Keep watching while the live stream plays: when the audio buffered in the
+     * decoder runs out (audio would come after its presentation time and be
+     * dropped for the rest of the channel), hold the picture briefly until
+     * there is enough audio again. EP3_LIVE_SYNC_WATCH=0 disables it. */
+    const char *env = getenv("EP3_LIVE_SYNC_WATCH");
+    if (env && env[0] == '0')
+        return NULL;
+    int low = 0;
+    int64_t last_resync = 0;
+    while (context->playback && context->playback->isPlaying)
+    {
+        usleep(250000);
+        if (context->playback->isPaused || ls_last_a == INVALID_PTS_VALUE)
+        {
+            low = 0;
+            continue;
+        }
+        unsigned long long int cur = 0;
+        if (context->output->Command(context, OUTPUT_PTS, &cur) != 0 || cur == 0)
+            continue;
+        int64_t d = ((int64_t)ls_last_a - (int64_t)cur) & 0x1FFFFFFFFLL;
+        if (d >= 0x100000000LL)
+            d -= 0x200000000LL;
+        int64_t slack = d / 90;
+        if (slack < -10000 || slack > 30000)    /* discontinuity, not a buffer state */
+        {
+            low = 0;
+            continue;
+        }
+        low = slack < 150 ? low + 1 : 0;
+        if (low < 2 || ls_now_ms() - last_resync < 5000)
+            continue;
+        /* hold until about 1 s of audio is buffered ahead of the picture */
+        int64_t t1 = ls_now_ms();
+        context->output->Command(context, OUTPUT_PAUSE, NULL);
+        while (context->playback && context->playback->isPlaying && !context->playback->isPaused &&
+               ls_now_ms() - t1 < 3000)
+        {
+            int64_t dd = ((int64_t)ls_last_a - (int64_t)cur) & 0x1FFFFFFFFLL;
+            if (dd >= 0x100000000LL)
+                dd -= 0x200000000LL;
+            if (dd / 90 >= 1000)
+                break;
+            usleep(50000);
+        }
+        if (context->playback && context->playback->isPlaying && !context->playback->isPaused)
+            context->output->Command(context, OUTPUT_CONTINUE, NULL);
+        last_resync = ls_now_ms();
+        low = 0;
+        printf("{\"log\":\"live sync: audio ran out (%lld ms), held %lld ms\"}\n", (long long)slack, (long long)(last_resync - t1));
+        fflush(stdout);
     }
     return NULL;
 }
