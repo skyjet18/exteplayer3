@@ -1,6 +1,17 @@
 #include <assert.h>
 #include "../container/container_ffmpeg.c"
 
+static char notification[4096];
+static int notifications;
+void E2iSendMsg(const char *format, ...)
+{
+    va_list args;
+    va_start(args, format);
+    vsnprintf(notification, sizeof(notification), format, args);
+    va_end(args);
+    notifications++;
+}
+
 int main(void)
 {
     CustomIOCtx_t io = {0};
@@ -9,6 +20,50 @@ int main(void)
     assert(network_read_retry(100, 100 + 10 * AV_TIME_BASE - 1));
     assert(!network_read_retry(100, 100 + 10 * AV_TIME_BASE));
     assert(!network_read_retry(100, 99));
+    {
+        AVFormatContext av = {0};
+        AVStream stream = {0};
+        char *last = NULL, *message;
+        char control[] = {'"', '\\', '\n', 1, '\t', 0};
+        message = json_escape_metadata(control);
+        assert(!strcmp(message, "\\\"\\\\\\u000a\\u0001\\u0009"));
+        av_free(message);
+        message = json_escape_metadata("\xc3\xa9\xff");
+        assert(!strcmp(message, "\xc3\xa9\\u00ff"));
+        av_free(message);
+        message = radio_icy_message("StreamTitle='Artist - Title';StreamUrl='';");
+        assert(!strcmp(message, "{\"m_t\":{\"rt\":\"Artist - Title\",\"t\":\"Title\",\"a\":\"Artist\"}}\n"));
+        av_free(message);
+        message = radio_icy_message("StreamTitle='';");
+        assert(!strcmp(message, "{\"m_t\":{\"rt\":\"\",\"t\":\"\",\"a\":\"\"}}\n"));
+        av_free(message);
+        assert(!radio_icy_message("StreamTitle='broken"));
+        av_dict_set(&av.metadata, "title", "Song", 0);
+        av_dict_set(&av.metadata, "artist", "Artist", 0);
+        radio_metadata_update(&av, NULL, &last, 1);
+        assert(!notifications && !last);
+        radio_metadata_update(&av, NULL, &last, 0);
+        assert(notifications == 1 && strstr(notification, "\"rt\":\"Artist - Song\""));
+        av.event_flags = AVFMT_EVENT_FLAG_METADATA_UPDATED;
+        radio_metadata_update(&av, NULL, &last, 0);
+        assert(notifications == 1 && !av.event_flags);
+        av_dict_free(&av.metadata);
+        av.event_flags = AVFMT_EVENT_FLAG_METADATA_UPDATED;
+        radio_metadata_update(&av, NULL, &last, 0);
+        assert(notifications == 2 && strstr(notification, "\"t\":\"\""));
+        av_dict_set(&stream.metadata, "TIT2", "Stream tag", 0);
+        stream.event_flags = AVSTREAM_EVENT_FLAG_METADATA_UPDATED;
+        radio_metadata_update(&av, &stream, &last, 0);
+        assert(notifications == 3 && strstr(notification, "Stream tag") && !stream.event_flags);
+        av_freep(&last);
+        radio_metadata_update(&av, &stream, &last, 0);
+        assert(notifications == 3);
+        stream.event_flags = AVSTREAM_EVENT_FLAG_METADATA_UPDATED;
+        radio_metadata_update(&av, &stream, &last, 0);
+        assert(notifications == 4);
+        av_free(last);
+        av_dict_free(&stream.metadata);
+    }
     {
         AVStream stream = {0};
         assert(!subtitle_is_forced(&stream));

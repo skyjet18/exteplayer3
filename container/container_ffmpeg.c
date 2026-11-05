@@ -49,6 +49,7 @@
 #include <libavformat/avformat.h>
 #include <libswresample/swresample.h>
 #include <libavutil/opt.h>
+#include <libavutil/avstring.h>
 //#if LIBAVCODEC_VERSION_INT >= AV_VERSION_INT(59, 0, 100)
 #include <libavcodec/bsf.h>
 #include <libavcodec/avcodec.h>
@@ -920,8 +921,145 @@ static int fast_http_ts_seek(AVFormatContext *av, int64_t relative_us)
     return avformat_seek_file(av, -1, INT64_MIN, target, INT64_MAX, AVSEEK_FLAG_BYTE);
 }
 
+static char *json_escape_metadata(const char *text)
+{
+    const uint8_t *p = (const uint8_t *)text, *end = p + strlen(text);
+    char *result, *out;
+    if ((size_t)(end - p) > (SIZE_MAX - 1) / 6 ||
+        !(result = av_malloc((end - p) * 6 + 1)))
+    {
+        ffmpeg_err("cannot allocate escaped radio metadata\n");
+        return NULL;
+    }
+    out = result;
+    while (p < end)
+    {
+        if (*p == '"' || *p == '\\')
+        {
+            *out++ = '\\';
+            *out++ = *p++;
+        }
+        else if (*p < 32)
+        {
+            out += sprintf(out, "\\u%04x", *p++);
+        }
+        else if (*p >= 128)
+        {
+            const uint8_t *next = p;
+            int32_t code;
+            if (av_utf8_decode(&code, &next, end, 0) >= 0)
+            {
+                memcpy(out, p, next - p);
+                out += next - p;
+                p = next;
+            }
+            else
+                out += sprintf(out, "\\u%04x", *p++);
+        }
+        else
+            *out++ = *p++;
+    }
+    *out = 0;
+    return result;
+}
+
+static char *radio_message(const char *rt, const char *title, const char *artist)
+{
+    char *r = json_escape_metadata(rt), *t = json_escape_metadata(title);
+    char *a = json_escape_metadata(artist), *message = NULL;
+    if (r && t && a)
+    {
+        message = av_asprintf("{\"m_t\":{\"rt\":\"%s\",\"t\":\"%s\",\"a\":\"%s\"}}\n", r, t, a);
+        if (!message)
+            ffmpeg_err("cannot allocate radio metadata notification\n");
+    }
+    av_free(r);
+    av_free(t);
+    av_free(a);
+    return message;
+}
+
+static char *radio_icy_message(const char *packet)
+{
+    const char *start = strstr(packet, "StreamTitle='"), *end;
+    char *full, *artist = NULL, *message, *sep;
+    if (!start || !(end = strstr(start += 13, "';")))
+        return NULL;
+    full = av_strndup(start, end - start);
+    if (!full)
+    {
+        ffmpeg_err("cannot allocate ICY title\n");
+        return NULL;
+    }
+    sep = strstr(full, " - ");
+    if (sep)
+        artist = av_strndup(full, sep - full);
+    if (sep && !artist)
+    {
+        ffmpeg_err("cannot allocate ICY artist\n");
+        av_free(full);
+        return NULL;
+    }
+    message = radio_message(full, sep ? sep + 3 : full, artist ? artist : "");
+    av_free(artist);
+    av_free(full);
+    return message;
+}
+
+static void radio_metadata_update(AVFormatContext *av, AVStream *stream,
+                                  char **last, int has_video)
+{
+    uint8_t *icy = NULL;
+    char *message = NULL, *rt;
+    AVDictionaryEntry *title, *artist;
+    AVDictionary *metadata = av->metadata;
+    int updated = av->event_flags & AVFMT_EVENT_FLAG_METADATA_UPDATED;
+    if (has_video)
+        return;
+    if (stream && (stream->event_flags & AVSTREAM_EVENT_FLAG_METADATA_UPDATED))
+    {
+        updated = 1;
+        metadata = stream->metadata;
+        stream->event_flags &= ~AVSTREAM_EVENT_FLAG_METADATA_UPDATED;
+    }
+    if (av->pb && av_opt_get(av->pb, "icy_metadata_packet", AV_OPT_SEARCH_CHILDREN, &icy) >= 0 && icy)
+        message = radio_icy_message((char *)icy);
+    av_free(icy);
+    if (!message && (updated || !*last))
+    {
+        title = av_dict_get(metadata, "title", NULL, 0);
+        if (!title)
+            title = av_dict_get(metadata, "TIT2", NULL, 0);
+        artist = av_dict_get(metadata, "artist", NULL, 0);
+        if (!artist)
+            artist = av_dict_get(metadata, "TPE1", NULL, 0);
+        if (updated || title || artist)
+        {
+            rt = av_asprintf("%s%s%s", artist ? artist->value : "",
+                             artist && title ? " - " : "", title ? title->value : "");
+            if (rt)
+            {
+                message = radio_message(rt, title ? title->value : "", artist ? artist->value : "");
+                av_free(rt);
+            }
+            else
+                ffmpeg_err("cannot allocate radio text\n");
+        }
+    }
+    av->event_flags &= ~AVFMT_EVENT_FLAG_METADATA_UPDATED;
+    if (message && (!*last || strcmp(message, *last)))
+    {
+        E2iSendMsg("%s", message);
+        av_freep(last);
+        *last = message;
+    }
+    else
+        av_free(message);
+}
+
 static void FFMPEGThread(Context_t *context) 
 {
+    char *lastRadioMessage[IPTV_AV_CONTEXT_MAX_NUM] = {NULL, NULL};
     pts_clock_reset(&ptsClock, 0);
     if (avContextTab[0] && (use_custom_io[0] || avContextTab[0]->duration > 0) &&
         avContextTab[0]->start_time != AV_NOPTS_VALUE)
@@ -1178,6 +1316,9 @@ static void FFMPEGThread(Context_t *context)
 
         if (!isWaitingForFinish && (ffmpegStatus == 0) )
         {
+            radio_metadata_update(avContextTab[cAVIdx],
+                avContextTab[cAVIdx]->streams[packet.stream_index],
+                &lastRadioMessage[cAVIdx], context->playback->isVideo);
             readErrorSince[cAVIdx] = 0;
             int64_t pts = 0;
             int64_t dts = 0;
@@ -1849,6 +1990,11 @@ static void FFMPEGThread(Context_t *context)
     mpeg4p2_context_close(mpeg4p2_context);
 #endif
 
+    {
+        unsigned int i;
+        for (i = 0; i < IPTV_AV_CONTEXT_MAX_NUM; i++)
+            av_free(lastRadioMessage[i]);
+    }
     hasPlayThreadStarted = 0;
     context->playback->isPlaying = 0;
     PlaybackDieNow(1);
