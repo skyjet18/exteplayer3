@@ -71,6 +71,7 @@ typedef struct Track_s {
     int                   inject_raw_pcm;
 
     int                   pending;
+    int                   is_forced;
 } Track_t;
 
 typedef struct TrackDescription_s 
@@ -84,6 +85,7 @@ typedef struct TrackDescription_s
     int32_t               aspect_ratio_num;
     int32_t               aspect_ratio_den;
     int                   progressive;
+    int                   is_forced;
     
 } TrackDescription_t;
 

@@ -598,7 +598,7 @@ static int32_t PlaybackSwitchSubtitle(Context_t  *context, int32_t *track)
             context->manager->subtitle->Command(context, MANAGER_SET, track);
             context->manager->subtitle->Command(context, MANAGER_GET, &nextrackid);
           
-            if (curtrackid != nextrackid && nextrackid > -1)
+            if (curtrackid != nextrackid)
             {
                 if (context->output && context->output->subtitle)
                 {

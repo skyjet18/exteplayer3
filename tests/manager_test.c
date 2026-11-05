@@ -30,12 +30,32 @@ static void check_manager(Manager_t *manager, Context_t *context)
     track.Name = "second";
     track.stream = (void *)2;
     track.AVIdx = 1;
+    track.is_forced = 1;
     track.aacbuf = malloc(4);
     assert(track.aacbuf);
     assert(!manager->Command(context, MANAGER_ADD, &track));
     assert(!manager->Command(context, MANAGER_GET_TRACK, &stored));
     assert(stored && stored->stream == (void *)2 && stored->AVIdx == 1);
     assert(!strcmp(stored->Name, "second"));
+    assert(stored->is_forced == 1);
+    if (manager == &SubtitleManager)
+    {
+        TrackDescription_t *list = NULL, *desc = NULL;
+        Track_t *refs = NULL;
+        int size = 0;
+        assert(!manager->Command(context, MANAGER_REF_LIST, &refs) && refs == stored);
+        assert(!manager->Command(context, MANAGER_REF_LIST_SIZE, &size) && size == 1);
+        assert(!manager->Command(context, MANAGER_GET_TRACK_DESC, &desc));
+        assert(desc && desc->is_forced == 1);
+        free(desc->Name);
+        free(desc->Encoding);
+        free(desc);
+        assert(!manager->Command(context, MANAGER_LIST, &list));
+        assert(list && list[0].is_forced == 1 && list[1].Id == -1);
+        free(list[0].Name);
+        free(list[0].Encoding);
+        free(list);
+    }
     /* Refreshing from the same owned buffer must not free that buffer. */
     track = *stored;
     assert(!manager->Command(context, MANAGER_ADD, &track));
