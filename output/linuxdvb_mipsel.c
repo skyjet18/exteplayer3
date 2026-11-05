@@ -151,6 +151,24 @@ static int LinuxDvbMapStreamType(int streamtype, bool primary)
     return streamtype;
 }
 
+static int LinuxDvbOpenRetryOnBusy(const char *path, int flags)
+{
+    int waited = 0, fd;
+    do
+    {
+        fd = open(path, flags);
+        if (fd >= 0 || errno != EBUSY || waited == 250000)
+            return fd;
+        if (PlaybackDieNow(0))
+        {
+            errno = ECANCELED;
+            return -1;
+        }
+        usleep(10000);
+        waited += 10000;
+    } while (1);
+}
+
 int LinuxDvbOpen(Context_t  *context __attribute__((unused)), char *type)
 {
     uint8_t video = !strcmp("video", type);
@@ -160,7 +178,7 @@ int LinuxDvbOpen(Context_t  *context __attribute__((unused)), char *type)
 
     if (video && videofd < 0) 
     {
-        videofd = open(VIDEODEV, O_RDWR | O_NONBLOCK);
+        videofd = LinuxDvbOpenRetryOnBusy(VIDEODEV, O_RDWR | O_NONBLOCK);
 
         if (videofd < 0)
         {
@@ -188,7 +206,7 @@ int LinuxDvbOpen(Context_t  *context __attribute__((unused)), char *type)
     }
     if (audio && audiofd < 0) 
     {
-        audiofd = open(AUDIODEV, O_RDWR | O_NONBLOCK);
+        audiofd = LinuxDvbOpenRetryOnBusy(AUDIODEV, O_RDWR | O_NONBLOCK);
 
         if (audiofd < 0)
         {
@@ -564,6 +582,41 @@ int LinuxDvbClear(Context_t  *context __attribute__((unused)), char *type)
             if (ioctl(audiofd, AUDIO_CLEAR_BUFFER) == -1)
             {
                 linuxdvb_err("AUDIO_CLEAR_BUFFER: ERROR %d, %s\n", errno, strerror(errno));
+                ret = cERR_LINUXDVB_ERROR;
+            }
+            if (context->manager && context->manager->audio)
+            {
+                char *encoding = NULL;
+                context->manager->audio->Command(context, MANAGER_GETENCODING, &encoding);
+                Writer_t *writer = encoding ? getWriter(encoding) : NULL;
+                if (!encoding)
+                {
+                    linuxdvb_err("failed to obtain audio encoding\n");
+                    ret = cERR_LINUXDVB_ERROR;
+                }
+                if (writer && writer->caps->dvbStreamType == AUDIOTYPE_RAW)
+                {
+                    if (writer->reset)
+                        writer->reset();
+                    if (ioctl(audiofd, AUDIO_SET_BYPASS_MODE,
+                              LinuxDvbMapBypassMode(AUDIOTYPE_RAW, true)) < 0 &&
+                        ioctl(audiofd, AUDIO_SET_BYPASS_MODE,
+                              LinuxDvbMapBypassMode(AUDIOTYPE_RAW, false)) < 0)
+                    {
+                        linuxdvb_err("AUDIO_SET_BYPASS_MODE: %s\n", strerror(errno));
+                        ret = cERR_LINUXDVB_ERROR;
+                    }
+                    if (ioctl(audiofd, AUDIO_PLAY) < 0)
+                    {
+                        linuxdvb_err("AUDIO_PLAY: %s\n", strerror(errno));
+                        ret = cERR_LINUXDVB_ERROR;
+                    }
+                }
+                free(encoding);
+            }
+            if (ioctl(audiofd, AUDIO_CONTINUE) < 0)
+            {
+                linuxdvb_err("AUDIO_CONTINUE: %s\n", strerror(errno));
                 ret = cERR_LINUXDVB_ERROR;
             }
         }
