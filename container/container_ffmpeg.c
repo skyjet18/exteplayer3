@@ -229,6 +229,11 @@ static int32_t aac_latm_software_decode = 1;
 static int32_t aac_latm_software_decode = 0;
 #endif
 
+/* Max. allowed difference (ms) between stream and smoothed AAC PTS,
+ * 0 - smoothing disabled.
+ */
+static int32_t aac_pts_dejitter_ms = 60;
+
 static int32_t ac3_software_decode = 0;
 static int32_t eac3_software_decode = 0;
 static int32_t dts_software_decode = 0;
@@ -277,6 +282,11 @@ void aac_software_decoder_set(const int32_t val)
 void aac_latm_software_decoder_set(const int32_t val)
 {
     aac_latm_software_decode = val;
+}
+
+void aac_pts_dejitter_set(const int32_t val)
+{
+    aac_pts_dejitter_ms = val > 0 ? val : 0;
 }
 
 void ac3_software_decoder_set(const int32_t val)
@@ -559,6 +569,98 @@ static int64_t calcPts(uint32_t avContextIdx, AVStream *stream, int64_t pts)
     return doCalcPts(avContextTab[avContextIdx]->start_time, stream->time_base, pts);
 }
 
+/* Some muxers stamp AAC frames from a coarse clock, so PES PTS jitter
+ * around the real sample position (e.g. +-15 ms sawtooth). HW decoders
+ * (Broadcom) do TSM per PES and react to such jumps with gaps/drops,
+ * which is audible as periodic stuttering. To avoid it, PTS of AAC
+ * frames are generated from the number of injected samples and the
+ * stream PTS is used only to (re)synchronize.
+ */
+typedef struct
+{
+    int64_t  anchorPts;  // 90 kHz, INVALID_PTS_VALUE - not synchronized
+    int64_t  samples;    // samples injected since anchorPts
+    int32_t  sampleRate;
+    int32_t  trackId;
+    uint32_t avIdx;
+} AacPtsDejitter_t;
+
+static void aac_pts_dejitter_reset(AacPtsDejitter_t *s)
+{
+    s->anchorPts  = INVALID_PTS_VALUE;
+    s->samples    = 0;
+    s->sampleRate = 0;
+    s->trackId    = -1;
+    s->avIdx      = 0;
+}
+
+static int32_t aac_get_frame_samples(const AVPacket *packet, AVStream *stream, int32_t *sampleRate)
+{
+    static const int32_t adtsSampleRates[] = {96000, 88200, 64000, 48000, 44100, 32000, 24000, 22050, 16000, 12000, 11025, 8000, 7350};
+    const uint8_t *d = packet->data;
+
+    if (d && packet->size >= 7 && 0xFF == d[0] && 0xF0 == (d[1] & 0xF6))
+    {
+        uint32_t sfi = (d[2] >> 2) & 0x0F;
+        if (sfi < sizeof(adtsSampleRates) / sizeof(adtsSampleRates[0]))
+        {
+            *sampleRate = adtsSampleRates[sfi];
+            return ((d[6] & 0x03) + 1) * 1024;
+        }
+        return 0;
+    }
+
+    *sampleRate = get_codecpar(stream)->sample_rate;
+    if (*sampleRate <= 0)
+    {
+        return 0;
+    }
+
+    if (packet->duration > 0)
+    {
+        return (int32_t)av_rescale_q(packet->duration, stream->time_base, (AVRational){1, *sampleRate});
+    }
+
+    return get_codecpar(stream)->frame_size > 0 ? get_codecpar(stream)->frame_size : 0;
+}
+
+static int64_t aac_pts_dejitter(AacPtsDejitter_t *s, const AVPacket *packet, AVStream *stream, int32_t trackId, uint32_t avIdx, int64_t pts)
+{
+    int32_t sampleRate = 0;
+    int32_t frameSamples = 0;
+
+    if (pts == INVALID_PTS_VALUE || 0 == aac_pts_dejitter_ms ||
+        (frameSamples = aac_get_frame_samples(packet, stream, &sampleRate)) <= 0)
+    {
+        aac_pts_dejitter_reset(s);
+        return pts;
+    }
+
+    if (s->anchorPts != INVALID_PTS_VALUE && s->sampleRate == sampleRate &&
+        s->trackId == trackId && s->avIdx == avIdx)
+    {
+        int64_t expected = (s->anchorPts + av_rescale(s->samples, 90000, sampleRate)) & 0x1FFFFFFFFLL;
+        /* difference with 33-bit PTS wrap-around handling */
+        int64_t diff = ((pts - expected + 0x100000000LL) & 0x1FFFFFFFFLL) - 0x100000000LL;
+
+        if (FFABS(diff) <= (int64_t)aac_pts_dejitter_ms * 90)
+        {
+            ffmpeg_printf(200, "AAC PTS %"PRId64" -> %"PRId64" (diff %"PRId64")\n", pts, expected, diff);
+            s->samples += frameSamples;
+            return expected;
+        }
+
+        ffmpeg_printf(10, "AAC PTS resync, diff %"PRId64" ms\n", diff / 90);
+    }
+
+    s->anchorPts  = pts;
+    s->samples    = frameSamples;
+    s->sampleRate = sampleRate;
+    s->trackId    = trackId;
+    s->avIdx      = avIdx;
+    return pts;
+}
+
 /* search for metatdata in context and stream
  * and map it to our metadata.
  */
@@ -617,6 +719,9 @@ static void FFMPEGThread(Context_t *context)
     int64_t lastAudioDts = -1;
     
     int64_t multiContextLastPts[IPTV_AV_CONTEXT_MAX_NUM] = {INVALID_PTS_VALUE, INVALID_PTS_VALUE};
+
+    AacPtsDejitter_t aacPtsDejitter;
+    aac_pts_dejitter_reset(&aacPtsDejitter);
     
     int64_t showtime = 0;
     int64_t bofcount = 0;
@@ -767,6 +872,7 @@ static void FFMPEGThread(Context_t *context)
             currentVideoPts = -1;
             currentAudioPts = -1;
             latestPts = 0;
+            aac_pts_dejitter_reset(&aacPtsDejitter);
 
             // flush streams
             uint32_t i = 0;
@@ -997,6 +1103,13 @@ static void FFMPEGThread(Context_t *context)
                     wrapped_packet_unref(&packet);
                     releaseMutex(__FILE__, __FUNCTION__,__LINE__);
                     continue;
+                }
+
+                if (audioTrack->inject_raw_pcm != 1 && audioTrack->inject_as_pcm != 1 &&
+                    (get_codecpar(audioTrack->stream)->codec_id == AV_CODEC_ID_AAC ||
+                     get_codecpar(audioTrack->stream)->codec_id == AV_CODEC_ID_AAC_LATM))
+                {
+                    pts = aac_pts_dejitter(&aacPtsDejitter, &packet, audioTrack->stream, audioTrack->Id, cAVIdx, pts);
                 }
                 
                 pcmPrivateData_t pcmExtradata;
