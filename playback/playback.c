@@ -434,6 +434,8 @@ static int32_t PlaybackSeek(Context_t  *context, int64_t *pos, uint8_t absolute)
 
     if (context->playback->isPlaying && !context->playback->isForwarding && !context->playback->BackWard && !context->playback->SlowMotion && !context->playback->isPaused) 
     {
+        uint8_t wasSeeking = context->playback->isSeeking;
+        void *old_stamp = context->playback->stamp;
         context->playback->isSeeking = 1;
         /* We changing current stamp, so all frames with old stamps will be skipped
          * Without this there could be situation when the ffmpeg thread is 
@@ -441,17 +443,27 @@ static int32_t PlaybackSeek(Context_t  *context, int64_t *pos, uint8_t absolute)
          * data from the old position were written
          */
         stamp += 1;
-        context->playback->stamp = (void *)stamp;
-        context->output->Command(context, OUTPUT_CLEAR, NULL);
+        context->playback->stamp = (void *)(uintptr_t)stamp;
         if (absolute)
         {
-            context->container->selectedContainer->Command(context, CONTAINER_SEEK_ABS, pos);
+            ret = context->container->selectedContainer->Command(context, CONTAINER_SEEK_ABS, pos);
         }
         else
         {
-            context->container->selectedContainer->Command(context, CONTAINER_SEEK, pos);
+            ret = context->container->selectedContainer->Command(context, CONTAINER_SEEK, pos);
         }
-        context->playback->isSeeking = 0;
+        if (ret == 0)
+        {
+            ret = context->output->Command(context, OUTPUT_CLEAR, NULL);
+            if (ret < 0)
+                playback_err("failed to clear output for seek\n");
+        }
+        else
+        {
+            context->playback->stamp = old_stamp;
+            playback_err("failed to queue seek\n");
+        }
+        context->playback->isSeeking = wasSeeking;
     } 
     else
     {
@@ -544,11 +556,15 @@ static int32_t PlaybackSwitchAudio(Context_t  *context, int32_t *track)
 
     if (context && context->playback && context->playback->isPlaying)
     {
+        uint8_t wasSeeking = context->playback->isSeeking;
+        context->playback->isSeeking = 1;
         if (context->manager && context->manager->audio) 
         {
-            context->manager->audio->Command(context, MANAGER_GET, &curtrackid);
-            context->manager->audio->Command(context, MANAGER_SET, track);
-            context->manager->audio->Command(context, MANAGER_GET, &nextrackid);
+            ret = context->manager->audio->Command(context, MANAGER_GET, &curtrackid);
+            if (ret == 0)
+                ret = context->manager->audio->Command(context, MANAGER_SET, track);
+            if (ret == 0)
+                ret = context->manager->audio->Command(context, MANAGER_GET, &nextrackid);
         }
         else
         {
@@ -556,21 +572,28 @@ static int32_t PlaybackSwitchAudio(Context_t  *context, int32_t *track)
             ret = cERR_PLAYBACK_ERROR;
         }
 
-        if(nextrackid != curtrackid)
+        if(ret == 0 && nextrackid != curtrackid)
         {
-
-            //PlaybackPause(context);
-            if (context->output && context->output->audio)
-            {
-                context->output->audio->Command(context, OUTPUT_SWITCH, (void*)"audio");
-            }
-
             if (context->container && context->container->selectedContainer)
             {
-                context->container->selectedContainer->Command(context, CONTAINER_SWITCH_AUDIO, &nextrackid);
+                ret = context->container->selectedContainer->Command(context, CONTAINER_SWITCH_AUDIO, &nextrackid);
             }
-            //PlaybackContinue(context);
+            else
+                ret = cERR_PLAYBACK_ERROR;
+            if (ret != 0)
+            {
+                if (context->manager->audio->Command(context, MANAGER_SET, &curtrackid) < 0)
+                    playback_err("failed to restore audio selection\n");
+                playback_err("failed to prepare audio switch\n");
+            }
+            else if (context->output && context->output->audio)
+            {
+                ret = context->output->audio->Command(context, OUTPUT_SWITCH, (void*)"audio");
+                if (ret < 0)
+                    playback_err("failed to switch audio output\n");
+            }
         }
+        context->playback->isSeeking = wasSeeking;
     } 
     else
     {

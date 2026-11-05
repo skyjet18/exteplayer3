@@ -16,6 +16,21 @@ Core of movie player for E2 based on the libeplayer using the ffmpeg solution
   Positions are packet-aligned; timestamp seeking is the fallback. Variable
   bitrate material can land away from the requested time. Track-switch flushes
   do not use approximate seeking. Unknown live duration is reported as zero.
+- Audio switching captures the presentation position before clearing decoder
+  buffers or reconfiguring audio output. Internal switch seeks retain
+  subsecond precision and reset discontinuity tracking after a successful VOD
+  seek. Unknown-duration network audio switches do not seek or clear video.
+  The companion FFmpeg DASH demuxer must include the single-file
+  seek/reactivation fix so a reselected audio file does not restart at zero.
+
+`EP3_LIVE_SYNC=0|1` controls the optional live-output hold/watch; the variable
+name includes `3`. Known positive-duration inputs, including static DASH VOD,
+bypass this mechanism regardless of that setting. For receiver-only startup
+problems, `-L FFMPEG_DEBUG_LEVEL:10 -L FFMPEG_SILENT:0` adds input duration,
+start time, initial raw/mapped A/V timestamps, live-sync bypass and seek
+diagnostics to stdout. Keep
+`AV_DEBUG_LEVEL` disabled: the companion's existing FFmpeg diagnostics can
+include decryption material. Redact URLs/headers before sharing logs.
 
 Subtitle `s_l` list entries and `s_c` current-track JSON add `"f":0|1` for the
 forced flag, from stream disposition or a standalone `forced` title token.
@@ -112,9 +127,10 @@ python3 "$FFMPEG_SOURCE/tests/dash_http.py" \
   --driver "$FFMPEG_BUILD/libavformat/tests/dash_http"
 ```
 
-The six UBSan harnesses cover manager ownership/locking, custom IO and selection,
+The seven UBSan harnesses cover manager ownership/locking, custom IO and selection,
 PES/H.264/writev, bounded DVB busy-open and PCM recovery, timestamp continuity,
-and atomic FIFO framing/backpressure/reconnect/path validation.
+atomic FIFO framing/backpressure/reconnect/path validation, and playback
+seek/switch ordering when decoder reset erases the reported position.
 
 The full host build uses fake DVB output directed to `/dev/null` and disables
 the production termination socket. It also builds an HTTP-seek helper.
@@ -124,19 +140,23 @@ The BitBake source list includes the new `tools/pcm_export.c`; other external
 build recipes with explicit source lists must include it too.
 
 The integration fixture needs FFmpeg's `file/http/tcp` protocols, MPEG-TS/HLS,
-MOV/MP4, Matroska, rawvideo, S16LE and SRT demuxers, MPEG-TS/MP4/Matroska muxers,
+MOV/MP4, DASH, Matroska, rawvideo, S16LE and SRT demuxers, MPEG-TS/MP4/DASH/Matroska muxers,
 rawvideo/PCM/AAC/MPEG-2/subrip/movtext decoders, MPEG-2/AAC/movtext encoders and
-the `aresample` filter. Tests generate their own media and loopback HTTP server.
+the `aresample` filter and libxml2. Tests generate their own media and loopback HTTP server.
 They verify actual aligned HTTP Range requests and approximate seek position,
 which HLS variant is fetched, strict CLI parsing, full radio JSON, embedded
-MP4/MKV forced-subtitle selection/disable, and bounded host shutdown.
+MP4/MKV forced-subtitle selection/disable, static single-file DASH startup and
+audio switching with live sync both off and on, and bounded host shutdown.
 
 The companion HTTP fixture additionally needs DASH demuxing/muxing and libxml2.
 It verifies exact fragment retry counts, delay/cancellation bounds, shared media
 origin during delayed multi-representation startup, progress beyond a rotating
 short manifest's original window, byte-range versus standalone downloads, and
-A/V -> video-only ad -> A/V HLS playback. Its two DASH representations are audio;
-it does not certify receiver A/V lip sync or arbitrary provider manifest changes.
+A/V -> video-only ad -> A/V HLS playback. An additional single-file VOD fixture
+uses MPEG-2 video and two AAC audio tracks to verify fractional seeks while an
+audio demuxer is closed, backward seeks and direct audio reactivation. It does
+not certify receiver HEVC/E-AC-3 output, A/V lip sync or arbitrary provider
+manifest changes.
 The HLS FATE test separately exercises index/type changes, ID3 insertion, multiple
 audio identities, late codec probing, ambiguous/duplicate IDs, codec/time-base
 updates and seeks/discard checks while a selected track is absent.

@@ -12,6 +12,7 @@ import subprocess
 import tempfile
 import threading
 import time
+import xml.etree.ElementTree as ET
 
 
 def run(*args):
@@ -29,7 +30,7 @@ def read_fifo(fd):
 
 
 class Player:
-    def __init__(self, executable, *args):
+    def __init__(self, executable, *args, env=None):
         self.events = queue.Queue()
         self.messages = []
         self.raw_stderr = []
@@ -37,7 +38,7 @@ class Player:
         self.log = tempfile.TemporaryFile()
         self.process = subprocess.Popen(
             [executable, *args], stdin=subprocess.PIPE, stdout=self.log,
-            stderr=subprocess.PIPE, text=True)
+            stderr=subprocess.PIPE, text=True, env=env)
         self.reader = threading.Thread(target=self.read, daemon=True)
         self.reader.start()
 
@@ -141,6 +142,23 @@ def main():
                   b"#EXT-X-STREAM-INF:BANDWIDTH=900000\nhigh.m3u8\n")
         resources = {"/media.ts": payload, "/low.ts": payload, "/high.ts": payload,
                      "/master.m3u8": master}
+        run(args.ffmpeg, "-y", "-stream_loop", "-1", "-i", str(media),
+            "-map", "0:v", "-map", "0:a", "-map", "0:a", "-t", "40",
+            "-c:v", "mpeg2video", "-g", "12", "-bf", "2", "-c:a", "aac",
+            "-single_file", "1", "-seg_duration", "1",
+            "-f", "dash", str(root / "single.mpd"))
+        ns = {"d": "urn:mpeg:dash:schema:mpd:2011"}
+        ET.register_namespace("", ns["d"])
+        mpd = ET.parse(root / "single.mpd").getroot()
+        for representation in mpd.findall(".//d:Representation", ns):
+            segments = representation.find("d:SegmentList", ns)
+            segment_base = ET.Element(f"{{{ns['d']}}}SegmentBase")
+            segment_base.append(segments.find("d:Initialization", ns))
+            representation.remove(segments)
+            representation.append(segment_base)
+        resources["/single.mpd"] = ET.tostring(mpd)
+        for single_file in root.glob("single-stream*.mp4"):
+            resources["/" + single_file.name] = single_file.read_bytes()
         for quality in ("low", "high"):
             resources[f"/{quality}.m3u8"] = (
                 f"#EXTM3U\n#EXT-X-TARGETDURATION:12\n#EXTINF:12,\n"
@@ -202,6 +220,28 @@ def main():
                 assert (f"/{chosen}.ts", 0) in requests, requests
                 assert not any(path == f"/{excluded}.ts" for path, _ in requests), requests
             print("PASS HLS: highest Auto / lowest quality fetches, video IPC and bounded shutdown")
+
+            for mode in ("0", "1"):
+                player = Player(args.player, base + "/single.mpd",
+                                env=dict(os.environ, EP3_LIVE_SYNC=mode))
+                try:
+                    assert player.wait("PLAYBACK_PLAY")["sts"] == 0
+                    assert len(player.wait("a_l")) == 2
+                    player.command("j")
+                    assert 0 <= player.wait("J")["ms"] < 2000
+                    time.sleep(1.5)
+                    for track in (1, 0):
+                        player.command("j")
+                        before = player.wait("J")["ms"]
+                        player.command(f"ai{track}")
+                        assert player.wait("a_s")["sts"] == 0
+                        time.sleep(1.5)
+                        player.command("j")
+                        after = player.wait("J")["ms"]
+                        assert before + 250 <= after < before + 4000, (before, after)
+                finally:
+                    player.stop()
+            print("PASS single-file DASH: VOD startup and audio switching with live sync off/on")
 
             for target in embedded:
                 player = Player(args.player, str(target))
