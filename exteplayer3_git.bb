@@ -19,6 +19,7 @@ S = "${WORKDIR}/git/"
 
 
 SOURCE_FILES = "main/exteplayer.c"
+SOURCE_FILES =+ "tools/pcm_export.c"
 SOURCE_FILES =+ "container/container.c"
 SOURCE_FILES =+ "container/container_ffmpeg.c"
 SOURCE_FILES =+ "manager/manager.c"

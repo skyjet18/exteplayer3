@@ -25,6 +25,7 @@
 #include <signal.h>
 #include <inttypes.h>
 #include <stdarg.h>
+#include "pcm_export.h"
 
 #include <sys/ioctl.h>
 #include <sys/prctl.h>
@@ -49,6 +50,7 @@
 
 extern int ffmpeg_av_dict_set(const char *key, const char *value, int flags);
 extern void       aac_software_decoder_set(const int32_t val);
+extern void pcm_audio_export_set(int enabled);
 extern void  aac_latm_software_decoder_set(const int32_t val);
 extern void           aac_pts_dejitter_set(const int32_t val);
 extern void       dts_software_decoder_set(const int32_t val);
@@ -527,14 +529,17 @@ static int ParseParams(int argc,char* argv[], PlayFiles_t *playbackFiles, int *p
 {   
     int ret = 0;
     int c;
-    int quality = 0, default_audio = 0;
+    int quality = 0, default_audio = 0, export_pcm = 0;
     int digit_optind = 0;
     int aopt = 0, bopt = 0;
     char *copt = 0, *dopt = 0;
-    while ( (c = getopt(argc, argv, "G:W:H:A:V:U:we3dlsrimvCa:j:n:x:u:c:h:o:p:P:t:9:0:1:4:5:6:7:f:b:F:S:O:T:L:Q:D:M:")) != -1)
+    while ( (c = getopt(argc, argv, "KG:W:H:A:V:U:we3dlsrimvCa:j:n:x:u:c:h:o:p:P:t:9:0:1:4:5:6:7:f:b:F:S:O:T:L:Q:D:M:")) != -1)
     {
         switch (c) 
         {
+        case 'K':
+            export_pcm = 1;
+            break;
         case 'G':
             g_graphic_sub_path = optarg;
         case 'W':
@@ -761,6 +766,20 @@ static int ParseParams(int argc,char* argv[], PlayFiles_t *playbackFiles, int *p
     }
     
     adaptive_quality_set(quality, default_audio);
+    pcm_audio_export_set(export_pcm);
+    if (export_pcm)
+    {
+        aac_software_decoder_set(1);
+        aac_latm_software_decoder_set(1);
+        ac3_software_decoder_set(1);
+        eac3_software_decoder_set(1);
+        dts_software_decoder_set(1);
+        wma_software_decoder_set(1);
+        mp3_software_decoder_set(1);
+        amr_software_decoder_set(1);
+        vorbis_software_decoder_set(1);
+        opus_software_decoder_set(1);
+    }
     if (0 == ret && optind < argc)
     {
         playbackFiles->szFirstFile = map_inter_file_path(argv[optind]);
@@ -821,6 +840,7 @@ int main(int argc, char* argv[])
     if (0 != ParseParams(argc, argv, &playbackFiles, &audioTrackIdx, &subtitleTrackIdx, &linuxDvbBufferSizeMB))
     {
         printf("Usage: exteplayer3 filePath [-u user-agent] [-c cookies] [-h headers] [-p prio] [-a] [-d] [-w] [-l] [-s] [-i] [-C] [-T timeout] [-L desc] [-t audioTrackId] [-9 subtitleTrackId] [-x separateAudioUri] plabackUri\n");
+        printf("[-K] export decoded S16LE audio to " PCM_EXPORT_PATH " (forces software decoding)\n");
         printf("[-b size] Linux DVB output buffer size in MB\n");
         printf("[-a 0|1|2|3] AAC software decoding - 1 bit - AAC ADTS, 2 - bit AAC LATM\n");
         printf("[-j ms] AAC PTS dejitter threshold in ms, 0 - disabled (default 60)\n");
