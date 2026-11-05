@@ -231,7 +231,9 @@ static int Command(void  *_context, ManagerCmd_t command, void * argument) {
                 track->height               = Tracks[CurrentTrack].height;
                 track->aspect_ratio_num     = Tracks[CurrentTrack].aspect_ratio_num;
                 track->aspect_ratio_den     = Tracks[CurrentTrack].aspect_ratio_den;
+                pthread_mutex_unlock(&track_mutex);
                 context->output->video->Command(context, OUTPUT_GET_PROGRESSIVE, &(track->progressive));
+                return ret;
             }
         }
         else

@@ -60,6 +60,7 @@
 #include "debug.h"
 #include "aac.h"
 #include "pcm.h"
+#include "pts_clock.h"
 #include "ffmpeg_metadata.h"
 
 /* ***************************** */
@@ -116,7 +117,9 @@ static int32_t restart_audio_resampling = 0;
 
 static int64_t g_seek_target_seconds = 0;
 static bool g_do_seek_target_seconds = false;
+static bool g_zero_seek = false;
 static void *g_stamp;
+static PtsClock ptsClock;
 
 /* ***************************** */
 /* Prototypes                    */
@@ -125,6 +128,8 @@ static int32_t container_ffmpeg_seek_bytes(off_t pos);
 static int32_t container_ffmpeg_seek(Context_t *context, int64_t sec, uint8_t absolute);
 static int32_t container_ffmpeg_get_length(Context_t *context, int64_t *length);
 static int64_t calcPts(uint32_t avContextIdx, AVStream *stream, int64_t pts);
+static int64_t calcDts(uint32_t avContextIdx, AVStream *stream, int64_t pts);
+static int64_t calcConvertedPts(AVStream *stream, AVRational time_base, int64_t pts, int dts);
 static int64_t doCalcPts(int64_t start_time, const AVRational time_base, int64_t pts);
 void LinuxDvbBuffSetStamp(void *stamp);
 
@@ -181,9 +186,39 @@ static int32_t Write(Write_FN WriteFun, void *context, void *privateData, int64_
      * avformat structures, during write time
      */
     int32_t ret = 0;
+    Context_t *ctx = context;
+    uint8_t **extra;
+    uint32_t size;
+    uint8_t *saved, *copy = NULL;
+    if (WriteFun == ctx->output->subtitle->Write)
+    {
+        SubtitleOut_t *out = privateData;
+        extra = &out->extradata;
+        size = out->extralen;
+    }
+    else
+    {
+        AudioVideoOut_t *out = privateData;
+        extra = &out->extradata;
+        size = out->extralen;
+    }
+    saved = *extra;
+    if (saved && size)
+    {
+        copy = malloc(size);
+        if (!copy)
+        {
+            ffmpeg_err("allocating output codec data failed\n");
+            return -1;
+        }
+        memcpy(copy, saved, size);
+        *extra = copy;
+    }
     releaseMutex(__FILE__, __FUNCTION__,__LINE__);
     ret = WriteFun(context, privateData);
     getMutex(__FILE__, __FUNCTION__,__LINE__);
+    *extra = saved;
+    free(copy);
     return ret;
 }
 
@@ -517,6 +552,8 @@ static char* Codec2Encoding(int32_t codec_id, int32_t media_type, uint8_t *extra
 
 static int64_t doCalcPts(int64_t start_time, const AVRational time_base, int64_t pts)
 {
+    if (pts == AV_NOPTS_VALUE)
+        return INVALID_PTS_VALUE;
     if (time_base.den > 0)
     {
         pts = av_rescale(pts, (int64_t)time_base.num * 90000, time_base.den);
@@ -541,13 +578,34 @@ static int64_t doCalcPts(int64_t start_time, const AVRational time_base, int64_t
 
 static int64_t calcPts(uint32_t avContextIdx, AVStream *stream, int64_t pts)
 {
-    if (!stream || pts == (int64_t)AV_NOPTS_VALUE)
-    {
-        ffmpeg_err("stream / packet null\n");
+    (void)avContextIdx;
+    if (!stream)
         return INVALID_PTS_VALUE;
-    }
-    
-    return doCalcPts(avContextTab[avContextIdx]->start_time, stream->time_base, pts);
+    return calcConvertedPts(stream, stream->time_base, pts, 0);
+}
+
+static int64_t calcDts(uint32_t avContextIdx, AVStream *stream, int64_t pts)
+{
+    (void)avContextIdx;
+    if (!stream)
+        return INVALID_PTS_VALUE;
+    return calcConvertedPts(stream, stream->time_base, pts, 1);
+}
+
+static int64_t calcConvertedPts(AVStream *stream, AVRational time_base, int64_t pts, int dts)
+{
+    int kind = get_codecpar(stream)->codec_type == AVMEDIA_TYPE_AUDIO;
+    int64_t raw, corrected;
+    if (pts == AV_NOPTS_VALUE || time_base.den <= 0 || time_base.num <= 0)
+        return INVALID_PTS_VALUE;
+    raw = av_rescale_q(pts, time_base, (AVRational){1, 90000});
+    if (dts || get_codecpar(stream)->codec_type == AVMEDIA_TYPE_SUBTITLE)
+        corrected = pts_clock_map(&ptsClock, kind, raw);
+    else
+        corrected = pts_clock_update(&ptsClock, kind, stream, raw, av_gettime_relative());
+    if (corrected < 0 || corrected == PTS_CLOCK_INVALID)
+        return INVALID_PTS_VALUE;
+    return corrected & (PTS_CLOCK_WRAP - 1);
 }
 
 /* Some muxers stamp AAC frames from a coarse clock, so PES PTS jitter
@@ -688,6 +746,13 @@ static int network_read_retry(int64_t start, int64_t now)
 
 static void FFMPEGThread(Context_t *context) 
 {
+    pts_clock_reset(&ptsClock, 0);
+    if (avContextTab[0] && (use_custom_io[0] || avContextTab[0]->duration > 0) &&
+        avContextTab[0]->start_time != AV_NOPTS_VALUE)
+    {
+        ptsClock.base = av_rescale_q(avContextTab[0]->start_time, AV_TIME_BASE_Q, (AVRational){1, 90000});
+        ptsClock.base_ready = 1;
+    }
     char threadname[17];
     strncpy(threadname, __func__, sizeof(threadname));
     threadname[16] = 0;
@@ -697,6 +762,7 @@ static void FFMPEGThread(Context_t *context)
     int64_t lastPts = -1;
     int64_t currentVideoPts = -1;
     int64_t currentAudioPts = -1;
+    int64_t lastVideoWriteUs = 0;
     
     /* lastVideoDts and lastAudioDts 
      * used in isTSLiveMode
@@ -732,6 +798,7 @@ static void FFMPEGThread(Context_t *context)
     // for seek
     int64_t seek_target_seconds = 0;
     bool do_seek_target_seconds = false;
+    bool zero_seek = false;
 
     int64_t seek_target_bytes = 0;
     bool do_seek_target_bytes = false;
@@ -807,6 +874,7 @@ static void FFMPEGThread(Context_t *context)
         {
             do_seek_target_seconds = g_do_seek_target_seconds;
             seek_target_seconds = g_seek_target_seconds;
+            zero_seek = g_zero_seek;
             stamp = g_stamp;
             g_do_seek_target_seconds = false;
         }
@@ -814,6 +882,8 @@ static void FFMPEGThread(Context_t *context)
 
         if (do_seek_target_seconds || do_seek_target_bytes) 
         {
+            if (!zero_seek || do_seek_target_bytes)
+                pts_clock_reset(&ptsClock, 1);
             isWaitingForFinish = 0;
             if (do_seek_target_seconds)
             {
@@ -937,7 +1007,8 @@ static void FFMPEGThread(Context_t *context)
 
             int32_t pid = avContextTab[cAVIdx]->streams[packet.stream_index]->id;
             
-            multiContextLastPts[cAVIdx] = calcPts(cAVIdx, avContextTab[cAVIdx]->streams[packet.stream_index], packet.pts);
+            multiContextLastPts[cAVIdx] = doCalcPts(avContextTab[cAVIdx]->start_time,
+                avContextTab[cAVIdx]->streams[packet.stream_index]->time_base, packet.pts);
             ffmpeg_printf(200, "Ctx %d PTS: %"PRId64" PTS[1] %"PRId64"\n", cAVIdx, multiContextLastPts[cAVIdx], multiContextLastPts[1]);
             
             reset_finish_timeout();
@@ -988,7 +1059,24 @@ static void FFMPEGThread(Context_t *context)
                 {
                     bool skipPacket = false;
                     currentVideoPts = videoTrack->pts = pts = calcPts(cAVIdx, videoTrack->stream, packet.pts);
-                    videoTrack->dts = dts = calcPts(cAVIdx, videoTrack->stream, packet.dts);
+                    videoTrack->dts = dts = calcDts(cAVIdx, videoTrack->stream, packet.dts);
+                    if (pts == INVALID_PTS_VALUE)
+                    {
+                        wrapped_packet_unref(&packet);
+                        releaseMutex(__FILE__, __FUNCTION__,__LINE__);
+                        continue;
+                    }
+                    {
+                        int64_t now = av_gettime_relative();
+                        if (pts_clock_video_gap(now, lastVideoWriteUs, PlaybackLastContinue(),
+                                                context->playback->isPaused))
+                        {
+                            ffmpeg_printf(10, "Reinitializing video output after a long gap\n");
+                            if (context->output->video->Command(context, OUTPUT_SWITCH, "video") < 0)
+                                ffmpeg_err("video output recovery failed\n");
+                        }
+                        lastVideoWriteUs = now;
+                    }
 
                     if ((currentVideoPts != INVALID_PTS_VALUE) && (currentVideoPts > latestPts))
                     {
@@ -1056,7 +1144,7 @@ static void FFMPEGThread(Context_t *context)
             {
                 uint8_t skipPacket = 0;
                 currentAudioPts = audioTrack->pts = pts = calcPts(cAVIdx, audioTrack->stream, packet.pts);
-                dts = calcPts(cAVIdx, audioTrack->stream, packet.dts);
+                dts = calcDts(cAVIdx, audioTrack->stream, packet.dts);
 
                 if ((currentAudioPts != INVALID_PTS_VALUE) && (currentAudioPts > latestPts) && (!videoTrack))
                 {
@@ -2501,7 +2589,9 @@ int32_t container_ffmpeg_update_tracks(Context_t *context, char *filename, int32
 
                             const AVCodec *codec = avcodec_find_decoder(get_codecpar(stream)->codec_id);
 
-                            int errorCode = avcodec_open2(track.avCodecCtx, codec, NULL);
+                            int errorCode = codec ?
+                                (avcodec_is_open(track.avCodecCtx) ? 0 : avcodec_open2(track.avCodecCtx, codec, NULL)) :
+                                AVERROR_DECODER_NOT_FOUND;
                             if(codec != NULL && !errorCode)
                             {
                                ffmpeg_printf(10, "AVCODEC__INIT__SUCCESS\n");
@@ -3015,6 +3105,7 @@ static int32_t container_ffmpeg_seek_bytes(off_t pos)
 
 static int32_t container_ffmpeg_seek(Context_t *context, int64_t sec, uint8_t absolute)
 {
+    int zero_seek = !absolute && sec == 0;
     Track_t *videoTrack = NULL;
     Track_t *audioTrack = NULL;
     Track_t *current = NULL;
@@ -3084,6 +3175,7 @@ static int32_t container_ffmpeg_seek(Context_t *context, int64_t sec, uint8_t ab
     }
 
     getSeekMutex();
+    g_zero_seek = zero_seek;
     g_seek_target_seconds = sec * AV_TIME_BASE;
     g_do_seek_target_seconds = true;
     g_stamp = context->playback->stamp;
