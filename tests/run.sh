@@ -4,9 +4,9 @@ set -eu
 : "${FFMPEG_BUILD:?Set FFMPEG_BUILD to the configured native FFmpeg build}"
 cd "$(dirname "$0")/.."
 tmp=$(mktemp -d)
-trap 'rm -f "$tmp/manager" "$tmp/container" "$tmp/output" "$tmp/dvb" "$tmp/pts" "$tmp/pcm_export"; rmdir "$tmp"' EXIT HUP INT TERM
+trap 'rm -f "$tmp/manager" "$tmp/container" "$tmp/output" "$tmp/dvb" "$tmp/pts" "$tmp/pcm_export" "$tmp/playback"; rmdir "$tmp"' EXIT HUP INT TERM
 cc=${CC:-cc}
-for test in manager container output dvb pts pcm_export; do
+for test in manager container output dvb pts pcm_export playback; do
     sources="tests/${test}_test.c tools/debug.c"
     if [ "$test" = manager ]; then
         sources="$sources manager/manager.c manager/audio.c manager/video.c manager/subtitle.c"

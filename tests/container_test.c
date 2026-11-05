@@ -12,6 +12,38 @@ void E2iSendMsg(const char *format, ...)
     notifications++;
 }
 
+static Track_t seek_track;
+static Track_t live_tracks[2];
+
+static int live_audio_manager(void *opaque, ManagerCmd_t command, void *argument)
+{
+    if (command == MANAGER_REF_LIST)
+        *(Track_t **)argument = live_tracks;
+    else {
+        assert(command == MANAGER_REF_LIST_SIZE);
+        *(int32_t *)argument = 2;
+    }
+    return 0;
+}
+
+static int seek_manager(void *opaque, ManagerCmd_t command, void *argument)
+{
+    assert(command == MANAGER_GET_TRACK);
+    *(Track_t **)argument = &seek_track;
+    return 0;
+}
+
+static int seek_playback(void *opaque, PlaybackCmd_t command, void *argument)
+{
+    if (command == PLAYBACK_LENGTH)
+        *(int64_t *)argument = 100;
+    else {
+        assert(command == PLAYBACK_PTS);
+        *(int64_t *)argument = 2013750;
+    }
+    return 0;
+}
+
 int main(void)
 {
     CustomIOCtx_t io = {0};
@@ -167,6 +199,59 @@ int main(void)
         sel_program_id_set(-1);
         h264_resolution_limit_set(0, 0);
         avformat_free_context(av);
+    }
+    {
+        PlaybackHandler_t playback = {.Command = seek_playback, .isPlaying = 1};
+        Manager_t track_manager = {.Command = seek_manager};
+        ManagerHandler_t managers = {.audio = &track_manager, .video = &track_manager};
+        Context_t context = {.playback = &playback, .manager = &managers};
+        assert(!container_ffmpeg_seek(&context, 0, 0));
+        assert(g_do_seek_target_seconds && g_zero_seek && g_seek_target_seconds == 22375000);
+        assert(!container_ffmpeg_seek(&context, -10, 0));
+        assert(!g_zero_seek && g_seek_target_seconds == 12375000);
+        assert(!container_ffmpeg_seek(&context, 3, 1));
+        assert(!g_zero_seek && g_seek_target_seconds == 3000000);
+        g_do_seek_target_seconds = false;
+        assert(container_ffmpeg_seek(&context, INT64_MAX, 1) < 0);
+        assert(!g_do_seek_target_seconds);
+    }
+    {
+        AVFormatContext av = {.duration = 5668000000, .start_time = 0};
+        const char *old = getenv("EP3_LIVE_SYNC");
+        char *saved = old ? strdup(old) : NULL;
+        avContextTab[0] = &av;
+        for (int enabled = 0; enabled < 2; enabled++) {
+            setenv("EP3_LIVE_SYNC", enabled ? "1" : "0", 1);
+            ls_state = 0;
+            ls_on_video(NULL, 0);
+            assert(ls_state == 2);
+        }
+        avContextTab[0] = NULL;
+        if (saved)
+            setenv("EP3_LIVE_SYNC", saved, 1);
+        else
+            unsetenv("EP3_LIVE_SYNC");
+        free(saved);
+    }
+    {
+        AVFormatContext av = {.duration = AV_NOPTS_VALUE};
+        AVStream streams[2] = {{0}, {0}};
+        PlaybackHandler_t playback = {.Command = seek_playback, .isPlaying = 1};
+        Manager_t audio = {.Command = live_audio_manager};
+        ManagerHandler_t managers = {.audio = &audio};
+        Context_t context = {.playback = &playback, .manager = &managers};
+        int32_t selected = 1;
+        avContextTab[0] = &av;
+        for (int i = 0; i < 2; i++) {
+            live_tracks[i].Id = i;
+            live_tracks[i].stream = &streams[i];
+        }
+        g_do_seek_target_seconds = false;
+        assert(!container_ffmpeg_switch_audio(&context, &selected));
+        assert(!g_do_seek_target_seconds);
+        assert(streams[0].discard == AVDISCARD_ALL);
+        assert(streams[1].discard == AVDISCARD_DEFAULT);
+        avContextTab[0] = NULL;
     }
     return 0;
 }

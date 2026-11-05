@@ -1178,6 +1178,9 @@ static void ls_on_video(Context_t *context, int64_t pts)
     if ((env && env[0] == '0') || !avContextTab[0] ||
         (avContextTab[0]->duration != AV_NOPTS_VALUE && avContextTab[0]->duration > 0))
     {
+        ffmpeg_printf(10, "live sync bypass: enabled=%d duration_us=%"PRId64"\n",
+                      !(env && env[0] == '0'),
+                      avContextTab[0] ? avContextTab[0]->duration : AV_NOPTS_VALUE);
         ls_state = 2;
         return;
     }
@@ -1205,6 +1208,9 @@ static void FFMPEGThread(Context_t *context)
         ptsClock.base = av_rescale_q(avContextTab[0]->start_time, AV_TIME_BASE_Q, (AVRational){1, 90000});
         ptsClock.base_ready = 1;
     }
+    if (avContextTab[0])
+        ffmpeg_printf(10, "playback timing: duration_us=%"PRId64" start_us=%"PRId64"\n",
+                      avContextTab[0]->duration, avContextTab[0]->start_time);
     char threadname[17];
     strncpy(threadname, __func__, sizeof(threadname));
     threadname[16] = 0;
@@ -1311,7 +1317,7 @@ static void FFMPEGThread(Context_t *context)
 
         getMutex(__FILE__, __FUNCTION__,__LINE__);
 
-        if (!context->playback || !context->playback->isPlaying)
+        if (!context->playback || !context->playback->isPlaying || context->playback->isSeeking)
         {
             releaseMutex(__FILE__, __FUNCTION__,__LINE__);
             if(!isWaitingForFinish)
@@ -1358,9 +1364,13 @@ static void FFMPEGThread(Context_t *context)
                             target_us = av_sat_add64(target_us, avContextTab[i]->start_time);
                         }
                         if (!(zero_seek && !use_custom_io[i] && avContextTab[i]->duration <= 0) &&
-                            (zero_seek || fast_http_ts_seek(avContextTab[i], relative_us) < 0) &&
-                            avformat_seek_file(avContextTab[i], -1, INT64_MIN, target_us, INT64_MAX, 0) < 0)
-                            ffmpeg_err("timestamp seek failed for context %u\n", i);
+                            (zero_seek || fast_http_ts_seek(avContextTab[i], relative_us) < 0))
+                        {
+                            if (avformat_seek_file(avContextTab[i], -1, INT64_MIN, target_us, INT64_MAX, 0) < 0)
+                                ffmpeg_err("timestamp seek failed for context %u\n", i);
+                            else if (zero_seek)
+                                pts_clock_reset(&ptsClock, 1);
+                        }
                     }
                     else
                     {
@@ -1516,9 +1526,15 @@ static void FFMPEGThread(Context_t *context)
                 else
 #endif
                 {
+                    AVStream *stream = videoTrack->stream;
                     bool skipPacket = false;
-                    currentVideoPts = videoTrack->pts = pts = calcPts(cAVIdx, videoTrack->stream, packet.pts);
-                    videoTrack->dts = dts = calcDts(cAVIdx, videoTrack->stream, packet.dts);
+                    int first_packet = currentVideoPts == -1;
+                    currentVideoPts = videoTrack->pts = pts = calcPts(cAVIdx, stream, packet.pts);
+                    videoTrack->dts = dts = calcDts(cAVIdx, stream, packet.dts);
+                    if (first_packet && stream)
+                        ffmpeg_printf(10, "first video: raw_pts=%"PRId64" tb=%d/%d pts90=%"PRId64" dts90=%"PRId64"\n",
+                                      packet.pts, stream->time_base.num,
+                                      stream->time_base.den, pts, dts);
                     if (pts == INVALID_PTS_VALUE)
                     {
                         wrapped_packet_unref(&packet);
@@ -1602,9 +1618,15 @@ static void FFMPEGThread(Context_t *context)
             }
             else if (audioTrack && (audioTrack->AVIdx == cAVIdx) && (audioTrack->Id == pid)) 
             {
+                AVStream *stream = audioTrack->stream;
                 uint8_t skipPacket = 0;
-                currentAudioPts = audioTrack->pts = pts = calcPts(cAVIdx, audioTrack->stream, packet.pts);
-                dts = calcDts(cAVIdx, audioTrack->stream, packet.dts);
+                int first_packet = currentAudioPts == -1;
+                currentAudioPts = audioTrack->pts = pts = calcPts(cAVIdx, stream, packet.pts);
+                dts = calcDts(cAVIdx, stream, packet.dts);
+                if (first_packet && stream)
+                    ffmpeg_printf(10, "first audio: raw_pts=%"PRId64" tb=%d/%d pts90=%"PRId64" dts90=%"PRId64"\n",
+                                  packet.pts, stream->time_base.num,
+                                  stream->time_base.den, pts, dts);
                 if (currentAudioPts != INVALID_PTS_VALUE) ls_last_a = currentAudioPts;
 
                 if ((currentAudioPts != INVALID_PTS_VALUE) && (currentAudioPts > latestPts) && (!videoTrack))
@@ -3623,10 +3645,20 @@ static int32_t container_ffmpeg_seek_bytes(off_t pos)
 static int32_t container_ffmpeg_seek(Context_t *context, int64_t sec, uint8_t absolute)
 {
     int zero_seek = !absolute && sec == 0;
+    int64_t target_us;
     Track_t *videoTrack = NULL;
     Track_t *audioTrack = NULL;
     Track_t *current = NULL;
 
+    if (sec > INT64_MAX / AV_TIME_BASE || sec < INT64_MIN / AV_TIME_BASE)
+    {
+        ffmpeg_err("seek target is out of range\n");
+        return cERR_CONTAINER_FFMPEG_ERR;
+    }
+    target_us = sec * AV_TIME_BASE;
+    /* The playback layer holds isSeeking until the output has been reset. */
+    getMutex_wr(__FILE__, __FUNCTION__,__LINE__);
+    releaseMutex(__FILE__, __FUNCTION__,__LINE__);
     if (!absolute) 
     {
         ffmpeg_printf(10, "seeking %"PRId64" sec\n", sec);
@@ -3637,7 +3669,7 @@ static int32_t container_ffmpeg_seek(Context_t *context, int64_t sec, uint8_t ab
 
         int64_t currPts = -1;
         int ret = context->playback->Command(context, PLAYBACK_PTS, &currPts);
-        if (ret != 0)
+        if (ret != 0 || currPts < 0 || currPts == INVALID_PTS_VALUE)
         {
             ffmpeg_err("fail to get current PTS\n");
             return cERR_CONTAINER_FFMPEG_ERR;
@@ -3660,14 +3692,13 @@ static int32_t container_ffmpeg_seek(Context_t *context, int64_t sec, uint8_t ab
             return cERR_CONTAINER_FFMPEG_ERR;
         }
 
-        sec += cur_sec;
+        target_us = av_sat_add64(target_us,
+            av_rescale_q(currPts, (AVRational){1, 90000}, AV_TIME_BASE_Q));
     }
     
-    ffmpeg_printf(10, "goto %"PRId64" sec\n", sec);
-    if (sec < 0)
-    {
-        sec = 0;
-    }
+    ffmpeg_printf(10, "goto %"PRId64" us\n", target_us);
+    if (target_us < 0)
+        target_us = 0;
     
     context->manager->video->Command(context, MANAGER_GET_TRACK, &videoTrack);
     context->manager->audio->Command(context, MANAGER_GET_TRACK, &audioTrack);
@@ -3691,14 +3722,9 @@ static int32_t container_ffmpeg_seek(Context_t *context, int64_t sec, uint8_t ab
         return cERR_CONTAINER_FFMPEG_NO_ERROR;
     }
 
-    if (sec > INT64_MAX / AV_TIME_BASE)
-    {
-        ffmpeg_err("seek target is out of range\n");
-        return cERR_CONTAINER_FFMPEG_ERR;
-    }
     getSeekMutex();
     g_zero_seek = zero_seek;
-    g_seek_target_seconds = sec * AV_TIME_BASE;
+    g_seek_target_seconds = target_us;
     g_do_seek_target_seconds = true;
     g_stamp = context->playback->stamp;
     releaseSeekMutex();
@@ -3763,7 +3789,15 @@ static int32_t container_ffmpeg_get_length(Context_t *context, int64_t *length)
 
 static int32_t container_ffmpeg_switch_audio(Context_t *context, int32_t *arg)
 {
+    int64_t sec = 0;
+    int32_t ret;
     ffmpeg_printf(10, "track %d\n", *arg);
+    if (!avContextTab[0] || use_custom_io[0] || avContextTab[0]->duration > 0)
+    {
+        ret = context->playback->Command(context, PLAYBACK_SEEK, &sec);
+        if (ret != 0)
+            return ret;
+    }
     getMutex_wr(__FILE__, __FUNCTION__,__LINE__);
     if (context->manager->audio)
     {
@@ -3786,9 +3820,6 @@ static int32_t container_ffmpeg_switch_audio(Context_t *context, int32_t *arg)
     }
     releaseMutex(__FILE__, __FUNCTION__,__LINE__);
     
-    /* Hellmaster1024: nothing to do here!*/
-    int64_t sec = 0;
-    context->playback->Command(context, PLAYBACK_SEEK, (void*)&sec);
     return cERR_CONTAINER_FFMPEG_NO_ERROR;
 }
 
