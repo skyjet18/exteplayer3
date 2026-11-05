@@ -150,7 +150,12 @@ static void TerminateWakeUp()
 
 static void *TermThreadFun(void *arg)
 {
-    const char *socket_path = "/tmp/.exteplayerterm.socket";
+#ifndef EXTEPLAYER_TERM_SOCKET
+#define EXTEPLAYER_TERM_SOCKET "/tmp/.exteplayerterm.socket"
+#endif
+    const char *socket_path = EXTEPLAYER_TERM_SOCKET;
+    if (!socket_path[0])
+        return NULL;
     struct sockaddr_un addr;
     int fd = -1;
     int cl = -1;

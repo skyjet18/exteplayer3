@@ -1,6 +1,54 @@
 # exteplayer3
 Core of movie player for E2 based on the libeplayer using the ffmpeg solution
 
+## Adaptive playback and metadata
+
+- `-Q 0|1|2`: Auto (default, highest advertised bandwidth), lowest, or highest
+  HLS/DASH quality. This selects a representation; it is not bandwidth-adaptive
+  switching during playback.
+- `-D 0|1`: retain all HLS audio renditions (default), or prefer default audio.
+  Groups without a default retain their available tracks.
+- `-M WIDTHxHEIGHT`: optional automatic H.264 resolution limit; `0x0` (default)
+  disables it. Unknown dimensions remain eligible. HEVC is not restricted.
+  Explicit positive program IDs selected with `-P` override automatic limits.
+- HTTP MPEG-TS uses approximate byte seeking when duration, resource size,
+  transport packet layout (188/192/204 bytes) and HTTP seekability are known.
+  Positions are packet-aligned; timestamp seeking is the fallback. Variable
+  bitrate material can land away from the requested time. Track-switch flushes
+  do not use approximate seeking. Unknown live duration is reported as zero.
+
+Subtitle `s_l` list entries and `s_c` current-track JSON add `"f":0|1` for the
+forced flag, from stream disposition or a standalone `forced` title token.
+Language alone never implies forced subtitles. Disabled subtitles report ID
+`-1`, `f:0`. Adaptive demuxers discard unselected subtitles; embedded MP4/MKV
+subtitle handling remains enabled.
+
+Audio-only playback additionally emits
+`{"m_t":{"rt":"Artist - Title","t":"Title","a":"Artist"}}` when ICY or
+format/stream metadata changes. Empty strings clear old metadata; unchanged
+values are deduplicated and state resets for each session. JSON control
+characters are escaped, valid UTF-8 is preserved, and invalid legacy bytes
+are encoded as Unicode escapes. Video/TV metadata is not emitted as radio text.
+JSON IPC remains on stderr and diagnostics on stdout.
+
+## FFmpeg companions
+
+These backports target the local FFmpeg 6.1-derived tree, not an unmodified
+system FFmpeg. Apply its accompanying logical commits:
+
+| FFmpeg commit | Purpose |
+|---|---|
+| `8a5ed2f3aa` | Native HLS quality/default-audio options, EVENT live-edge startup and backwards sequence resync. |
+| `f9924289f9` | ATSC PMT type `0x87` identifies E-AC-3 without requiring probe packets. |
+| `0ebaa163bc` | Short DASH timeline-window bounds and opt-in initial sparse-subtitle discard. |
+| `6d59900cf0` | Safe initial delay for availability-clock DASH duration templates without a manifest delay. |
+
+The player requests `hls_quality_mode`, `hls_audio_default_only` and
+`dash_subtitle_default_discard` through AVOptions. These option defaults remain
+unchanged for other callers. Automatic HLS preselection is bypassed for an
+explicit program or active resolution limit so the player can inspect all
+eligible programs after probing.
+
 ## Optional decoded PCM export
 
 `-K` enables `/tmp/exteplayer3_pcm_audio.fifo`, otherwise export is disabled.
@@ -32,3 +80,123 @@ stopping playback. Initialization errors fail playback initialization.
 
 The FIFO remains on disk across sessions for reconnecting readers. Close
 descriptors on stop; never replace the FIFO while a session is active.
+
+## Native validation
+
+Set `FFMPEG_SOURCE` to the companion source tree and `FFMPEG_BUILD` to its
+configured, built out-of-tree native directory:
+
+```sh
+export FFMPEG_SOURCE=/path/to/FFmpeg
+export FFMPEG_BUILD=/path/to/ffmpeg-build
+export FFMPEG_EXTRA_LIBS="-lxml2" # plus any other dependencies of this static build
+sh tests/run.sh
+sh tests/build.sh /path/to/test-output/exteplayer3-host
+python3 tests/integration.py \
+  --player /path/to/test-output/exteplayer3-host \
+  --ffmpeg "$FFMPEG_BUILD/ffmpeg"
+make -C "$FFMPEG_BUILD" fate-hls-selection fate-mpegts-probe fate-dash-live
+```
+
+The six UBSan harnesses cover manager ownership/locking, custom IO and selection,
+PES/H.264/writev, bounded DVB busy-open and PCM recovery, timestamp continuity,
+and atomic FIFO framing/backpressure/reconnect/path validation.
+
+The full host build uses fake DVB output directed to `/dev/null` and disables
+the production termination socket. It also builds an HTTP-seek helper.
+The host-only build namespaces an old bundled FFmpeg table symbol to avoid
+a collision with modern static libavcodec. It does not modify receiver builds.
+The BitBake source list includes the new `tools/pcm_export.c`; other external
+build recipes with explicit source lists must include it too.
+
+The integration fixture needs FFmpeg's `file/http/tcp` protocols, MPEG-TS/HLS,
+MOV/MP4, Matroska, rawvideo, S16LE and SRT demuxers, MPEG-TS/MP4/Matroska muxers,
+rawvideo/PCM/AAC/MPEG-2/subrip/movtext decoders, MPEG-2/AAC/movtext encoders and
+the `aresample` filter. Tests generate their own media and loopback HTTP server.
+They verify actual aligned HTTP Range requests and approximate seek position,
+which HLS variant is fetched, strict CLI parsing, full radio JSON, embedded
+MP4/MKV forced-subtitle selection/disable, and bounded host shutdown.
+
+For end-to-end PCM testing, compile an **isolated, unused** FIFO path into the
+test binary, then pass that same path to the integration fixture:
+
+```sh
+export CFLAGS='-DPCM_EXPORT_PATH="/path/to/test-output/audio.fifo"'
+sh tests/build.sh /path/to/test-output/exteplayer3-host
+python3 tests/integration.py --player /path/to/test-output/exteplayer3-host \
+  --ffmpeg "$FFMPEG_BUILD/ffmpeg" --pcm-fifo /path/to/test-output/audio.fifo
+```
+
+The integration test creates and removes that FIFO. Never use a production
+endpoint. It checks software decoding despite a later `-a 0`, nonzero PCM,
+header fields and complete payload framing. Full-player ASan/UBSan runs also
+pass with `-fsanitize=address,undefined -fno-omit-frame-pointer` in `CFLAGS`
+and `ASAN_OPTIONS=detect_leaks=0`; this does not assert leak-free legacy teardown.
+The isolated HTTP helper excludes ASan global registration, which otherwise
+retains unrelated player command handlers; it retains UBSan instrumentation.
+
+Known unrelated baseline: the existing FFmpeg `fate-mpegtsenc` AAC-dejitter
+expectations fail against the unchanged muxer. All four companion commits'
+new FATE coverage passes; this series does not alter that muxer behavior.
+
+## Backport provenance and exclusions
+
+Reference: [boingbasti/e2-serviceapp-vti](https://github.com/boingbasti/e2-serviceapp-vti),
+`exteplayer3-build/src`, compared through `2716903d48a4`.
+The player baseline was `9703eb5`; the FFmpeg baseline was `3fcbef0461`.
+The reference's player history was inspected, including later corrections
+rather than just copying its final tree:
+
+| Reference history | Adaptation |
+|---|---|
+| `ca4c076`, `29d96ba`, `eb75eb1` | Track-context refresh, lock ordering, EOF/read recovery, responsive shutdown and AV continuity. |
+| `f925bcc`, `fc41d30` | Optional PES DTS, H.264 parameter-set refresh and complete partial-write handling. |
+| `492b509`, `70f5c4c`, `94be6a8` | Duration/HTTP-TS seeks, PCM export and PCM reset/rearming. |
+| `ea4dae6`, `7c54555`, `38e9389`, `75fe304` | Highest-bandwidth Auto, native HLS selection, DASH selection and unknown dimensions. |
+| `ab3cd73`, `191ae3f`, `d09423c`, `40bbdd2` | Radio/forced-subtitle metadata, selection/discard and bounded DVB busy-open retry. |
+| `6a94983` and earlier timestamp follow-ups | Compact, testable discontinuity handling, cached offsets, shared AV delta and pause-aware recovery. |
+
+Intentional exclusions/adaptations:
+
+- Keep target version 184, AAC dejitter (`-j`), multi-SPS/PPS parsing, MOV_TEXT,
+  DRM-header and FFmpeg compatibility work. Existing `.m2ts`/`.mts` support
+  needs no duplicate patch.
+- Preserve the local FFmpeg CENC support, shared DASH timestamp/start origin,
+  timeline-reload position repair, HTTP segment seekability/reuse/redirects,
+  HLS discontinuity processing and EVENT duration logic. The older
+  `ffmpeg-skyjet183-upstream-sync`, DASH AV-sync, CENC and HTTP-options patches
+  must not be applied wholesale.
+- Adapt the short-buffer and duration-template live-edge fixes to local
+  media-time selection; do not assume independent rendition counters align.
+  Keep the existing common startup point and interruptible refresh logic rather
+  than importing a header-wide manifest freeze or repeated fixed-wait loop.
+- Do not import HLS starvation scheduling based on cross-rendition sequence
+  ordering, experimental forced fairness or `/tmp` diagnostic-file machinery.
+  Local HLS already defaults `max_reload` to 100; no replacement is necessary.
+- Sparse DASH subtitles are discarded only when the player opts in, not as a
+  global FFmpeg default. H.264 levels are not rewritten; the optional resolution
+  limit replaces the fork's receiver-specific hard limit.
+- FIFO framing and `writev` were repaired rather than copying the reference's
+  partial-frame behavior or silent 128-vector truncation.
+- Full local-file tests also found an existing `sizeof`/initialization typo in
+  custom IO. It is fixed, and output loops reacquire borrowed manager tracks
+  after callbacks that temporarily release the container lock.
+- No VTi packaging scripts, receiver paths, glibc ABI shims or serviceapp/UI
+  changes are imported. These commits do not build or install an IPK.
+
+## Receiver validation still required
+
+Host tests do **not** certify ARM/MIPS/SH4 cross-builds, DVB driver behavior,
+decoder compatibility, audible lip sync, PCM CPU load or long-running live
+provider/SSAI behavior. Before deployment, check on representative receivers:
+
+- HLS/DASH startup and explicit quality/program selection, separate audio,
+  short live windows, EVENT playlists and discontinuity/ad transitions.
+- Natural AV offsets, 33-bit PTS wrap, reordered video, audio/video clock
+  resets, long stalls, pause/resume, repeated seeks and stream switches.
+- AAC dejitter and passthrough versus software PCM; DTS/PES B-frame output,
+  initial/changed H.264 SPS/PPS, busy decoder devices and stop latency.
+- MP4/MKV/adaptive subtitle selection and disabling, forced flags, ICY and
+  metadata clearing across stations; retained DRM/MOV_TEXT behavior.
+- `-K` off/on CPU cost, export consumers joining/leaving, slow readers,
+  format changes, seeks and audio switching without decoder silence.
