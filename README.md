@@ -22,6 +22,15 @@ Core of movie player for E2 based on the libeplayer using the ffmpeg solution
   seek. Unknown-duration network audio switches do not seek or clear video.
   The companion FFmpeg DASH demuxer must include the single-file
   seek/reactivation fix so a reselected audio file does not restart at zero.
+- Mixed-TS HLS (video plus embedded audio, with separate TS audio renditions)
+  needs both the player's unique HLS track IDs and the companion FFmpeg runtime
+  playlist-reactivation fix. FFmpeg's HLS stream IDs identify playlists and
+  can be shared by embedded audio and video; the player uses stream indices
+  as unique IDs instead. The demuxer rechecks selection during playback, resets
+  suspended input buffers on reactivation and tracks sliding-window timing
+  separately for each playlist. Live audio switches do not seek or reset video.
+  Stdin `a<ID>` selects an ID from `a_l`; `ai<index>` selects a list position.
+  Do not assume a track ID equals its audio-list position.
 
 `EP3_LIVE_SYNC=0|1` controls the optional live-output hold/watch; the variable
 name includes `3`. Known positive-duration inputs, including static DASH VOD,
@@ -125,7 +134,34 @@ make -C "$FFMPEG_BUILD" libavformat/tests/dash_http
 python3 "$FFMPEG_SOURCE/tests/dash_http.py" \
   --ffmpeg "$FFMPEG_BUILD/ffmpeg" \
   --driver "$FFMPEG_BUILD/libavformat/tests/dash_http"
+make -C "$FFMPEG_BUILD" libavformat/tests/hls_http
+python3 "$FFMPEG_SOURCE/tests/hls_http.py" \
+  --ffmpeg "$FFMPEG_BUILD/ffmpeg" \
+  --driver "$FFMPEG_BUILD/libavformat/tests/hls_http"
 ```
+
+The mixed-TS HLS fixture generates three distinguishable AAC tones, an embedded
+audio/video variant and two external TS audio renditions. It tests repeated
+switches, VOD seeks, suspended-playlist recovery and sliding live windows,
+including embedded and external initial audio selections. Timestamp checks
+allow up to one two-second segment of seek preroll; both selected audio and
+video must then advance together. Rendition sequence numbers are not used as
+cross-playlist timestamps.
+
+For actual decoded-audio switching checks, build a host player with the isolated
+`PCM_EXPORT_PATH` described below, then run:
+
+```sh
+FFMPEG_SOURCE="$FFMPEG_SOURCE" python3 tests/hls_switch.py \
+  --player /path/to/test-output/exteplayer3-host \
+  --ffmpeg "$FFMPEG_BUILD/ffmpeg" \
+  --pcm-fifo /path/to/isolated-test.fifo
+```
+
+This tests the real `a<ID>` stdin path with live sync off/on. Each selection must
+produce at least 250 ms of contiguous selected-tone PCM within five seconds,
+retain presentation progress and recover when returning to the original track.
+The host output is not a test of physical receiver/DVB audio hardware.
 
 The seven UBSan harnesses cover manager ownership/locking, custom IO and selection,
 PES/H.264/writev, bounded DVB busy-open and PCM recovery, timestamp continuity,

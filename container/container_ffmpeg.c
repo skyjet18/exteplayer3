@@ -2965,7 +2965,9 @@ int32_t container_ffmpeg_update_tracks(Context_t *context, char *filename, int32
                ffmpeg_printf(1, "%d. encoding = %s - version %d\n", n, encoding, version);
             }
 
-            if (!stream->id)
+            /* HLS IDs identify playlists, so embedded audio and video share one. */
+            if (!stream->id || (avContext->iformat &&
+                               !strcmp(avContext->iformat->name, "hls")))
             {
                 stream->id = n;
             }
