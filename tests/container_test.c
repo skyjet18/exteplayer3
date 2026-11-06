@@ -276,7 +276,7 @@ int main(void)
         assert(!g_do_seek_target_seconds);
         assert(streams[0].discard == AVDISCARD_ALL);
         assert(streams[1].discard == AVDISCARD_DEFAULT);
-        /* Static/custom-I/O DASH switching must not seek or reset video. */
+        /* Static/custom-I/O DASH requests a reset without seeking. */
         playback.isDash = 1;
         av.duration = 60 * AV_TIME_BASE;
         use_custom_io[0] = 1;
@@ -285,6 +285,18 @@ int main(void)
         assert(!g_do_seek_target_seconds);
         assert(streams[0].discard == AVDISCARD_DEFAULT);
         assert(streams[1].discard == AVDISCARD_ALL);
+        assert(dashAudioResetPending);
+        dashAudioResetPending = 0;
+        av.duration = AV_NOPTS_VALUE;
+        selected = 1;
+        assert(!container_ffmpeg_switch_audio(&context, &selected));
+        assert(!g_do_seek_target_seconds && dashAudioResetPending);
+        dashAudioResetPending = 0;
+        av.duration = 0;
+        selected = 0;
+        assert(!container_ffmpeg_switch_audio(&context, &selected));
+        assert(!g_do_seek_target_seconds && dashAudioResetPending);
+        dashAudioResetPending = 0;
         use_custom_io[0] = 0;
         avContextTab[0] = NULL;
     }

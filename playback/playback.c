@@ -41,6 +41,7 @@
 
 static pthread_mutex_t continue_mutex = PTHREAD_MUTEX_INITIALIZER;
 static int64_t last_continue_us;
+static uint32_t playback_stamp;
 
 int64_t PlaybackLastContinue(void)
 {
@@ -433,7 +434,6 @@ static int32_t PlaybackTerminate(Context_t  *context)
 static int32_t PlaybackSeek(Context_t  *context, int64_t *pos, uint8_t absolute) 
 {
     int32_t ret = cERR_PLAYBACK_NO_ERROR;
-    static uint32_t stamp = 0;
 
     playback_printf(10, "pos: %"PRIu64"\n", *pos);
 
@@ -447,8 +447,8 @@ static int32_t PlaybackSeek(Context_t  *context, int64_t *pos, uint8_t absolute)
          * in the av_read_frame(), so, even if we flushed data,  still 
          * data from the old position were written
          */
-        stamp += 1;
-        context->playback->stamp = (void *)(uintptr_t)stamp;
+        playback_stamp += 1;
+        context->playback->stamp = (void *)(uintptr_t)playback_stamp;
         if (absolute)
         {
             ret = context->container->selectedContainer->Command(context, CONTAINER_SEEK_ABS, pos);
@@ -563,10 +563,7 @@ static int32_t PlaybackSwitchAudio(Context_t  *context, int32_t *track)
     {
         uint8_t wasSeeking = context->playback->isSeeking;
         uint8_t wasSwitching = context->playback->isAudioSwitching;
-        if (context->playback->isDash)
-            context->playback->isAudioSwitching = 1;
-        else
-            context->playback->isSeeking = 1;
+        context->playback->isSeeking = 1;
         if (context->manager && context->manager->audio) 
         {
             ret = context->manager->audio->Command(context, MANAGER_GET, &curtrackid);
@@ -597,7 +594,16 @@ static int32_t PlaybackSwitchAudio(Context_t  *context, int32_t *track)
             }
             else if (context->output && context->output->audio)
             {
-                ret = context->output->audio->Command(context, OUTPUT_SWITCH, (void*)"audio");
+                if (context->playback->isDash)
+                {
+                    playback_stamp += 1;
+                    context->playback->stamp = (void *)(uintptr_t)playback_stamp;
+                    ret = context->output->Command(context, OUTPUT_CLEAR, NULL);
+                    if (ret < 0)
+                        playback_err("failed to reset DASH A/V buffers\n");
+                }
+                if (ret == 0)
+                    ret = context->output->audio->Command(context, OUTPUT_SWITCH, (void*)"audio");
                 if (ret < 0)
                     playback_err("failed to switch audio output\n");
             }
