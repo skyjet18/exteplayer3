@@ -3,6 +3,7 @@
 
 static int64_t position, captured;
 static int selected, clears, switches, seek_error;
+static int sync_error, plays;
 
 static int manager_command(void *opaque, ManagerCmd_t command, void *argument)
 {
@@ -19,13 +20,18 @@ static int output_command(void *opaque, OutputCmd_t command, void *argument)
     if (command == OUTPUT_PTS)
         *(int64_t *)argument = position;
     else if (command == OUTPUT_CLEAR || command == OUTPUT_SWITCH) {
-        assert(context->playback->isSeeking);
-        position = 0;
+        assert(context->playback->isSeeking || context->playback->isAudioSwitching);
+        if (!context->playback->isDash)
+            position = 0;
         if (command == OUTPUT_CLEAR)
             clears++;
         else
             switches++;
     }
+    else if (command == OUTPUT_AVSYNC)
+        return sync_error;
+    else if (command == OUTPUT_PLAY)
+        plays++;
     return 0;
 }
 
@@ -33,13 +39,13 @@ static int container_command(void *opaque, ContainerCmd_t command, void *argumen
 {
     Context_t *context = opaque;
     int64_t zero = 0;
-    assert(context->playback->isSeeking);
+    assert(context->playback->isSeeking || context->playback->isAudioSwitching);
     if (command == CONTAINER_SEEK) {
         captured = position;
         return seek_error;
     }
     if (command == CONTAINER_SWITCH_AUDIO)
-        return PlaybackSeek(context, &zero, 0);
+        return context->playback->isDash ? 0 : PlaybackSeek(context, &zero, 0);
     return 0;
 }
 
@@ -71,5 +77,12 @@ int main(void)
     track = 0;
     assert(PlaybackSwitchAudio(&context, &track) < 0);
     assert(position == 3813750 && switches == 1 && selected == 1 && !playback.isSeeking);
+    playback.isDash = 1;
+    assert(!PlaybackSwitchAudio(&context, &track));
+    assert(position == 3813750 && clears == 2 && switches == 2);
+    assert(!playback.isSeeking && !playback.isAudioSwitching);
+    playback.isPlaying = 0;
+    sync_error = -1;
+    assert(PlaybackPlay(&context) < 0 && plays == 0 && !playback.isPlaying);
     return 0;
 }

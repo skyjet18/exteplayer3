@@ -48,5 +48,26 @@ int main(void)
     assert(pts_clock_update(&clock, 0, &video, PTS_CLOCK_JUMP, 2) == PTS_CLOCK_JUMP);
     assert(pts_clock_update(&clock, 0, &video, PTS_CLOCK_JUMP * 2 + 1, 3) == PTS_CLOCK_JUMP);
     assert(pts_clock_difference(10, PTS_CLOCK_WRAP - 10) == 20);
+    pts_clock_reset(&clock, 0);
+    clock.preserve_timeline = 1;
+    assert(pts_clock_update(&clock, 0, &video, 900000, 1) == 0);
+    assert(pts_clock_update(&clock, 1, &audio, 900000, 2) == 0);
+    /* Alternate audio content is 500 ms newer, not the last delivered sample. */
+    assert(pts_clock_update(&clock, 1, &replacement_audio, 945000, 3) == 45000);
+    assert(pts_clock_update(&clock, 0, &video, 936000, 4) == 36000);
+    assert(pts_clock_update(&clock, 1, &audio, 954000, 5) == 54000);
+    /* A read-ahead gap must not manufacture an offset on either track. */
+    assert(pts_clock_update(&clock, 1, &replacement_audio, 1350000, 6) == 450000);
+    assert(pts_clock_update(&clock, 0, &video, 990000, 7) == 90000);
+    assert(pts_clock_update(&clock, 1, &audio, 999000, 8) == 99000);
+    assert(pts_clock_map(&clock, 0, 986400) == 86400);
+    pts_clock_reset(&clock, 1);
+    assert(clock.preserve_timeline);
+    assert(pts_clock_update(&clock, 1, &replacement_audio, 1800000, 9000000) == 900000);
+    pts_clock_reset(&clock, 0);
+    assert(pts_clock_update(&clock, 0, &video, PTS_CLOCK_WRAP - 100, 1) == 0);
+    assert(pts_clock_update(&clock, 1, &audio, PTS_CLOCK_WRAP - 80, 2) == 20);
+    assert(pts_clock_update(&clock, 1, &replacement_audio, 100, 3) == 200);
+    assert(pts_clock_update(&clock, 0, &video, 120, 4) == 220);
     return 0;
 }

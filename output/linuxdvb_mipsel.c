@@ -38,6 +38,7 @@
 #include <pthread.h>
 #include <errno.h>
 #include <poll.h>
+#include <sys/time.h>
 
 #include "bcm_ioctls.h"
 
@@ -81,6 +82,7 @@ pthread_mutex_t LinuxDVBmutex;
 int32_t LinuxDvbBuffOpen(Context_t *context, char *type, int outfd, void *mtx);
 int32_t LinuxDvbBuffClose(Context_t *context);
 int32_t LinuxDvbBuffFlush(Context_t *context);
+int32_t LinuxDvbBuffFlushAudio(Context_t *context);
 int32_t LinuxDvbBuffResume(Context_t *context);
 
 ssize_t BufferingWriteV(int fd, const struct iovec *iov, int ic);
@@ -88,6 +90,58 @@ int32_t LinuxDvbBuffSetSize(const uint32_t bufferSize);
 uint32_t LinuxDvbBuffGetSize();
 
 int LinuxDvbStop(Context_t  *context, char * type);
+
+static int applied_avsync = -1;
+static int timing_after_switch;
+
+static void LinuxDvbTiming(const char *phase)
+{
+    unsigned long long pts;
+    struct timeval now;
+    int error;
+    if (LINUXDVB_DEBUG_LEVEL < 10)
+        return;
+    gettimeofday(&now, NULL);
+    if (videofd >= 0 && !ioctl(videofd, VIDEO_GET_PTS, &pts))
+        linuxdvb_printf(10, "hardware timing: phase=%s video_pts90=%llu wall_us=%"PRId64
+                       " applied_avsync=%d\n", phase, pts,
+                       (int64_t)now.tv_sec * 1000000 + now.tv_usec, applied_avsync);
+    else
+    {
+        error = videofd >= 0 ? errno : EBADF;
+        linuxdvb_printf(10, "hardware timing: phase=%s video_pts90=unavailable errno=%d\n",
+                       phase, error);
+    }
+    gettimeofday(&now, NULL);
+    if (audiofd >= 0 && !ioctl(audiofd, AUDIO_GET_PTS, &pts))
+        linuxdvb_printf(10, "hardware timing: phase=%s audio_pts90=%llu wall_us=%"PRId64
+                       " applied_avsync=%d\n", phase, pts,
+                       (int64_t)now.tv_sec * 1000000 + now.tv_usec, applied_avsync);
+    else
+    {
+        error = audiofd >= 0 ? errno : EBADF;
+        linuxdvb_printf(10, "hardware timing: phase=%s audio_pts90=unavailable errno=%d\n",
+                       phase, error);
+    }
+}
+
+/* The caller owns LinuxDVBmutex. */
+static int LinuxDvbApplyAVSync(Context_t *context)
+{
+    int requested = context && context->playback ? context->playback->AVSync : 0;
+    int dash = context && context->playback && context->playback->isDash;
+    int enabled = dash ? requested : 0;
+    if (ioctl(audiofd, AUDIO_SET_AV_SYNC, enabled) == -1)
+    {
+        applied_avsync = -1;
+        linuxdvb_err("AUDIO_SET_AV_SYNC: ERROR %d, %s\n", errno, strerror(errno));
+        return cERR_LINUXDVB_ERROR;
+    }
+    applied_avsync = enabled;
+    linuxdvb_printf(10, "hardware sync: dash=%d requested=%d applied=%d\n",
+                   dash, requested, enabled);
+    return 0;
+}
 
 /* ***************************** */
 /* MISC Functions                */
@@ -346,6 +400,23 @@ int LinuxDvbPlay(Context_t  *context, char *type) {
             }
         }
 
+        if (context->playback->isDash)
+        {
+            if (ret < 0)
+            {
+                free(Encoding);
+                return ret;
+            }
+            getLinuxDVBMutex();
+            ret = LinuxDvbApplyAVSync(context);
+            releaseLinuxDVBMutex();
+            if (ret < 0)
+            {
+                free(Encoding);
+                return ret;
+            }
+            timing_after_switch = 1;
+        }
         if (ioctl(audiofd, AUDIO_PLAY) < 0)
         {
             linuxdvb_err("AUDIO_PLAY: ERROR %d, %s\n", errno, strerror(errno));
@@ -361,7 +432,7 @@ int LinuxDvbPlay(Context_t  *context, char *type) {
     }
 
     //return ret;
-    return 0;
+    return context->playback->isDash ? ret : 0;
 }
 
 int LinuxDvbStop(Context_t  *context __attribute__((unused)), char * type) 
@@ -547,11 +618,8 @@ int LinuxDvbAVSync(Context_t  *context, char *type __attribute__((unused))) {
     if (audiofd != -1) {
         getLinuxDVBMutex();
 
-        if (ioctl(audiofd, AUDIO_SET_AV_SYNC, 0) == -1) //context->playback->AVSync) == -1)
-        {
-            linuxdvb_err("AUDIO_SET_AV_SYNC: ERROR %d, %s\n", errno, strerror(errno));
-            ret = cERR_LINUXDVB_ERROR;
-        }
+        ret = LinuxDvbApplyAVSync(context);
+        LinuxDvbTiming("startup");
 
         releaseLinuxDVBMutex();
     }
@@ -682,6 +750,15 @@ int LinuxDvbSwitch(Context_t  *context, char *type)
     linuxdvb_printf(10, "v%d a%d\n", video, audio);
 
     if ( (video && videofd != -1) || (audio && audiofd != -1) ) {
+        if (audio && context->playback->isDash)
+        {
+            LinuxDvbTiming("before-switch");
+            if (isBufferedOutput && LinuxDvbBuffFlushAudio(context) < 0)
+            {
+                linuxdvb_err("failed to flush buffered audio for DASH switch\n");
+                return cERR_LINUXDVB_ERROR;
+            }
+        }
         getLinuxDVBMutex();
 
         if (audio && audiofd != -1) {
@@ -696,32 +773,67 @@ int LinuxDvbSwitch(Context_t  *context, char *type)
                 if (ioctl(audiofd, AUDIO_STOP ,NULL) == -1)
                 {
                     linuxdvb_err("AUDIO_STOP: ERROR %d, %s\n", errno, strerror(errno));
+                    if (context->playback->isDash)
+                    {
+                        ret = cERR_LINUXDVB_ERROR;
+                        goto audio_switch_done;
+                    }
                 }
 
                 if (ioctl(audiofd, AUDIO_CLEAR_BUFFER) == -1)
                 {
                     linuxdvb_err("AUDIO_CLEAR_BUFFER: ERROR %d, %s\n", errno, strerror(errno));
+                    if (context->playback->isDash)
+                    {
+                        ret = cERR_LINUXDVB_ERROR;
+                        goto audio_switch_done;
+                    }
                 }
 
                 if (writer == NULL)
                 {
                     linuxdvb_err("cannot found writer for encoding %s using default\n", Encoding);
+                    if (context->playback->isDash)
+                    {
+                        ret = cERR_LINUXDVB_ERROR;
+                        goto audio_switch_done;
+                    }
                 } 
                 else
                 {
+                    if (context->playback->isDash && writer->reset && writer->reset() < 0)
+                    {
+                        linuxdvb_err("failed to reset DASH audio writer\n");
+                        ret = cERR_LINUXDVB_ERROR;
+                        goto audio_switch_done;
+                    }
                     linuxdvb_printf(10, "found writer %s for encoding %s\n", writer->caps->name, Encoding);
                     ret = ioctl( audiofd, AUDIO_SET_BYPASS_MODE, LinuxDvbMapBypassMode(writer->caps->dvbStreamType, true));
                     if (ret < 0) ret = ioctl( audiofd, AUDIO_SET_BYPASS_MODE, LinuxDvbMapBypassMode(writer->caps->dvbStreamType, false));
                     if (ret < 0)
                     {
                         linuxdvb_err("AUDIO_SET_BYPASS_MODE: ERROR %d, %s\n", errno, strerror(errno));
+                        if (context->playback->isDash)
+                            goto audio_switch_done;
                     }
                 }
 
+                if (context->playback->isDash)
+                {
+                    ret = LinuxDvbApplyAVSync(context);
+                    if (ret < 0)
+                    {
+                        goto audio_switch_done;
+                    }
+                    timing_after_switch = 1;
+                }
                 if (ioctl(audiofd, AUDIO_PLAY) == -1)
                 {
                     linuxdvb_err("AUDIO_PLAY: ERROR %d, %s\n", errno, strerror(errno));
+                    if (context->playback->isDash)
+                        ret = cERR_LINUXDVB_ERROR;
                 }
+audio_switch_done:
                 free(Encoding);
             }
             else
@@ -970,6 +1082,11 @@ static int Write(void  *_context, void *_out)
         free(Encoding);
     }
 
+    if (audio && timing_after_switch)
+    {
+        LinuxDvbTiming("first-selected-audio");
+        timing_after_switch = 0;
+    }
     return ret;
 }
 

@@ -24,6 +24,7 @@ typedef struct {
 typedef struct {
     PtsTrackClock track[2];
     int base_ready, delta_ready, delta_locked, stable;
+    int preserve_timeline;
     int64_t base, delta, delta_min, delta_max;
 } PtsClock;
 
@@ -47,10 +48,12 @@ static inline int64_t pts_clock_difference(int64_t a, int64_t b)
 static inline void pts_clock_reset(PtsClock *clock, int keep_base)
 {
     int ready = keep_base && clock->base_ready;
+    int preserve_timeline = clock->preserve_timeline;
     int64_t base = clock->base;
     memset(clock, 0, sizeof(*clock));
     clock->base_ready = ready;
     clock->base = base;
+    clock->preserve_timeline = preserve_timeline;
 }
 
 /* raw is a 90-kHz timestamp, not a PTS already shortened to a PES field. */
@@ -88,7 +91,9 @@ static inline int64_t pts_clock_update(PtsClock *clock, int kind,
     {
         entry = &self->cache[self->next++ % 4];
         entry->stream = stream;
-        if (kind && self_fresh)
+        if (clock->preserve_timeline)
+            entry->offset = -clock->base;
+        else if (kind && self_fresh)
             entry->offset = self->corrected - raw;
         else if (self->ready && fresh && clock->delta_ready && other->trusted)
             entry->offset = other->corrected + (kind ? clock->delta : -clock->delta) - raw;
@@ -97,6 +102,8 @@ static inline int64_t pts_clock_update(PtsClock *clock, int kind,
     }
     if (self->ready && pts_clock_abs(raw + entry->offset - self->corrected) > PTS_CLOCK_JUMP)
         changed = 1;
+    if (clock->preserve_timeline)
+        changed = 0;
     if (changed)
     {
         int64_t target = self->corrected + self->step;

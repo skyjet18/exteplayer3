@@ -23,6 +23,8 @@ typedef struct PlaybackHandler_s
     uint8_t isPaused;
     uint8_t isForwarding;
     uint8_t isSeeking;
+    uint8_t isAudioSwitching;
+    uint8_t isDash;
     uint8_t isCreationPhase;
 
     int32_t BackWard;

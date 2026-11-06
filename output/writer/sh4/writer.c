@@ -96,7 +96,7 @@ static Writer_t * AvailableWriter[] = {
 /* ***************************** */
 /*  Functions                    */
 /* ***************************** */
-ssize_t WriteWithRetry(Context_t *context, int pipefd, int fd, void *pDVBMtx, const void *buf, int size)
+ssize_t WriteWithRetry(Context_t *context, int pipefd, int fd, void *pDVBMtx, const void *buf, int size, int is_video)
 {
     fd_set rfds;
     
@@ -104,7 +104,8 @@ ssize_t WriteWithRetry(Context_t *context, int pipefd, int fd, void *pDVBMtx, co
     int retval = -1;
     struct timeval tv;
     
-    while(size > 0 && 0 == PlaybackDieNow(0) && !context->playback->isSeeking)
+    while(size > 0 && 0 == PlaybackDieNow(0) && !context->playback->isSeeking &&
+          (is_video || !context->playback->isAudioSwitching))
     {
         if (context->playback->isPaused)
         {
@@ -198,4 +199,3 @@ Writer_t* getDefaultAudioWriter()
 
     return NULL;
 }
-
