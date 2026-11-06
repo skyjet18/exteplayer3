@@ -26,18 +26,29 @@ Core of movie player for E2 based on the libeplayer using the ffmpeg solution
   needs both the player's unique HLS track IDs and the companion FFmpeg runtime
   playlist-reactivation fix. FFmpeg's HLS stream IDs identify playlists and
   can be shared by embedded audio and video; the player uses stream indices
-  as unique IDs instead. The demuxer rechecks selection during playback, resets
-  suspended input buffers on reactivation and tracks sliding-window timing
+  as unique IDs instead, recognizing both `hls` and legacy `hls,applehttp`
+  format names. Packet routing matches the actual stream and input context,
+  never a potentially shared playlist ID. The demuxer rechecks selection during
+  playback, resets suspended input buffers on reactivation and tracks sliding-window timing
   separately for each playlist. Live audio switches do not seek or reset video.
   Stdin `a<ID>` selects an ID from `a_l`; `ai<index>` selects a list position.
   Do not assume a track ID equals its audio-list position.
+  VOD switch seeks also require the companion's excluded-playlist guard:
+  quality preselection can leave other playlists without segments.
 
 `EP3_LIVE_SYNC=0|1` controls the optional live-output hold/watch; the variable
 name includes `3`. Known positive-duration inputs, including static DASH VOD,
 bypass this mechanism regardless of that setting. For receiver-only startup
 problems, `-L FFMPEG_DEBUG_LEVEL:10 -L FFMPEG_SILENT:0` adds input duration,
 start time, initial raw/mapped A/V timestamps, live-sync bypass and seek
-diagnostics to stdout. Keep
+diagnostics to stdout. `track identity` lines report the input context, exact
+format name, stream index, previous ID, assigned ID and media type. For receiver
+retests, check startup `-t <audio-list-index>`, send `al`/`ac`/`vc`, switch to an
+external audio ID and back with `a<ID>`, then request those lists again.
+Embedded audio must be audible and its reported ID must differ from video.
+Use `-C` to disable list caching when checking track refresh. Compare normal
+output (`-a 0`) with explicit AAC software decoding (`-a 3`); the latter should
+report `A_IPCM` or `A_LPCM`, not `A_AAC`. Keep
 `AV_DEBUG_LEVEL` disabled: the companion's existing FFmpeg diagnostics can
 include decryption material. Redact URLs/headers before sharing logs.
 
@@ -162,6 +173,39 @@ This tests the real `a<ID>` stdin path with live sync off/on. Each selection mus
 produce at least 250 ms of contiguous selected-tone PCM within five seconds,
 retain presentation progress and recover when returning to the original track.
 The host output is not a test of physical receiver/DVB audio hardware.
+
+The original PCM-only fixture did not cover duplicate IDs under legacy format
+aliases or the normal compressed-audio writer. The expanded fixture supports
+`--multiple` (three qualities), `--video-first`, `--quality auto|lowest|all`
+(`all` probes every variant before program selection), `--case vod|live`,
+and `--fmp4` for raw-AAC framing regression checks. Tests disable track caching
+and recheck video/audio IDs after real manager refreshes.
+
+To validate normal compressed AAC output without `-K`, build with a new isolated
+capture file. `HOST_HLS_ALIAS=1` additionally enables a host-only linker wrapper
+which reports the same demuxer as `hls,applehttp`; it reproduced the duplicate-ID
+failure on the preceding player commit. It is not evidence that a particular
+receiver reports that format name.
+
+```sh
+HOST_AUDIO_OUTPUT=/path/to/test-output/audio.pes HOST_HLS_ALIAS=1 \
+  sh tests/build.sh /path/to/test-output/exteplayer3-capture
+FFMPEG_SOURCE="$FFMPEG_SOURCE" python3 tests/hls_switch.py \
+  --player /path/to/test-output/exteplayer3-capture \
+  --ffmpeg "$FFMPEG_BUILD/ffmpeg" \
+  --pcm-fifo /path/to/test-output/audio.fifo \
+  --audio-output /path/to/test-output/audio.pes \
+  --mode compressed --multiple --video-first --quality all
+```
+
+The capture file must not already exist. The test removes its own capture
+between sessions, parses audio PES packets and decodes the captured AAC to
+identify the selected tone. This additionally requires the native FFmpeg
+S16LE muxer and PCM S16LE encoder. `--mode software` tests explicit `-a 3`
+without `-K`, reading the PCM writer's sample-format header and sample payload
+from PES. `--mode export` (default) retains the FIFO test, which requires the
+same isolated `PCM_EXPORT_PATH` at build and runtime. Do not run fixtures
+concurrently against the same compiled FIFO or capture path.
 
 The seven UBSan harnesses cover manager ownership/locking, custom IO and selection,
 PES/H.264/writev, bounded DVB busy-open and PCM recovery, timestamp continuity,

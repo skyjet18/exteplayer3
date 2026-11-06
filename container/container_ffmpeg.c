@@ -424,10 +424,23 @@ static int subtitle_is_forced(AVStream *stream)
     return 0;
 }
 
+static int is_hls_input(const AVFormatContext *av)
+{
+    return av->iformat &&
+        (av_match_name("hls", av->iformat->name) ||
+         av_match_name("applehttp", av->iformat->name));
+}
+
+static int packet_matches_track(const Track_t *track, unsigned int context_index,
+                                const AVStream *stream)
+{
+    return track && track->AVIdx == context_index && track->stream == stream;
+}
+
 static void select_subtitle_stream(AVFormatContext *av, int id)
 {
     unsigned int i;
-    if (!av->iformat || (strcmp(av->iformat->name, "hls") &&
+    if (!av->iformat || (!is_hls_input(av) &&
                          strcmp(av->iformat->name, "dash")))
         return;
     for (i = 0; i < av->nb_streams; i++)
@@ -1505,7 +1518,8 @@ static void FFMPEGThread(Context_t *context)
             
             ffmpeg_printf(200, "packet.size %d - index %d\n", packet.size, pid);
 
-            if (videoTrack && (videoTrack->AVIdx == cAVIdx) && (videoTrack->Id == pid))
+            if (packet_matches_track(videoTrack, cAVIdx,
+                                     avContextTab[cAVIdx]->streams[packet.stream_index]))
             {
 #if LIBAVCODEC_VERSION_INT >= AV_VERSION_INT(56, 34, 100)
                 AVCodecContext *codec_context = videoTrack->avCodecCtx;
@@ -1616,7 +1630,8 @@ static void FFMPEGThread(Context_t *context)
                     }
                 }
             }
-            else if (audioTrack && (audioTrack->AVIdx == cAVIdx) && (audioTrack->Id == pid)) 
+            else if (packet_matches_track(audioTrack, cAVIdx,
+                                          avContextTab[cAVIdx]->streams[packet.stream_index]))
             {
                 AVStream *stream = audioTrack->stream;
                 uint8_t skipPacket = 0;
@@ -1739,7 +1754,8 @@ static void FFMPEGThread(Context_t *context)
                         Track_t *selected = NULL;
                         context->manager->audio->Command(context, MANAGER_GET_TRACK, &selected);
                         if (!selected || selected->avCodecCtx != c ||
-                            selected->AVIdx != cAVIdx || selected->Id != pid)
+                            !packet_matches_track(selected, cAVIdx,
+                                avContextTab[cAVIdx]->streams[packet.stream_index]))
                             break;
                         audioTrack = selected;
                         if(do_seek_target_seconds || do_seek_target_bytes)
@@ -2032,7 +2048,8 @@ static void FFMPEGThread(Context_t *context)
                     }
                 }
             }
-            else if (subtitleTrack && (subtitleTrack->Id == pid))
+            else if (packet_matches_track(subtitleTrack, cAVIdx,
+                                          avContextTab[cAVIdx]->streams[packet.stream_index]))
             {
                 int64_t duration = -1;
                 int64_t pts = calcPts(cAVIdx, subtitleTrack->stream, packet.pts);
@@ -2920,6 +2937,7 @@ int32_t container_ffmpeg_update_tracks(Context_t *context, char *filename, int32
         {
             Track_t track;
             AVStream *stream = avContext->streams[n];
+            int previous_id = stream->id;
             int32_t version = 0;
             char *encoding = NULL;
             if (get_codecpar(stream)->codec_type == AVMEDIA_TYPE_VIDEO &&
@@ -2966,11 +2984,13 @@ int32_t container_ffmpeg_update_tracks(Context_t *context, char *filename, int32
             }
 
             /* HLS IDs identify playlists, so embedded audio and video share one. */
-            if (!stream->id || (avContext->iformat &&
-                               !strcmp(avContext->iformat->name, "hls")))
+            if (!stream->id || is_hls_input(avContext))
             {
                 stream->id = n;
             }
+            ffmpeg_printf(10, "track identity: context=%u format=%s index=%d previous_id=%d id=%d type=%d\n",
+                          cAVIdx, avContext->iformat ? avContext->iformat->name : "unknown",
+                          stream->index, previous_id, stream->id, get_codecpar(stream)->codec_type);
 
             /* some values in track are unset and therefor copyTrack segfaults.
              * so set it by default to NULL!
@@ -3160,8 +3180,8 @@ int32_t container_ffmpeg_update_tracks(Context_t *context, char *filename, int32
                     }
                     else if (get_codecpar(stream)->codec_id == AV_CODEC_ID_AAC)
                     {
-                        if( 0 == strncmp(avContext->iformat->name, "mpegts", 6) || 
-                            0 == strncmp(avContext->iformat->name, "hls,", 4) )
+                        /* HLS can carry raw AAC in fMP4; its writer detects ADTS per packet. */
+                        if( 0 == strncmp(avContext->iformat->name, "mpegts", 6) )
                         {
                             const char marker[] = "ADTS";
                             track.aacbuflen = sizeof(marker)/sizeof(char);

@@ -48,6 +48,31 @@ int main(void)
 {
     CustomIOCtx_t io = {0};
     uint8_t bytes[8];
+    {
+        AVStream video = {.id = 11}, audio = {.id = 11};
+        Track_t selected_video = {.Id = 11, .AVIdx = 0, .stream = &video};
+        Track_t selected_audio = {.Id = 11, .AVIdx = 0, .stream = &audio};
+        AVFormatContext av = {0};
+        AVInputFormat format = {.name = "hls,applehttp"};
+        /* The old ID-only video-first dispatch consumes this audio packet. */
+        assert(selected_video.Id == audio.id);
+        assert(!packet_matches_track(&selected_video, 0, &audio));
+        assert(packet_matches_track(&selected_audio, 0, &audio));
+        assert(!packet_matches_track(&selected_audio, 1, &audio));
+        assert(!packet_matches_track(NULL, 0, &audio));
+        av.iformat = &format;
+        assert(is_hls_input(&av));
+        format.name = "hls";
+        assert(is_hls_input(&av));
+        format.name = "applehttp";
+        assert(is_hls_input(&av));
+        format.name = "dash";
+        assert(!is_hls_input(&av));
+        format.name = "not-hls";
+        assert(!is_hls_input(&av));
+        av.iformat = NULL;
+        assert(!is_hls_input(&av));
+    }
     assert(network_read_retry(100, 100));
     assert(network_read_retry(100, 100 + 10 * AV_TIME_BASE - 1));
     assert(!network_read_retry(100, 100 + 10 * AV_TIME_BASE));
