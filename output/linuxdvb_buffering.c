@@ -85,6 +85,7 @@ static int g_pfd[2] = {-1, -1};
 static pthread_mutex_t *g_pDVBMtx = NULL;
 
 static bool g_bDuringWrite = false;
+static bool g_bWritingAudio = false;
 static bool g_bSignalWriteFinish = false;
 
 static void *g_pWriteStamp = NULL;
@@ -139,6 +140,7 @@ static void LinuxDvbBuffThread(Context_t *context)
     {
         pthread_mutex_lock(&bufferingMtx);
         g_bDuringWrite = false;
+        g_bWritingAudio = false;
         if (g_bSignalWriteFinish)
         {
             pthread_cond_signal(&bufferingWriteFinishedCond);
@@ -187,14 +189,18 @@ static void LinuxDvbBuffThread(Context_t *context)
          * write some portion of data after LinuxDvbBuffFlush,
          * for example after seek.
          */
-        if (nodePtr && !context->playback->isSeeking && context->playback->stamp == nodePtr->stamp)
+        if (nodePtr && !context->playback->isSeeking &&
+            (nodePtr->dataType == OUTPUT_VIDEO || !context->playback->isAudioSwitching) &&
+            context->playback->stamp == nodePtr->stamp)
         {
             /* Write data to valid output */
             uint8_t *dataPtr = (uint8_t *)nodePtr + sizeof(BufferingNode_t);
             int fd = nodePtr->dataType == OUTPUT_VIDEO ? videofd : audiofd;
             g_bDuringWrite = true;
+            g_bWritingAudio = nodePtr->dataType == OUTPUT_AUDIO;
             pthread_mutex_unlock(&bufferingMtx);
-            if (0 != WriteWithRetry(context, g_pfd[0], fd, g_pDVBMtx, dataPtr, nodePtr->dataSize))
+            if (0 != WriteWithRetry(context, g_pfd[0], fd, g_pDVBMtx, dataPtr,
+                                   nodePtr->dataSize, nodePtr->dataType == OUTPUT_VIDEO))
             {
                 buff_err("Something is WRONG\n");
             }
@@ -381,6 +387,37 @@ int32_t LinuxDvbBuffResume(Context_t *context)
      */
     WriteWakeUp();
     
+    return 0;
+}
+
+int32_t LinuxDvbBuffFlushAudio(Context_t *context)
+{
+    BufferingNode_t **link;
+    WriteWakeUp();
+    pthread_mutex_lock(&bufferingMtx);
+    bufferingQueueTail = NULL;
+    for (link = &bufferingQueueHead; *link; )
+    {
+        BufferingNode_t *node = *link;
+        if (node->dataType == OUTPUT_AUDIO)
+        {
+            *link = node->next;
+            bufferingDataSize -= node->dataSize + sizeof(*node);
+            free(node);
+        }
+        else
+        {
+            bufferingQueueTail = node;
+            link = &node->next;
+        }
+    }
+    pthread_cond_signal(&bufferingDataConsumedCond);
+    while (g_bWritingAudio && !PlaybackDieNow(0))
+    {
+        g_bSignalWriteFinish = true;
+        pthread_cond_wait(&bufferingWriteFinishedCond, &bufferingMtx);
+    }
+    pthread_mutex_unlock(&bufferingMtx);
     return 0;
 }
 

@@ -237,7 +237,12 @@ static int PlaybackPlay(Context_t  *context)
     if (!context->playback->isPlaying) 
     {
         context->playback->AVSync = 1;
-        context->output->Command(context, OUTPUT_AVSYNC, NULL);
+        ret = context->output->Command(context, OUTPUT_AVSYNC, NULL);
+        if (ret != 0 && context->playback->isDash)
+        {
+            playback_err("DASH hardware A/V sync setup failed\n");
+            return ret;
+        }
 
         context->playback->isCreationPhase = 1;	// allows the created thread to go into wait mode
         ret = context->output->Command(context, OUTPUT_PLAY, NULL);
@@ -557,7 +562,11 @@ static int32_t PlaybackSwitchAudio(Context_t  *context, int32_t *track)
     if (context && context->playback && context->playback->isPlaying)
     {
         uint8_t wasSeeking = context->playback->isSeeking;
-        context->playback->isSeeking = 1;
+        uint8_t wasSwitching = context->playback->isAudioSwitching;
+        if (context->playback->isDash)
+            context->playback->isAudioSwitching = 1;
+        else
+            context->playback->isSeeking = 1;
         if (context->manager && context->manager->audio) 
         {
             ret = context->manager->audio->Command(context, MANAGER_GET, &curtrackid);
@@ -594,6 +603,7 @@ static int32_t PlaybackSwitchAudio(Context_t  *context, int32_t *track)
             }
         }
         context->playback->isSeeking = wasSeeking;
+        context->playback->isAudioSwitching = wasSwitching;
     } 
     else
     {
@@ -780,6 +790,8 @@ PlaybackHandler_t PlaybackHandler = {
     0,          //isPaused
     0,          //isForwarding
     0,          //isSeeking
+    0,          //isAudioSwitching
+    0,          //isDash
     0,          //isCreationPhase
     0,          //BackWard
     0,          //SlowMotion

@@ -54,6 +54,29 @@ format name, stream index, previous ID, assigned ID and media type.
 For receiver timing retests, `audio selection timing` logs the first selected packet's raw
 PTS/time base, mapped output PTS and latest injected video PTS after each change.
 These are injection timestamps, not proof of receiver presentation or lip sync.
+For DASH, the player now preserves the common media timeline across audio
+selections instead of anchoring a new track to the last delivered audio packet.
+The non-SH4 DVB backend honors requested hardware A/V sync for DASH and reapplies
+it after configuring the selected audio codec, before restarting audio.
+Other formats retain their existing sync policy. DASH audio switching does not
+seek or clear video, including static DASH; software buffering discards only old
+audio while queued video continues. Segmented DASH reactivation additionally
+requires the companion correction separating packet-drop state from single-file
+seeks; the earlier `79390c5c6d` fix alone does not cover real reopening.
+If the receiver rejects the DASH sync ioctl, startup/switch reports an error
+rather than silently running with hardware sync disabled.
+
+Add `-L LINUXDVB_DEBUG_LEVEL:10 -L LINUXDVB_SILENT:0` for hardware diagnostics.
+`hardware sync` reports the requested/applied policy. `hardware timing` samples
+both decoder PTS at startup, before a switch, and on first selected-audio
+injection, with separate wall-clock observation times. Unsupported queries are
+reported as unavailable, never replaced with injection timestamps. Driver PTS
+semantics and queued writes can still differ from the instant of audible output.
+`video clock` and `audio selection clock` report raw 90-kHz timestamps, the
+shared base, active offsets, and audio PTS before AAC smoothing. Retain startup
+through repeated `a<ID>` selections and switch-back on both AB Pulse 4K and
+VU+ Uno 4K SE. Confirm lip sync and continuously moving video, not just close
+logged PTS. Host clock/packet/ioctl tests do not establish receiver lip sync.
 Check startup `-t <audio-list-index>`, send `al`/`ac`/`vc`, switch to an
 external audio ID and back with `a<ID>`, then request those lists again.
 Embedded audio must be audible and its reported ID must differ from video.

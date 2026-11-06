@@ -1214,6 +1214,7 @@ static void FFMPEGThread(Context_t *context)
 {
     char *lastRadioMessage[IPTV_AV_CONTEXT_MAX_NUM] = {NULL, NULL};
     int pcm_export_failed = 0;
+    ptsClock.preserve_timeline = context->playback->isDash;
     pts_clock_reset(&ptsClock, 0);
     if (avContextTab[0] && (use_custom_io[0] || avContextTab[0]->duration > 0) &&
         avContextTab[0]->start_time != AV_NOPTS_VALUE)
@@ -1222,8 +1223,10 @@ static void FFMPEGThread(Context_t *context)
         ptsClock.base_ready = 1;
     }
     if (avContextTab[0])
-        ffmpeg_printf(10, "playback timing: duration_us=%"PRId64" start_us=%"PRId64"\n",
-                      avContextTab[0]->duration, avContextTab[0]->start_time);
+        ffmpeg_printf(10, "playback timing: duration_us=%"PRId64" start_us=%"PRId64
+                      " format=%s preserve_timeline=%d\n",
+                      avContextTab[0]->duration, avContextTab[0]->start_time,
+                      avContextTab[0]->iformat->name, ptsClock.preserve_timeline);
     char threadname[17];
     strncpy(threadname, __func__, sizeof(threadname));
     threadname[16] = 0;
@@ -1322,7 +1325,7 @@ static void FFMPEGThread(Context_t *context)
         }
 #endif
 
-        if (context->playback->isSeeking) 
+        if (context->playback->isSeeking || context->playback->isAudioSwitching)
         {
             ffmpeg_printf(10, "seeking\n");
             reset_finish_timeout();
@@ -1332,7 +1335,8 @@ static void FFMPEGThread(Context_t *context)
 
         getMutex(__FILE__, __FUNCTION__,__LINE__);
 
-        if (!context->playback || !context->playback->isPlaying || context->playback->isSeeking)
+        if (!context->playback || !context->playback->isPlaying ||
+            context->playback->isSeeking || context->playback->isAudioSwitching)
         {
             releaseMutex(__FILE__, __FUNCTION__,__LINE__);
             if(!isWaitingForFinish)
@@ -1551,6 +1555,11 @@ static void FFMPEGThread(Context_t *context)
                         ffmpeg_printf(10, "first video: raw_pts=%"PRId64" tb=%d/%d pts90=%"PRId64" dts90=%"PRId64"\n",
                                       packet.pts, stream->time_base.num,
                                       stream->time_base.den, pts, dts);
+                    if (first_packet)
+                        ffmpeg_printf(10, "video clock: raw90=%"PRId64" base90=%"PRId64
+                                      " offset90=%"PRId64"\n",
+                                      ptsClock.track[0].raw, ptsClock.base,
+                                      ptsClock.track[0].offset);
                     if (pts == INVALID_PTS_VALUE)
                     {
                         wrapped_packet_unref(&packet);
@@ -1637,8 +1646,10 @@ static void FFMPEGThread(Context_t *context)
             {
                 AVStream *stream = audioTrack->stream;
                 uint8_t skipPacket = 0;
+                int64_t mapped_pts;
                 int first_packet = currentAudioPts == -1;
                 currentAudioPts = audioTrack->pts = pts = calcPts(cAVIdx, stream, packet.pts);
+                mapped_pts = pts;
                 dts = calcDts(cAVIdx, stream, packet.dts);
                 if (first_packet && stream)
                     ffmpeg_printf(10, "first audio: raw_pts=%"PRId64" tb=%d/%d pts90=%"PRId64" dts90=%"PRId64"\n",
@@ -1694,6 +1705,14 @@ static void FFMPEGThread(Context_t *context)
                                   " tb=%d/%d pts90=%"PRId64" video_pts90=%"PRId64"\n",
                                   cAVIdx, stream->index, packet.pts, stream->time_base.num,
                                   stream->time_base.den, pts, currentVideoPts);
+                    ffmpeg_printf(10, "audio selection clock: raw90=%"PRId64
+                                  " video_raw90=%"PRId64" base90=%"PRId64
+                                  " audio_offset90=%"PRId64" video_offset90=%"PRId64
+                                  " before_aac90=%"PRId64" preserve_timeline=%d\n",
+                                  ptsClock.track[1].raw, ptsClock.track[0].raw,
+                                  ptsClock.base, ptsClock.track[1].offset,
+                                  ptsClock.track[0].offset, mapped_pts,
+                                  ptsClock.preserve_timeline);
                     lastAudioStream = stream;
                     lastAudioContextIdx = cAVIdx;
                 }
@@ -2727,6 +2746,10 @@ int32_t container_ffmpeg_init_av_context(Context_t *context, char *filename, uin
         }
     }
 
+    if (AVIdx == 0)
+        context->playback->isDash = avContextTab[0]->iformat &&
+            !strcmp(avContextTab[0]->iformat->name, "dash");
+
     //ffmpeg5: error: assignment of member 'flags' in read-only object -> so commented out next line
     //avContextTab[AVIdx]->iformat->flags |= AVFMT_SEEK_TO_PTS;
     avContextTab[AVIdx]->flags = AVFMT_FLAG_GENPTS;
@@ -3643,6 +3666,7 @@ static int32_t container_ffmpeg_stop(Context_t *context)
     }
 
     isContainerRunning = 0;
+    context->playback->isDash = 0;
     avformat_network_deinit();
     ffmpeg_buf_free();
 
@@ -3825,7 +3849,8 @@ static int32_t container_ffmpeg_switch_audio(Context_t *context, int32_t *arg)
     int64_t sec = 0;
     int32_t ret;
     ffmpeg_printf(10, "track %d\n", *arg);
-    if (!avContextTab[0] || use_custom_io[0] || avContextTab[0]->duration > 0)
+    if (!context->playback->isDash &&
+        (!avContextTab[0] || use_custom_io[0] || avContextTab[0]->duration > 0))
     {
         ret = context->playback->Command(context, PLAYBACK_SEEK, &sec);
         if (ret != 0)

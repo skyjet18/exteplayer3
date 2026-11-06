@@ -276,6 +276,16 @@ int main(void)
         assert(!g_do_seek_target_seconds);
         assert(streams[0].discard == AVDISCARD_ALL);
         assert(streams[1].discard == AVDISCARD_DEFAULT);
+        /* Static/custom-I/O DASH switching must not seek or reset video. */
+        playback.isDash = 1;
+        av.duration = 60 * AV_TIME_BASE;
+        use_custom_io[0] = 1;
+        selected = 0;
+        assert(!container_ffmpeg_switch_audio(&context, &selected));
+        assert(!g_do_seek_target_seconds);
+        assert(streams[0].discard == AVDISCARD_DEFAULT);
+        assert(streams[1].discard == AVDISCARD_ALL);
+        use_custom_io[0] = 0;
         avContextTab[0] = NULL;
     }
     return 0;

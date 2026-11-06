@@ -79,6 +79,7 @@ pthread_mutex_t LinuxDVBmutex;
 int32_t LinuxDvbBuffOpen(Context_t *context, char *type, int outfd, void *mtx);
 int32_t LinuxDvbBuffClose(Context_t *context);
 int32_t LinuxDvbBuffFlush(Context_t *context);
+int32_t LinuxDvbBuffFlushAudio(Context_t *context);
 int32_t LinuxDvbBuffResume(Context_t *context);
 
 ssize_t BufferingWriteV(int fd, const struct iovec *iov, int ic);
@@ -777,6 +778,12 @@ int LinuxDvbSwitch(Context_t  *context, char * type)
     linuxdvb_printf(10, "v%d a%d\n", video, audio);
 
     if ( (video && videofd != -1) || (audio && audiofd != -1) ) {
+        if (audio && context->playback->isDash && isBufferedOutput &&
+            LinuxDvbBuffFlushAudio(context) < 0)
+        {
+            linuxdvb_err("failed to flush buffered audio for DASH switch\n");
+            return cERR_LINUXDVB_ERROR;
+        }
         getLinuxDVBMutex();
 
         if (audio && audiofd != -1) {
