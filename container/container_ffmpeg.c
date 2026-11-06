@@ -123,6 +123,7 @@ static bool g_do_seek_target_seconds = false;
 static bool g_zero_seek = false;
 static void *g_stamp;
 static PtsClock ptsClock;
+static int dashAudioResetPending;
 static int pcm_audio_export_enabled;
 static PcmExport pcmExport = {.fd = -1};
 
@@ -1214,6 +1215,7 @@ static void FFMPEGThread(Context_t *context)
 {
     char *lastRadioMessage[IPTV_AV_CONTEXT_MAX_NUM] = {NULL, NULL};
     int pcm_export_failed = 0;
+    dashAudioResetPending = 0;
     ptsClock.preserve_timeline = context->playback->isDash;
     pts_clock_reset(&ptsClock, 0);
     if (avContextTab[0] && (use_custom_io[0] || avContextTab[0]->duration > 0) &&
@@ -1279,7 +1281,7 @@ static void FFMPEGThread(Context_t *context)
     int64_t seek_target_bytes = 0;
     bool do_seek_target_bytes = false;
     int64_t prev_seek_time_sec = -1;
-    void *stamp;
+    void *stamp = context->playback->stamp;
 
 #if LIBAVCODEC_VERSION_INT >= AV_VERSION_INT(56, 34, 100)
 #ifdef __sh__
@@ -1357,6 +1359,14 @@ static void FFMPEGThread(Context_t *context)
         }
         releaseSeekMutex();
 
+        if (dashAudioResetPending)
+        {
+            dashAudioResetPending = 0;
+            restart_audio_resampling = 1;
+            currentVideoPts = currentAudioPts = -1;
+            aac_pts_dejitter_reset(&aacPtsDejitter);
+            wrapped_avcodec_flush_buffers(0);
+        }
         if (do_seek_target_seconds || do_seek_target_bytes) 
         {
             if (!zero_seek || do_seek_target_bytes)
@@ -1473,6 +1483,7 @@ static void FFMPEGThread(Context_t *context)
 
         if (bufferSize > 0)
         {
+            stamp = context->playback->stamp;
             LinuxDvbBuffSetStamp(stamp);
         }
 
@@ -3667,6 +3678,7 @@ static int32_t container_ffmpeg_stop(Context_t *context)
 
     isContainerRunning = 0;
     context->playback->isDash = 0;
+    dashAudioResetPending = 0;
     avformat_network_deinit();
     ffmpeg_buf_free();
 
@@ -3876,6 +3888,8 @@ static int32_t container_ffmpeg_switch_audio(Context_t *context, int32_t *arg)
             }
         }
     }
+    if (context->playback->isDash)
+        dashAudioResetPending = 1;
     releaseMutex(__FILE__, __FUNCTION__,__LINE__);
     
     return cERR_CONTAINER_FFMPEG_NO_ERROR;

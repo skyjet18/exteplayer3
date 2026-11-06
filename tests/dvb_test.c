@@ -82,7 +82,7 @@ Writer_t *getWriter(char *encoding)
 
 int32_t LinuxDvbBuffFlushAudio(Context_t *context)
 {
-    assert(context->playback->isAudioSwitching);
+    assert(context->playback->isAudioSwitching || context->playback->isSeeking);
     audio_flushes++;
     return 0;
 }
@@ -169,6 +169,12 @@ int main(void)
     request_count = 0;
     assert(!LinuxDvbSwitch(&context, "audio"));
     assert(request_count == 4 && requests[3] == AUDIO_PLAY);
+    playback.isDash = playback.isSeeking = 1;
+    request_count = 0;
+    assert(!LinuxDvbSwitch(&context, "audio"));
+    assert(request_count == 5 && requests[3] == AUDIO_SET_AV_SYNC && arguments[3] == 1);
+    assert(requests[4] == AUDIO_PLAY);
+    playback.isSeeking = 0;
     LINUXDVB_DEBUG_LEVEL = 10;
     request_count = 0;
     LinuxDvbTiming("test-unavailable");

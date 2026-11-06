@@ -19,7 +19,8 @@ Core of movie player for E2 based on the libeplayer using the ffmpeg solution
 - Audio switching captures the presentation position before clearing decoder
   buffers or reconfiguring audio output. Internal switch seeks retain
   subsecond precision and reset discontinuity tracking after a successful VOD
-  seek. Unknown-duration network audio switches do not seek or clear video.
+  seek. Unknown-duration non-DASH network audio switches do not seek or clear
+  video. All DASH audio switches reset A/V buffers as described below.
   The companion FFmpeg DASH demuxer must include the single-file
   seek/reactivation fix so a reselected audio file does not restart at zero.
 - Mixed-TS HLS (video plus embedded audio, with separate TS audio renditions)
@@ -58,9 +59,13 @@ For DASH, the player now preserves the common media timeline across audio
 selections instead of anchoring a new track to the last delivered audio packet.
 The non-SH4 DVB backend honors requested hardware A/V sync for DASH and reapplies
 it after configuring the selected audio codec, before restarting audio.
-Other formats retain their existing sync policy. DASH audio switching does not
-seek or clear video, including static DASH; software buffering discards only old
-audio while queued video continues. Segmented DASH reactivation additionally
+Other formats retain their existing sync policy. All DASH audio switches,
+including live and static/VOD streams, reset both A/V decoder buffers and
+invalidate queued output before restarting selected audio, without seeking
+the input. A brief video interruption is expected.
+This restores the buffer-reset behavior present in `2a7459f` and removed by
+`989093c`, which receiver testing identified as the switching regression.
+Segmented DASH reactivation additionally
 requires the companion correction separating packet-drop state from single-file
 seeks; the earlier `79390c5c6d` fix alone does not cover real reopening.
 If the receiver rejects the DASH sync ioctl, startup/switch reports an error
@@ -82,8 +87,10 @@ external audio ID and back with `a<ID>`, then request those lists again.
 Embedded audio must be audible and its reported ID must differ from video.
 For LIVE, start with default settings, switch embedded -> external -> external
 -> embedded, and continue playback across several manifest-window rotations.
-Audio must stay synchronized and video must keep moving, including after returning
-to embedded audio. If it fails, retain a redacted log spanning startup, the first
+Audio must stay synchronized and video must resume after the brief DASH
+buffer reset, including after returning to embedded audio. Repeat the switch
+and switch-back test on static/VOD DASH as well.
+If it fails, retain a redacted log spanning startup, the first
 switch and the stall, then compare `EP3_LIVE_SYNC=0` separately; do not enable
 extra synchronization or seek to live edge to mask the initial result.
 Use `-C` to disable list caching when checking track refresh. Compare normal
