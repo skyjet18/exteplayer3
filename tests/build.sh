@@ -5,14 +5,19 @@ set -eu
 : "${1:?Specify the output executable path}"
 output=$1
 cd "$(dirname "$0")/.."
+alias_flags=""
+if [ "${HOST_HLS_ALIAS:-0}" = 1 ]; then
+    alias_flags="tests/hls_format_alias.c -Wl,--wrap=avformat_open_input"
+fi
 ${CC:-cc} ${CFLAGS:-} -g -D_FILE_OFFSET_BITS=64 -D_LARGEFILE64_SOURCE \
     -D_LARGEFILE_SOURCE -DHAVE_FLV2MPEG4_CONVERTER \
     -Dff_mpeg4audio_channels=exteplayer3_mpeg4audio_channels \
-    -DEXTEPLAYER_FAKE_VIDEO='"/dev/null"' -DEXTEPLAYER_FAKE_AUDIO='"/dev/null"' \
+    -DEXTEPLAYER_FAKE_VIDEO='"/dev/null"' \
+    -DEXTEPLAYER_FAKE_AUDIO="\"${HOST_AUDIO_OUTPUT:-/dev/null}\"" \
     -DEXTEPLAYER_TERM_SOCKET='""' \
     -Wno-deprecated-declarations -Iinclude -Iexternal -Iexternal/flv2mpeg4 \
     -I"$FFMPEG_SOURCE" -I"$FFMPEG_BUILD" \
-    main/exteplayer.c tools/debug.c tools/strbuffer.c tools/pcm_export.c \
+    main/exteplayer.c tools/debug.c tools/strbuffer.c tools/pcm_export.c $alias_flags \
     container/container.c container/container_ffmpeg.c \
     manager/manager.c manager/audio.c manager/video.c manager/subtitle.c \
     playback/playback.c output/output.c output/output_subtitle.c output/graphic_subtitle.c \
