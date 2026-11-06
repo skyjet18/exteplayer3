@@ -35,6 +35,14 @@ Core of movie player for E2 based on the libeplayer using the ffmpeg solution
   Do not assume a track ID equals its audio-list position.
   VOD switch seeks also require the companion's excluded-playlist guard:
   quality preselection can leave other playlists without segments.
+  LIVE switching additionally requires the packet-derived live-window anchor
+  and timestamp-preserving rendition reactivation fix. The first packet played
+  near the live edge is not the first segment in the manifest. Re-anchoring
+  external audio to that packet can falsely advance old audio by several seconds.
+  When an inactive window has completely expired, the demuxer catches up using
+  actual packet timestamps rather than inventing durations for missing segments.
+  A genuine discontinuity without a recoverable live-window origin is reported
+  as an error instead of silently assigning a guessed presentation time.
 
 `EP3_LIVE_SYNC=0|1` controls the optional live-output hold/watch; the variable
 name includes `3`. Known positive-duration inputs, including static DASH VOD,
@@ -42,10 +50,19 @@ bypass this mechanism regardless of that setting. For receiver-only startup
 problems, `-L FFMPEG_DEBUG_LEVEL:10 -L FFMPEG_SILENT:0` adds input duration,
 start time, initial raw/mapped A/V timestamps, live-sync bypass and seek
 diagnostics to stdout. `track identity` lines report the input context, exact
-format name, stream index, previous ID, assigned ID and media type. For receiver
-retests, check startup `-t <audio-list-index>`, send `al`/`ac`/`vc`, switch to an
+format name, stream index, previous ID, assigned ID and media type.
+For receiver timing retests, `audio selection timing` logs the first selected packet's raw
+PTS/time base, mapped output PTS and latest injected video PTS after each change.
+These are injection timestamps, not proof of receiver presentation or lip sync.
+Check startup `-t <audio-list-index>`, send `al`/`ac`/`vc`, switch to an
 external audio ID and back with `a<ID>`, then request those lists again.
 Embedded audio must be audible and its reported ID must differ from video.
+For LIVE, start with default settings, switch embedded -> external -> external
+-> embedded, and continue playback across several manifest-window rotations.
+Audio must stay synchronized and video must keep moving, including after returning
+to embedded audio. If it fails, retain a redacted log spanning startup, the first
+switch and the stall, then compare `EP3_LIVE_SYNC=0` separately; do not enable
+extra synchronization or seek to live edge to mask the initial result.
 Use `-C` to disable list caching when checking track refresh. Compare normal
 output (`-a 0`) with explicit AAC software decoding (`-a 3`); the latter should
 report `A_IPCM` or `A_LPCM`, not `A_AAC`. Keep
@@ -154,10 +171,15 @@ python3 "$FFMPEG_SOURCE/tests/hls_http.py" \
 The mixed-TS HLS fixture generates three distinguishable AAC tones, an embedded
 audio/video variant and two external TS audio renditions. It tests repeated
 switches, VOD seeks, suspended-playlist recovery and sliding live windows,
-including embedded and external initial audio selections. Timestamp checks
-allow up to one two-second segment of seek preroll; both selected audio and
-video must then advance together. Rendition sequence numbers are not used as
-cross-playlist timestamps.
+including embedded and external initial audio selections. VOD checks allow up
+to one two-second segment of seek preroll; live first-packet displacement is
+limited to 250 ms. Source-packet fingerprints also require timestamps to stay
+within 100 ms of the original media, not merely agree after rewriting.
+Rendition sequence numbers are not used as cross-playlist timestamps.
+Add `--realtime` to the companion HTTP command for clock-driven rolling windows,
+nonzero initial windows, reactivation after the previous window expires, and a
+deliberate 140 ms source offset on one audio rendition. The driver now uses
+normal live startup, rather than forcing `live_start_index=0`.
 
 For actual decoded-audio switching checks, build a host player with the isolated
 `PCM_EXPORT_PATH` described below, then run:
@@ -206,6 +228,38 @@ without `-K`, reading the PCM writer's sample-format header and sample payload
 from PES. `--mode export` (default) retains the FIFO test, which requires the
 same isolated `PCM_EXPORT_PATH` at build and runtime. Do not run fixtures
 concurrently against the same compiled FIFO or capture path.
+
+Tone identity alone does **not** establish live A/V synchronization. For
+timing-aware MPEG-TS coverage, capture video PES too:
+
+```sh
+HOST_AUDIO_OUTPUT=/path/to/test-output/audio.pes \
+HOST_VIDEO_OUTPUT=/path/to/test-output/video.pes HOST_HLS_ALIAS=1 \
+  sh tests/build.sh /path/to/test-output/exteplayer3-capture
+FFMPEG_SOURCE="$FFMPEG_SOURCE" python3 tests/hls_switch.py \
+  --player /path/to/test-output/exteplayer3-capture \
+  --ffmpeg "$FFMPEG_BUILD/ffmpeg" \
+  --pcm-fifo /path/to/test-output/audio.fifo \
+  --audio-output /path/to/test-output/audio.pes \
+  --video-output /path/to/test-output/video.pes \
+  --timing-driver "$FFMPEG_BUILD/libavformat/tests/hls_http" \
+  --mode compressed --case live --multiple --video-first --quality all \
+  --sync default --backpressure
+```
+
+Both output paths must be isolated and absent. This generates time-varying media,
+matches actual audio/video PES payloads to their source timestamps, and checks
+one shared PTS mapping within 100 ms (preserving the intentional source offset).
+After one second the latest emitted A/V PTS must also stay within 250 ms.
+Selected audio must recover within one second; video source frames must advance
+without a jump or reset. It starts within an already populated live window and
+holds the initial selection until inactive windows expire before switching.
+`--sync default` leaves `EP3_LIVE_SYNC` unset; `--sync 0|1` tests explicit modes,
+and omitting it tests both. `--initial 0|1` focuses embedded/external startup.
+`--backpressure` creates a bounded nonblocking audio FIFO instead of a regular
+capture file, fills it, checks recovery after draining, and quits while it is
+full again. This exercises the real writer retry/cancellation path, not a DVB
+driver or physical display. Existing software/export checks remain separate.
 
 The seven UBSan harnesses cover manager ownership/locking, custom IO and selection,
 PES/H.264/writev, bounded DVB busy-open and PCM recovery, timestamp continuity,

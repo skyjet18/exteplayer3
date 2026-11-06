@@ -1234,6 +1234,8 @@ static void FFMPEGThread(Context_t *context)
     int64_t currentVideoPts = -1;
     int64_t currentAudioPts = -1;
     int64_t lastVideoWriteUs = 0;
+    const AVStream *lastAudioStream = NULL;
+    uint32_t lastAudioContextIdx = 0;
     
     /* lastVideoDts and lastAudioDts 
      * used in isTSLiveMode
@@ -1685,6 +1687,15 @@ static void FFMPEGThread(Context_t *context)
                      get_codecpar(audioTrack->stream)->codec_id == AV_CODEC_ID_AAC_LATM))
                 {
                     pts = aac_pts_dejitter(&aacPtsDejitter, &packet, audioTrack->stream, audioTrack->Id, cAVIdx, pts);
+                }
+                if (lastAudioStream != stream || lastAudioContextIdx != cAVIdx)
+                {
+                    ffmpeg_printf(10, "audio selection timing: context=%u stream=%d raw_pts=%"PRId64
+                                  " tb=%d/%d pts90=%"PRId64" video_pts90=%"PRId64"\n",
+                                  cAVIdx, stream->index, packet.pts, stream->time_base.num,
+                                  stream->time_base.den, pts, currentVideoPts);
+                    lastAudioStream = stream;
+                    lastAudioContextIdx = cAVIdx;
                 }
                 
                 pcmPrivateData_t pcmExtradata;
