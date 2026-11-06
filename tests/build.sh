@@ -12,7 +12,7 @@ fi
 ${CC:-cc} ${CFLAGS:-} -g -D_FILE_OFFSET_BITS=64 -D_LARGEFILE64_SOURCE \
     -D_LARGEFILE_SOURCE -DHAVE_FLV2MPEG4_CONVERTER \
     -Dff_mpeg4audio_channels=exteplayer3_mpeg4audio_channels \
-    -DEXTEPLAYER_FAKE_VIDEO='"/dev/null"' \
+    -DEXTEPLAYER_FAKE_VIDEO="\"${HOST_VIDEO_OUTPUT:-/dev/null}\"" \
     -DEXTEPLAYER_FAKE_AUDIO="\"${HOST_AUDIO_OUTPUT:-/dev/null}\"" \
     -DEXTEPLAYER_TERM_SOCKET='""' \
     -Wno-deprecated-declarations -Iinclude -Iexternal -Iexternal/flv2mpeg4 \
