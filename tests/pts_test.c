@@ -4,7 +4,7 @@
 int main(void)
 {
     PtsClock clock = {0};
-    int video, audio, replacement;
+    static int video, audio, replacement, replacement_audio;
     int64_t video_pts, audio_pts;
     int i;
     assert(!pts_clock_video_gap(15000001, 1, 0, 0));
@@ -23,9 +23,14 @@ int main(void)
         assert(audio_pts - video_pts == 9000);
     }
     assert(clock.delta_locked);
+    /* A newly selected audio stream may have a small, persistent PTS offset. */
+    assert(pts_clock_update(&clock, 1, &replacement_audio,
+                            audio_pts + clock.base + 2700, 5960002) == audio_pts);
+    assert(pts_clock_update(&clock, 1, &audio,
+                            audio_pts + clock.base + 3600, 5960003) == audio_pts + 3600);
     /* A new stream and clock reset inherit the established AV relationship. */
     video_pts = pts_clock_update(&clock, 0, &replacement, 0, 6000000);
-    assert(video_pts == audio_pts - clock.delta);
+    assert(video_pts == clock.track[1].corrected - clock.delta);
     /* A long freeze must not change a locked AV delta. */
     {
         int64_t delta = clock.delta;
