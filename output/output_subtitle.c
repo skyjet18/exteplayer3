@@ -490,9 +490,11 @@ static int Write(void *_context, void *data)
         break;
         default:
             subtitle_err("unknown encoding %s\n", Encoding);
+            free(Encoding);
             return  cERR_SUBTITLE_ERROR;
     }
 
+    free(Encoding);
     subtitle_printf(10, "<\n");
     return cERR_SUBTITLE_NO_ERROR;
 }
