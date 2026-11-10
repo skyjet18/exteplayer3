@@ -1241,6 +1241,12 @@ static void ls_on_video(Context_t *context, int64_t pts)
 
 static int32_t dts_ac3_transcode = 0;
 static int32_t truehd_ac3_transcode = 0;
+static int32_t aac_he_transcode = 0;
+
+void aac_he_transcoder_set(const int32_t val)
+{
+    aac_he_transcode = val;
+}
 
 void dts_ac3_transcoder_set(const int32_t val)
 {
@@ -1281,7 +1287,34 @@ typedef struct
     /* 90 kHz time of the first sample sent to the encoder, and their count */
     int64_t base_pts;
     int64_t sent;
+    /* AAC: the packet with its ADTS header */
+    uint8_t *adts;
+    unsigned int adts_size;
 } AudioTranscoder_t;
+
+/* HE-AAC that says so: by the profile the demuxer or the parser found, or
+ * by SBR/PS in the AudioSpecificConfig. A stream that brings SBR without
+ * any signalling looks like AAC-LC here and is not caught. */
+static int AudioTranscoderIsHEAAC(AVStream *stream)
+{
+    const int profile = get_codecpar(stream)->profile;
+
+#ifdef AV_PROFILE_AAC_HE
+    if (profile == AV_PROFILE_AAC_HE || profile == AV_PROFILE_AAC_HE_V2 || profile == AV_PROFILE_MPEG2_AAC_HE)
+#else
+    if (profile == FF_PROFILE_AAC_HE || profile == FF_PROFILE_AAC_HE_V2 || profile == FF_PROFILE_MPEG2_AAC_HE)
+#endif
+        return 1;
+
+    if (get_codecpar(stream)->codec_id == AV_CODEC_ID_AAC && get_codecpar(stream)->extradata_size >= 2)
+    {
+        MPEG4AudioConfig m4ac;
+        if (avpriv_mpeg4audio_get_config(&m4ac, get_codecpar(stream)->extradata,
+                                         get_codecpar(stream)->extradata_size * 8, 1) >= 0)
+            return m4ac.sbr == 1 || m4ac.ps == 1;
+    }
+    return 0;
+}
 
 /* 0, or the codec the audio stream is to be encoded to */
 static int AudioTranscoderTarget(AVStream *stream, const char *encoding)
@@ -1289,7 +1322,6 @@ static int AudioTranscoderTarget(AVStream *stream, const char *encoding)
     enum AVCodecID id = get_codecpar(stream)->codec_id;
     int target = 0;
 
-    (void)encoding;
     /* the PCM export needs the decoded samples of every track */
     if (pcm_audio_export_enabled)
         return 0;
@@ -1297,6 +1329,11 @@ static int AudioTranscoderTarget(AVStream *stream, const char *encoding)
     if ((id == AV_CODEC_ID_DTS && dts_ac3_transcode) ||
         ((id == AV_CODEC_ID_TRUEHD || id == AV_CODEC_ID_MLP) && truehd_ac3_transcode))
         target = AUDIO_XCODE_AC3;
+    /* only AAC that would go to the decoder of the box: not what is decoded
+     * in software by an option or because no ADTS header can describe it */
+    else if (aac_he_transcode && (!strcmp(encoding, "A_AAC") || !strcmp(encoding, "A_AAC_LATM")) &&
+             AudioTranscoderIsHEAAC(stream))
+        target = AUDIO_XCODE_AAC;
 
     return target ? (target & audio_transcode_caps()) : 0;
 }
@@ -1360,10 +1397,28 @@ static int AudioTranscoderFrameChannels(const AVFrame *frame)
 /* the channel layout the encoder is opened with, 0: none for this input */
 static uint64_t AudioTranscoderLayout(int target, int channels)
 {
-    (void)channels;
+    /* AAC: the layouts of the channel configurations 1 to 6, which the ADTS
+     * header can name; more channels are mixed down to 5.1 */
+    static const uint64_t aac[] = { 0, AV_CH_LAYOUT_MONO, AV_CH_LAYOUT_STEREO, AV_CH_LAYOUT_SURROUND,
+                                    AV_CH_LAYOUT_4POINT0, AV_CH_LAYOUT_5POINT0_BACK, AV_CH_LAYOUT_5POINT1_BACK };
+
     if (target == AUDIO_XCODE_AC3)
         return AV_CH_LAYOUT_5POINT1;
-    return 0;
+    if (channels < 1)
+        return 0;
+    return aac[channels > 6 ? 6 : channels];
+}
+
+/* the 7 bytes in front of a raw AAC-LC frame; len counts them */
+static void AudioTranscoderAdtsHeader(uint8_t *adts, int rate_index, int chan_config, int len)
+{
+    adts[0] = 0xFF;
+    adts[1] = 0xF1;
+    adts[2] = (1 << 6) | (rate_index << 2) | ((chan_config >> 2) & 1);
+    adts[3] = ((chan_config & 3) << 6) | ((len >> 11) & 3);
+    adts[4] = (len >> 3) & 0xFF;
+    adts[5] = ((len & 7) << 5) | 0x1F;
+    adts[6] = 0xFC;
 }
 
 /* 90 kHz time of a sample counted from base, as it goes into a PES header */
@@ -1400,6 +1455,8 @@ static void AudioTranscoderFree(AudioTranscoder_t *state)
     swr_free(&state->swr);
     avcodec_free_context(&state->encoder);
     av_packet_free(&state->packet);
+    av_freep(&state->adts);
+    state->adts_size = 0;
 }
 
 /* drops the encoder and what it has buffered: after a seek, for another
@@ -1421,7 +1478,9 @@ static int AudioTranscoderInit(AudioTranscoder_t *state, const AVFrame *in)
     int channels;
     int ret;
 
-    if (!codec || !layout || in->sample_rate <= 0)
+    /* AAC keeps the rate of the decoder: one an ADTS header can name */
+    if (!codec || !layout || in->sample_rate <= 0 ||
+        (target == AUDIO_XCODE_AAC && avpriv_mpeg4audio_sample_rates[aac_get_sample_rate_index(in->sample_rate)] != in->sample_rate))
     {
         ffmpeg_err("no encoder for %d channels %d Hz\n", state->in_channels, in->sample_rate);
         return -1;
@@ -1433,10 +1492,6 @@ static int AudioTranscoderInit(AudioTranscoder_t *state, const AVFrame *in)
     if (!enc || !state->swr || !state->packet)
         return -1;
 
-    enc->bit_rate = 640000;
-    enc->sample_rate = 48000;
-    enc->sample_fmt = AudioTranscoderSampleFmt(codec);
-    enc->time_base = (AVRational){1, enc->sample_rate};
 #if HAVE_CH_LAYOUT
     av_channel_layout_from_mask(&enc->ch_layout, layout);
     channels = enc->ch_layout.nb_channels;
@@ -1444,6 +1499,25 @@ static int AudioTranscoderInit(AudioTranscoder_t *state, const AVFrame *in)
     enc->channel_layout = layout;
     enc->channels = channels = av_get_channel_layout_nb_channels(layout);
 #endif
+    if (target == AUDIO_XCODE_AC3)
+    {
+        enc->bit_rate = 640000;
+        enc->sample_rate = 48000;
+    }
+    else
+    {
+        enc->bit_rate = 64000 * channels;
+        enc->sample_rate = in->sample_rate;
+#ifdef AV_PROFILE_AAC_LOW
+        enc->profile = AV_PROFILE_AAC_LOW;
+#else
+        enc->profile = FF_PROFILE_AAC_LOW;
+#endif
+        /* raw frames from every encoder, the ADTS header is written here */
+        enc->flags |= AV_CODEC_FLAG_GLOBAL_HEADER;
+    }
+    enc->sample_fmt = AudioTranscoderSampleFmt(codec);
+    enc->time_base = (AVRational){1, enc->sample_rate};
 
     ret = avcodec_open2(enc, codec, NULL);
     if (ret < 0 || enc->frame_size <= 0)
@@ -1509,6 +1583,20 @@ static void AudioTranscoderWrite(AudioTranscoder_t *state, Context_t *context)
     out.len = packet->size;
     out.pts = pts;
     out.type = "audio";
+    if (state->target == AUDIO_XCODE_AAC)
+    {
+        const int len = packet->size + AAC_HEADER_LENGTH;
+
+        av_fast_malloc(&state->adts, &state->adts_size, len);
+        /* 13 bits for the length of the frame */
+        if (!state->adts || len > 0x1FFF)
+            return;
+        AudioTranscoderAdtsHeader(state->adts, aac_get_sample_rate_index(state->encoder->sample_rate),
+                                  get_chan_config(state->out_channels), len);
+        memcpy(state->adts + AAC_HEADER_LENGTH, packet->data, packet->size);
+        out.data = state->adts;
+        out.len = len;
+    }
     if (!context->playback->BackWard && Write(context->output->audio->Write, context, &out, pts) < 0)
     {
         ffmpeg_err("(transcoded) writing data to audio device failed\n");
