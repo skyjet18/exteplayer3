@@ -106,10 +106,47 @@ ssize_t WriteWithRetry(Context_t *context, int pipefd, int fd, void *pDVBMtx, co
     int retval = -1;
     int maxFd = pipefd > fd ? pipefd : fd;
     struct timeval tv;
+    const bool writeFirst = STB_HISILICON == GetSTBType();
 
     while(size > 0 && 0 == PlaybackDieNow(0) && !context->playback->isSeeking &&
           (is_video || !context->playback->isAudioSwitching))
     {
+        if (writeFirst)
+        {
+            /* The devices of these boxes may never report that they are
+             * writable, so do not wait for that: write, and only when the
+             * device takes nothing wait for it or for the wake-up pipe,
+             * 50 ms at most. */
+            ret = write(fd, buf, size);
+            if (ret > 0)
+            {
+                size -= ret;
+                buf += ret;
+                continue;
+            }
+            if (ret < 0 && errno != EINTR && errno != EAGAIN)
+            {
+                break;
+            }
+
+            FD_ZERO(&rfds);
+            FD_ZERO(&wfds);
+            FD_SET(pipefd, &rfds);
+            FD_SET(fd, &wfds);
+            tv.tv_sec = 0;
+            tv.tv_usec = 50000; // 50ms
+            retval = select(maxFd + 1, &rfds, &wfds, NULL, &tv);
+            if (retval < 0 && errno != EINTR)
+            {
+                break;
+            }
+            if (retval > 0 && FD_ISSET(pipefd, &rfds))
+            {
+                FlushPipe(pipefd);
+            }
+            continue;
+        }
+
         FD_ZERO(&rfds);
         FD_ZERO(&wfds);
 

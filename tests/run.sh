@@ -19,6 +19,8 @@ for test in manager container output dvb pts pcm_export playback buffering; do
     fi
     if [ "$test" = buffering ]; then
         sources="$sources output/writer/mipsel/writer.c output/writer/common/writer.c"
+        # WriteWithRetry() asks GetSTBType()
+        sources="$sources output/writer/common/misc.c"
     fi
     libs=""
     if [ "$test" = container ]; then
@@ -83,6 +85,8 @@ for test in subtitle writers buffering_chunk progressive; do
     fi
     if [ "$test" = buffering_chunk ]; then
         sources="$sources output/writer/mipsel/writer.c output/writer/common/writer.c"
+        # WriteWithRetry() asks GetSTBType()
+        sources="$sources output/writer/common/misc.c"
     fi
     if [ "$test" = progressive ]; then
         libs="$FFMPEG_BUILD/libavformat/libavformat.a $FFMPEG_BUILD/libavcodec/libavcodec.a $FFMPEG_BUILD/libswresample/libswresample.a $FFMPEG_BUILD/libavutil/libavutil.a -lm"
