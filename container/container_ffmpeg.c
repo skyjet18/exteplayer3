@@ -1975,6 +1975,421 @@ static void ls_on_video(Context_t *context, int64_t pts)
     pthread_attr_destroy(&at);
 }
 
+/* ************************************************************************ */
+/* Optional audio transcoding for outputs that cannot take the codec of the */
+/* stream. The track is decoded as for the PCM injection, but the samples   */
+/* are encoded again and written as if the stream carried the new codec.    */
+/* ************************************************************************ */
+#include <libavutil/audio_fifo.h>
+
+/* Track_t::transcode, and the bits of audio_transcode_caps() */
+#define AUDIO_XCODE_AC3 1
+#define AUDIO_XCODE_AAC 2
+/* avcodec_send_frame() and encoders that are found without registration */
+#define HAVE_AUDIO_XCODE (LIBAVCODEC_VERSION_MAJOR >= 58)
+/* the timestamps of the stream may differ this much (90 kHz) from the
+ * count of the samples before the count starts again from the stream */
+#define AUDIO_XCODE_MAX_DRIFT (60 * 90)
+
+static int32_t dts_ac3_transcode = 0;
+static int32_t truehd_ac3_transcode = 0;
+
+void dts_ac3_transcoder_set(const int32_t val)
+{
+    dts_ac3_transcode = val;
+}
+
+void truehd_ac3_transcoder_set(const int32_t val)
+{
+    truehd_ac3_transcode = val;
+}
+
+/* the encoders of the linked FFmpeg: AUDIO_XCODE_AC3 | AUDIO_XCODE_AAC */
+int32_t audio_transcode_caps(void)
+{
+#if HAVE_AUDIO_XCODE
+    return (avcodec_find_encoder(AV_CODEC_ID_AC3) ? AUDIO_XCODE_AC3 : 0) |
+           (avcodec_find_encoder(AV_CODEC_ID_AAC) ? AUDIO_XCODE_AAC : 0);
+#else
+    return 0;
+#endif
+}
+
+typedef struct
+{
+    AVCodecContext *encoder;
+    SwrContext *swr;
+    AVAudioFifo *fifo;
+    AVPacket *packet;
+    /* what the set-up is for: track, target and format of the decoded frames */
+    const void *stream;
+    int target;
+    int in_channels;
+    int in_rate;
+    int in_format;
+    int out_channels;
+    /* the set-up failed for this input, said once */
+    int failed;
+    /* 90 kHz time of the first sample sent to the encoder, and their count */
+    int64_t base_pts;
+    int64_t sent;
+} AudioTranscoder_t;
+
+/* 0, or the codec the audio stream is to be encoded to */
+static int AudioTranscoderTarget(AVStream *stream, const char *encoding)
+{
+    enum AVCodecID id = get_codecpar(stream)->codec_id;
+    int target = 0;
+
+    (void)encoding;
+    /* the PCM export needs the decoded samples of every track */
+    if (pcm_audio_export_enabled)
+        return 0;
+
+    if ((id == AV_CODEC_ID_DTS && dts_ac3_transcode) ||
+        ((id == AV_CODEC_ID_TRUEHD || id == AV_CODEC_ID_MLP) && truehd_ac3_transcode))
+        target = AUDIO_XCODE_AC3;
+
+    return target ? (target & audio_transcode_caps()) : 0;
+}
+
+/* Marks the track for transcoding and opens its decoder.
+ * 0: the track is played as without the option. */
+static int AudioTranscoderSetupTrack(Track_t *track, uint32_t avIdx, AVStream *stream, const char *encoding)
+{
+    int target = AudioTranscoderTarget(stream, encoding);
+    const AVCodec *codec;
+    AVCodecContext *c;
+
+    if (!target)
+        return 0;
+
+    codec = avcodec_find_decoder(get_codecpar(stream)->codec_id);
+    c = codec ? wrapped_avcodec_get_context(avIdx, stream) : NULL;
+    if (!c || (!avcodec_is_open(c) && avcodec_open2(c, codec, NULL) < 0))
+    {
+        ffmpeg_err("no decoder to transcode audio stream %d, it is played as it is\n", stream->id);
+        return 0;
+    }
+
+    track->avCodecCtx = c;
+    track->transcode = target;
+    return 1;
+}
+
+#if HAVE_AUDIO_XCODE
+/* the sample format for an encoder, planar float if it takes that */
+static enum AVSampleFormat AudioTranscoderSampleFmt(const AVCodec *codec)
+{
+    const enum AVSampleFormat *fmt = NULL;
+    const enum AVSampleFormat *it;
+#if LIBAVCODEC_VERSION_INT >= AV_VERSION_INT(61, 13, 100)
+    int count = 0;
+    if (avcodec_get_supported_config(NULL, codec, AV_CODEC_CONFIG_SAMPLE_FORMAT, 0, (const void **)&fmt, &count) < 0)
+        fmt = NULL;
+#else
+    fmt = codec->sample_fmts;
+#endif
+    if (!fmt || *fmt == AV_SAMPLE_FMT_NONE)
+        return AV_SAMPLE_FMT_FLTP;
+    for (it = fmt; *it != AV_SAMPLE_FMT_NONE; ++it)
+    {
+        if (*it == AV_SAMPLE_FMT_FLTP)
+            return AV_SAMPLE_FMT_FLTP;
+    }
+    return *fmt;
+}
+
+static int AudioTranscoderFrameChannels(const AVFrame *frame)
+{
+#if HAVE_CH_LAYOUT
+    return frame->ch_layout.nb_channels;
+#else
+    return frame->channels;
+#endif
+}
+
+/* the channel layout the encoder is opened with, 0: none for this input */
+static uint64_t AudioTranscoderLayout(int target, int channels)
+{
+    (void)channels;
+    if (target == AUDIO_XCODE_AC3)
+        return AV_CH_LAYOUT_5POINT1;
+    return 0;
+}
+
+/* 90 kHz time of a sample counted from base, as it goes into a PES header */
+static int64_t AudioTranscoderPts(int64_t base, int64_t samples, int rate)
+{
+    int64_t pts;
+
+    if (base == (int64_t)INVALID_PTS_VALUE)
+        return INVALID_PTS_VALUE;
+    pts = base + av_rescale(samples, 90000, rate);
+    return pts < 0 ? (int64_t)INVALID_PTS_VALUE : (pts & 0x01FFFFFFFFLL);
+}
+
+/* The time of the next decoded frame against the count of the samples that
+ * are ahead of it (sent and buffered): the new base when the count has to
+ * start again from the stream, else the old one. */
+static int64_t AudioTranscoderBase(int64_t base, int64_t samples, int rate, int64_t frame_pts)
+{
+    int64_t ahead = av_rescale(samples, 90000, rate);
+
+    if (frame_pts == (int64_t)INVALID_PTS_VALUE)
+        return base;
+    if (base != (int64_t)INVALID_PTS_VALUE &&
+        pts_clock_abs(pts_clock_difference(frame_pts, base + ahead)) <= AUDIO_XCODE_MAX_DRIFT)
+        return base;
+    return frame_pts - ahead;
+}
+
+static void AudioTranscoderFree(AudioTranscoder_t *state)
+{
+    if (state->fifo)
+        av_audio_fifo_free(state->fifo);
+    state->fifo = NULL;
+    swr_free(&state->swr);
+    avcodec_free_context(&state->encoder);
+    av_packet_free(&state->packet);
+}
+
+/* drops the encoder and what it has buffered: after a seek, for another
+ * track and at the end */
+static void AudioTranscoderClose(AudioTranscoder_t *state)
+{
+    AudioTranscoderFree(state);
+    state->stream = NULL;
+    state->target = 0;
+    state->failed = 0;
+}
+
+static int AudioTranscoderInit(AudioTranscoder_t *state, const AVFrame *in)
+{
+    const int target = state->target;
+    const AVCodec *codec = avcodec_find_encoder(target == AUDIO_XCODE_AC3 ? AV_CODEC_ID_AC3 : AV_CODEC_ID_AAC);
+    const uint64_t layout = AudioTranscoderLayout(target, state->in_channels);
+    AVCodecContext *enc;
+    int channels;
+    int ret;
+
+    if (!codec || !layout || in->sample_rate <= 0)
+    {
+        ffmpeg_err("no encoder for %d channels %d Hz\n", state->in_channels, in->sample_rate);
+        return -1;
+    }
+
+    state->encoder = enc = avcodec_alloc_context3(codec);
+    state->swr = swr_alloc();
+    state->packet = av_packet_alloc();
+    if (!enc || !state->swr || !state->packet)
+        return -1;
+
+    enc->bit_rate = 640000;
+    enc->sample_rate = 48000;
+    enc->sample_fmt = AudioTranscoderSampleFmt(codec);
+    enc->time_base = (AVRational){1, enc->sample_rate};
+#if HAVE_CH_LAYOUT
+    av_channel_layout_from_mask(&enc->ch_layout, layout);
+    channels = enc->ch_layout.nb_channels;
+#else
+    enc->channel_layout = layout;
+    enc->channels = channels = av_get_channel_layout_nb_channels(layout);
+#endif
+
+    ret = avcodec_open2(enc, codec, NULL);
+    if (ret < 0 || enc->frame_size <= 0)
+    {
+        ffmpeg_err("encoder init failed: %d\n", ret);
+        return -1;
+    }
+
+#if HAVE_CH_LAYOUT
+    {
+        AVChannelLayout in_layout = {0};
+        if (av_channel_layout_check(&in->ch_layout))
+            av_channel_layout_copy(&in_layout, &in->ch_layout);
+        else
+            av_channel_layout_default(&in_layout, state->in_channels);
+        av_opt_set_chlayout(state->swr, "in_chlayout", &in_layout, 0);
+        av_opt_set_chlayout(state->swr, "out_chlayout", &enc->ch_layout, 0);
+        av_channel_layout_uninit(&in_layout);
+    }
+#else
+    av_opt_set_int(state->swr, "in_channel_layout",
+                   in->channel_layout ? in->channel_layout : (uint64_t)av_get_default_channel_layout(state->in_channels), 0);
+    av_opt_set_int(state->swr, "out_channel_layout", layout, 0);
+#endif
+    av_opt_set_sample_fmt(state->swr, "in_sample_fmt", in->format, 0);
+    av_opt_set_sample_fmt(state->swr, "out_sample_fmt", enc->sample_fmt, 0);
+    av_opt_set_int(state->swr, "in_sample_rate", in->sample_rate, 0);
+    av_opt_set_int(state->swr, "out_sample_rate", enc->sample_rate, 0);
+    /* as the PCM path: no clipping when channels are mixed down */
+    av_opt_set_double(state->swr, "rematrix_maxval", 1.0, 0);
+
+    ret = swr_init(state->swr);
+    if (ret < 0)
+    {
+        ffmpeg_err("resampler init failed: %d\n", ret);
+        return -1;
+    }
+
+    state->fifo = av_audio_fifo_alloc(enc->sample_fmt, channels, enc->frame_size * 2);
+    if (!state->fifo)
+        return -1;
+
+    state->out_channels = channels;
+    state->base_pts = INVALID_PTS_VALUE;
+    state->sent = 0;
+    ffmpeg_printf(1, "audio transcoder ready: %s %d channels %d Hz %d kbit/s\n",
+                  codec->name, channels, enc->sample_rate, (int)(enc->bit_rate / 1000));
+    return 0;
+}
+
+/* writes one packet of the encoder */
+static void AudioTranscoderWrite(AudioTranscoder_t *state, Context_t *context)
+{
+    AVPacket *packet = state->packet;
+    AudioVideoOut_t out;
+    /* the encoder counts in samples and takes its own delay off */
+    int64_t pts = AudioTranscoderPts(state->base_pts,
+                                     packet->pts != AV_NOPTS_VALUE ? packet->pts : state->sent - state->encoder->frame_size,
+                                     state->encoder->sample_rate);
+
+    memset(&out, 0, sizeof(out));
+    out.data = packet->data;
+    out.len = packet->size;
+    out.pts = pts;
+    out.type = "audio";
+    if (!context->playback->BackWard && Write(context->output->audio->Write, context, &out, pts) < 0)
+    {
+        ffmpeg_err("(transcoded) writing data to audio device failed\n");
+    }
+}
+
+/* encodes the full frames of the FIFO */
+static int AudioTranscoderEncode(AudioTranscoder_t *state, Context_t *context)
+{
+    AVCodecContext *enc = state->encoder;
+    int ret = 0;
+
+    while (ret >= 0 && av_audio_fifo_size(state->fifo) >= enc->frame_size)
+    {
+        AVFrame *frame = wrapped_frame_alloc();
+        if (!frame)
+            return -1;
+
+        frame->nb_samples = enc->frame_size;
+        frame->format = enc->sample_fmt;
+        frame->sample_rate = enc->sample_rate;
+        frame->pts = state->sent;
+#if HAVE_CH_LAYOUT
+        ret = av_channel_layout_copy(&frame->ch_layout, &enc->ch_layout);
+#else
+        frame->channel_layout = enc->channel_layout;
+        frame->channels = enc->channels;
+#endif
+        if (ret >= 0)
+            ret = av_frame_get_buffer(frame, 0);
+        if (ret >= 0 && av_audio_fifo_read(state->fifo, (void **)frame->extended_data, frame->nb_samples) < frame->nb_samples)
+            ret = -1;
+        if (ret >= 0)
+            ret = avcodec_send_frame(enc, frame);
+        wrapped_frame_free(&frame);
+        if (ret < 0)
+            break;
+
+        state->sent += enc->frame_size;
+        while ((ret = avcodec_receive_packet(enc, state->packet)) >= 0)
+        {
+            AudioTranscoderWrite(state, context);
+            av_packet_unref(state->packet);
+        }
+        if (ret == AVERROR(EAGAIN))
+            ret = 0;
+    }
+    return ret < 0 ? -1 : 0;
+}
+
+/* Takes one decoded frame of the track. The container mutex is released
+ * while the output is written: track and frame are not used after that.
+ * -1: nothing is written for this input until it changes or a seek. */
+static int AudioTranscoderProcess(AudioTranscoder_t *state, Context_t *context, Track_t *track, AVFrame *decoded, uint32_t avIdx, int64_t packet_pts)
+{
+    const int in_channels = AudioTranscoderFrameChannels(decoded);
+    uint8_t **converted = NULL;
+    int64_t frame_pts;
+    int out_samples;
+    int ret;
+
+    /* the set-up is for the first frame: another track, or a change from
+     * 5.1 to stereo or of the rate inside the stream, needs a new one */
+    if (state->stream != track->stream || state->target != track->transcode || in_channels != state->in_channels ||
+        decoded->sample_rate != state->in_rate || decoded->format != state->in_format)
+    {
+        AudioTranscoderClose(state);
+        state->stream = track->stream;
+        state->target = track->transcode;
+        state->in_channels = in_channels;
+        state->in_rate = decoded->sample_rate;
+        state->in_format = decoded->format;
+        if (AudioTranscoderInit(state, decoded) < 0)
+        {
+            ffmpeg_err("audio transcoder set-up failed, no audio for this track\n");
+            AudioTranscoderFree(state);
+            state->failed = 1;
+        }
+    }
+    if (state->failed)
+        return -1;
+
+    /* The packet went through calcPts(), which moves the clock; the frames
+     * are only mapped with it. The count of the samples gives the time of
+     * the packets, the stream is followed when it jumps or drifts away. */
+    frame_pts = calcDts(avIdx, track->stream, wrapped_frame_get_best_effort_timestamp(decoded));
+    if (frame_pts == (int64_t)INVALID_PTS_VALUE && state->base_pts == (int64_t)INVALID_PTS_VALUE)
+        frame_pts = packet_pts;
+    state->base_pts = AudioTranscoderBase(state->base_pts, state->sent + av_audio_fifo_size(state->fifo),
+                                          state->encoder->sample_rate, frame_pts);
+
+    out_samples = av_rescale_rnd(swr_get_delay(state->swr, decoded->sample_rate) + decoded->nb_samples,
+                                 state->encoder->sample_rate, decoded->sample_rate, AV_ROUND_UP);
+    ret = av_samples_alloc_array_and_samples(&converted, NULL, state->out_channels, out_samples,
+                                             state->encoder->sample_fmt, 0);
+    if (ret >= 0)
+    {
+        ret = swr_convert(state->swr, converted, out_samples,
+                          (const uint8_t **)decoded->extended_data, decoded->nb_samples);
+        if (ret > 0 && av_audio_fifo_write(state->fifo, (void **)converted, ret) < ret)
+            ret = -1;
+        av_freep(&converted[0]);
+        av_freep(&converted);
+    }
+    if (ret >= 0)
+        ret = AudioTranscoderEncode(state, context);
+    if (ret < 0)
+    {
+        ffmpeg_err("audio transcoding failed, no audio for this track\n");
+        AudioTranscoderFree(state);
+        state->failed = 1;
+        return -1;
+    }
+    return 0;
+}
+#else
+/* not reached: audio_transcode_caps() is 0, no track is marked */
+static void AudioTranscoderClose(AudioTranscoder_t *state)
+{
+    (void)state;
+}
+
+static int AudioTranscoderProcess(AudioTranscoder_t *state, Context_t *context, Track_t *track, AVFrame *decoded, uint32_t avIdx, int64_t packet_pts)
+{
+    (void)state; (void)context; (void)track; (void)decoded; (void)avIdx; (void)packet_pts;
+    return -1;
+}
+#endif
+
 static void FFMPEGThread(Context_t *context) 
 {
     char *lastRadioMessage[IPTV_AV_CONTEXT_MAX_NUM] = {NULL, NULL};
@@ -2034,6 +2449,8 @@ static void FFMPEGThread(Context_t *context)
     int32_t swr_has_pts = 0;
     /* the PCM writer has to renew its header with the next frame it gets */
     int32_t renew_pcm_header = 0;
+    AudioTranscoder_t audioTranscoder;
+    memset(&audioTranscoder, 0, sizeof(audioTranscoder));
     AVFrame *decoded_frame = NULL;
     int32_t out_sample_rate = 44100;
 #if HAVE_CH_LAYOUT
@@ -2565,6 +2982,9 @@ static void FFMPEGThread(Context_t *context)
                 uint32_t audioExtradataSize = get_codecpar(audioTrack->stream)->extradata_size;
                     
                 ffmpeg_printf(200, "AudioTrack index = %d\n",pid);
+                /* nothing of a transcoded track is kept for its next turn */
+                if (audioTranscoder.stream && !audioTrack->transcode)
+                    AudioTranscoderClose(&audioTranscoder);
                 if (audioTrack->inject_raw_pcm == 1)
                 {
                     ffmpeg_printf(200,"write audio raw pcm\n");
@@ -2586,7 +3006,7 @@ static void FFMPEGThread(Context_t *context)
                         ffmpeg_err("(raw pcm) writing data to audio device failed\n");
                     }
                 }
-                else if (audioTrack->inject_as_pcm == 1 && audioTrack->avCodecCtx)
+                else if ((audioTrack->inject_as_pcm == 1 || audioTrack->transcode) && audioTrack->avCodecCtx)
                 {
                     AVCodecContext *c = audioTrack->avCodecCtx;
 
@@ -2604,6 +3024,8 @@ static void FFMPEGThread(Context_t *context)
                             wrapped_frame_free(&decoded_frame);
                             decoded_frame = NULL;
                         }
+                        if (audioTranscoder.stream)
+                            AudioTranscoderClose(&audioTranscoder);
                     }
 #if (LIBAVFORMAT_VERSION_MAJOR > 57) || ((LIBAVFORMAT_VERSION_MAJOR == 57) && (LIBAVFORMAT_VERSION_MINOR > 32))
                     while (packet.size > 0 || (!packet.size && !packet.data)) 
@@ -2679,6 +3101,15 @@ static void FFMPEGThread(Context_t *context)
                             continue;
                         }
 #endif
+                        if (audioTrack->transcode)
+                        {
+                            /* the reset above asked for a new PCM header:
+                             * this track has none */
+                            renew_pcm_header = 0;
+                            if (AudioTranscoderProcess(&audioTranscoder, context, audioTrack, decoded_frame, cAVIdx, pts) < 0)
+                                break;
+                            continue;
+                        }
                         int32_t e = 0;
 #if HAVE_CH_LAYOUT
                         const int32_t frame_channels = decoded_frame->ch_layout.nb_channels;
@@ -3112,6 +3543,7 @@ static void FFMPEGThread(Context_t *context)
     {
         wrapped_frame_free(&decoded_frame);
     }
+    AudioTranscoderClose(&audioTranscoder);
     
 #if LIBAVCODEC_VERSION_INT >= AV_VERSION_INT(56, 34, 100)
     mpeg4p2_context_close(mpeg4p2_context);
@@ -4348,7 +4780,11 @@ int32_t container_ffmpeg_update_tracks(Context_t *context, char *filename, int32
                         track.duration = context_duration_ms(avContext);
                     }
                     
-                    if(pcm_audio_export_enabled || !strncmp(encoding, "A_IPCM", 6) || !strncmp(encoding, "A_LPCM", 6))
+                    if (AudioTranscoderSetupTrack(&track, cAVIdx, stream, encoding))
+                    {
+                        ffmpeg_printf(10, " Handle transcode = %d\n", track.transcode);
+                    }
+                    else if(pcm_audio_export_enabled || !strncmp(encoding, "A_IPCM", 6) || !strncmp(encoding, "A_LPCM", 6))
                     {
                         track.inject_as_pcm = 1;
                         track.avCodecCtx = wrapped_avcodec_get_context(cAVIdx, stream);
