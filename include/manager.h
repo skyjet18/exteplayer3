@@ -69,6 +69,10 @@ typedef struct Track_s {
      * AVCodec is than used for softdecoding and stream will be injected as PCM */
     int                   inject_as_pcm;
     int                   inject_raw_pcm;
+    /* Not 0: the track is decoded and encoded again before it is written,
+     * to AC3 (1) or to AAC-LC (2). The output is set up for that codec,
+     * Encoding keeps the codec of the stream. */
+    int                   transcode;
 
     int                   pending;
     int                   is_forced;
