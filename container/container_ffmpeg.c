@@ -1261,6 +1261,10 @@ static void FFMPEGThread(Context_t *context)
     g_context = context;
 
     SwrContext *swr = NULL;
+    /* input format the resampler was set up for */
+    int32_t swr_in_channels = 0;
+    int32_t swr_in_rate = 0;
+    int32_t swr_in_format = -1;
     AVFrame *decoded_frame = NULL;
     int32_t out_sample_rate = 44100;
 #if HAVE_CH_LAYOUT
@@ -1861,8 +1865,27 @@ static void FFMPEGThread(Context_t *context)
                         }
 #endif
                         int32_t e = 0;
+#if HAVE_CH_LAYOUT
+                        const int32_t frame_channels = decoded_frame->ch_layout.nb_channels;
+#else
+                        const int32_t frame_channels = decoded_frame->channels;
+#endif
+                        /* the resampler is set up for the format of the first
+                         * frame: a stream that changes its channels or rate
+                         * (5.1 to stereo at a programme change) needs a new one */
+                        if (swr && (frame_channels != swr_in_channels || decoded_frame->sample_rate != swr_in_rate || decoded_frame->format != swr_in_format))
+                        {
+                            ffmpeg_printf(10, "audio format changed, new resampler\n");
+                            swr_free(&swr);
+                            swr = NULL;
+                            /* the PCM writer has to renew its header */
+                            pcmExtradata.bResampling = 1;
+                        }
                         if (!swr) 
                         {
+                            swr_in_channels = frame_channels;
+                            swr_in_rate = decoded_frame->sample_rate;
+                            swr_in_format = decoded_frame->format;
                             if(insert_pcm_as_lpcm)
                             {
                                 out_sample_rate = 48000;
@@ -1880,6 +1903,11 @@ static void FFMPEGThread(Context_t *context)
                             }
 
                             swr = swr_alloc();
+                            if (!swr)
+                            {
+                                ffmpeg_err("swr_alloc failed\n");
+                                break;
+                            }
 #if HAVE_CH_LAYOUT
                             out_channels = c->ch_layout.nb_channels;
                             if( !av_channel_layout_check(&c->ch_layout) )
@@ -1938,8 +1966,8 @@ static void FFMPEGThread(Context_t *context)
 #if HAVE_CH_LAYOUT
                                 char icl[128];
                                 char ocl[128];
-                                av_channel_layout_describe(&c->ch_layout, icl, sizeof(icl-1));
-                                av_channel_layout_describe(&out_channel_layout, ocl, sizeof(ocl-1));
+                                av_channel_layout_describe(&c->ch_layout, icl, sizeof(icl));
+                                av_channel_layout_describe(&out_channel_layout, ocl, sizeof(ocl));
                                 ffmpeg_err("swr_init: %d (icl=%s ocl=%s isr=%d osr=%d isf=%d osf=%d\n",
                                     -e, icl, ocl, c->sample_rate, out_sample_rate, c->sample_fmt, AV_SAMPLE_FMT_S16);
 #else
