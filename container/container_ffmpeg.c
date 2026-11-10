@@ -2791,7 +2791,7 @@ int32_t container_ffmpeg_init_av_context(Context_t *context, char *filename, uin
 
     //ffmpeg5: error: assignment of member 'flags' in read-only object -> so commented out next line
     //avContextTab[AVIdx]->iformat->flags |= AVFMT_SEEK_TO_PTS;
-    avContextTab[AVIdx]->flags = AVFMT_FLAG_GENPTS;
+    avContextTab[AVIdx]->flags |= AVFMT_FLAG_GENPTS;
 
     if (context->playback->noprobe)
     {
