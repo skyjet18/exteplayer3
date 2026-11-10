@@ -200,7 +200,7 @@ static int writeData(void *_call, bool is_vp6, bool is_vp9)
         PesHeader[29] = 0xFF;
         PesHeader[33] = 0x85;
 
-        if (pes_header_len != WriteExt(call->WriteV, call->fd, PesHeader, 184)) return -1;
+        if (184 != WriteExt(call->WriteV, call->fd, PesHeader, 184)) return -1;
 
         return 1;
     }
