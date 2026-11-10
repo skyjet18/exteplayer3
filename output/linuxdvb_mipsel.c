@@ -874,6 +874,9 @@ audio_switch_done:
                 else
                 {
                     linuxdvb_printf(10, "found writer %s for encoding %s\n", writer->caps->name, Encoding);
+                    /* the restarted decoder needs the codec data again */
+                    if (writer->reset)
+                        writer->reset();
                     ret = ioctl( videofd, VIDEO_SET_STREAMTYPE, LinuxDvbMapStreamType(writer->caps->dvbStreamType, true));
                     if (ret < 0) ret = ioctl( videofd, VIDEO_SET_STREAMTYPE, LinuxDvbMapStreamType(writer->caps->dvbStreamType, false));
                     if (ret < 0)
