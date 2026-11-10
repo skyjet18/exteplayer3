@@ -127,6 +127,11 @@ static int32_t ffmpeg_read_wrapper_base(void *opaque, uint8_t *buf, int32_t buf_
     if(0 == PlaybackDieNow(0))
     {
         len = ffmpeg_real_read_org(opaque, buf, buf_size);
+        if (len < 0)
+        {
+            /* nothing read yet, len is the offset into buf below */
+            len = 0;
+        }
         while(len < buf_size && g_context && 0 == PlaybackDieNow(0))
         {
             if(type && len > 0)
