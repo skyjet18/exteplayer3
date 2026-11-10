@@ -900,6 +900,12 @@ int LinuxDvbSwitch(Context_t  *context, char * type)
     return cERR_LINUXDVB_NO_ERROR;
 }
 
+/* the DD+ restart of linuxdvb_mipsel.c is never due here */
+int LinuxDvbEac3RestartState(void)
+{
+    return 0;
+}
+
 static int Write(void  *_context, void* _out)
 {
     Context_t          *context  = (Context_t  *) _context;
