@@ -727,6 +727,553 @@ static char* Codec2Encoding(int32_t codec_id, int32_t media_type, uint8_t *extra
     return NULL;
 }
 
+/* FFmpeg before 6.1 has the FF_PROFILE_ names only, FFmpeg 8 the AV_PROFILE_
+ * names only. The profiles that came with 6.1 or later are tested with
+ * #ifdef where they are used. */
+#ifndef AV_PROFILE_AAC_LOW
+#define AV_PROFILE_AAC_LOW       FF_PROFILE_AAC_LOW
+#define AV_PROFILE_AAC_HE        FF_PROFILE_AAC_HE
+#define AV_PROFILE_AAC_HE_V2     FF_PROFILE_AAC_HE_V2
+#define AV_PROFILE_AAC_LD        FF_PROFILE_AAC_LD
+#define AV_PROFILE_AAC_ELD       FF_PROFILE_AAC_ELD
+#define AV_PROFILE_MPEG2_AAC_LOW FF_PROFILE_MPEG2_AAC_LOW
+#define AV_PROFILE_MPEG2_AAC_HE  FF_PROFILE_MPEG2_AAC_HE
+#define AV_PROFILE_DTS_ES        FF_PROFILE_DTS_ES
+#define AV_PROFILE_DTS_96_24     FF_PROFILE_DTS_96_24
+#define AV_PROFILE_DTS_HD_HRA    FF_PROFILE_DTS_HD_HRA
+#define AV_PROFILE_DTS_HD_MA     FF_PROFILE_DTS_HD_MA
+#define AV_PROFILE_DTS_EXPRESS   FF_PROFILE_DTS_EXPRESS
+#endif
+
+#define AUDIO_DESC_EAC3       "Dolby Digital +"
+#define AUDIO_DESC_EAC3_ATMOS "Dolby Atmos"
+
+/* Name of an audio codec for display, as precise as codec id and profile
+ * allow. The result is a constant string, NULL if FFmpeg has no name. */
+static const char *Codec2AudioDescription(int32_t codec_id, int profile)
+{
+    const char *name;
+
+    switch (codec_id)
+    {
+    case AV_CODEC_ID_DTS:
+#ifdef AV_PROFILE_DTS_HD_MA_X_IMAX
+        if (profile == AV_PROFILE_DTS_HD_MA_X_IMAX)
+            return "DTS:X IMAX";
+#endif
+#ifdef AV_PROFILE_DTS_HD_MA_X
+        if (profile == AV_PROFILE_DTS_HD_MA_X)
+            return "DTS:X";
+#endif
+        if (profile == AV_PROFILE_DTS_HD_MA)
+            return "DTS-HD MA";
+        if (profile == AV_PROFILE_DTS_HD_HRA)
+            return "DTS-HD HRA";
+        if (profile == AV_PROFILE_DTS_EXPRESS)
+            return "DTS Express";
+        if (profile == AV_PROFILE_DTS_ES)
+            return "DTS-ES";
+        if (profile == AV_PROFILE_DTS_96_24)
+            return "DTS 96/24";
+        return "DTS";
+    case AV_CODEC_ID_AC3:
+        return "Dolby Digital";
+    case AV_CODEC_ID_EAC3:
+#ifdef AV_PROFILE_EAC3_DDP_ATMOS
+        if (profile == AV_PROFILE_EAC3_DDP_ATMOS)
+            return AUDIO_DESC_EAC3_ATMOS;
+#endif
+        return AUDIO_DESC_EAC3;
+    case AV_CODEC_ID_TRUEHD:
+        return "Dolby TrueHD";
+    case AV_CODEC_ID_MLP:
+        return "MLP";
+    case AV_CODEC_ID_MP2:
+        return "MP2";
+    case AV_CODEC_ID_MP3:
+        return "MP3";
+    case AV_CODEC_ID_AAC:
+    case AV_CODEC_ID_AAC_LATM:
+        if (profile == AV_PROFILE_AAC_LOW || profile == AV_PROFILE_MPEG2_AAC_LOW)
+            return "AAC-LC";
+        if (profile == AV_PROFILE_AAC_HE || profile == AV_PROFILE_MPEG2_AAC_HE)
+            return "HE-AAC";
+        if (profile == AV_PROFILE_AAC_HE_V2)
+            return "HE-AAC v2";
+        if (profile == AV_PROFILE_AAC_LD)
+            return "AAC-LD";
+        if (profile == AV_PROFILE_AAC_ELD)
+            return "AAC-ELD";
+#ifdef AV_PROFILE_AAC_USAC
+        if (profile == AV_PROFILE_AAC_USAC)
+            return "xHE-AAC";
+#endif
+        return "AAC";
+    case AV_CODEC_ID_WMAV1:
+    case AV_CODEC_ID_WMAV2:
+        return "WMA";
+    case AV_CODEC_ID_WMAPRO:
+        return "WMA Pro";
+    case AV_CODEC_ID_WMALOSSLESS:
+        return "WMA Lossless";
+    case AV_CODEC_ID_RA_144:
+        return "RealAudio 14.4";
+    case AV_CODEC_ID_RA_288:
+        return "RealAudio 28.8";
+    case AV_CODEC_ID_FLAC:
+        return "FLAC";
+    case AV_CODEC_ID_AMR_NB:
+        return "AMR";
+    case AV_CODEC_ID_AMR_WB:
+        return "AMR-WB";
+    case AV_CODEC_ID_VORBIS:
+        return "Vorbis";
+    case AV_CODEC_ID_OPUS:
+        return "Opus";
+    case AV_CODEC_ID_MP1:
+        return "MPEG Layer I";
+    case AV_CODEC_ID_ALAC:
+        return "ALAC";
+    case AV_CODEC_ID_WAVPACK:
+        return "WavPack";
+    case AV_CODEC_ID_APE:
+        return "APE";
+    case AV_CODEC_ID_TTA:
+        return "TTA";
+    case AV_CODEC_ID_SPEEX:
+        return "Speex";
+    case AV_CODEC_ID_PCM_ALAW:
+        return "A-law";
+    case AV_CODEC_ID_PCM_MULAW:
+        return "mu-law";
+    case AV_CODEC_ID_PCM_DVD:
+    case AV_CODEC_ID_PCM_BLURAY:
+        return "LPCM";
+    default:
+        break;
+    }
+
+    /* the name FFmpeg has for the codec, "unknown_codec" if it has none */
+    name = avcodec_get_name((enum AVCodecID)codec_id);
+    if (!name)
+        return NULL;
+    if (!strncmp(name, "pcm_", 4))
+        return "PCM";
+    if (!strncmp(name, "dsd_", 4))
+        return "DSD";
+    return name;
+}
+
+/* ------------------------------------------------------------------ */
+/* Dolby Atmos in E-AC-3                                              */
+/*                                                                    */
+/* The profile FFmpeg reports is a snapshot of the frames it probed   */
+/* when the stream was opened. In a broadcast Atmos can start later   */
+/* and end again. Atmos in E-AC-3 is Joint Object Coding, signalled   */
+/* in the additional bitstream information of the syncframe header    */
+/* (ETSI TS 103 420: flag_ec3_extension_type_a and a complexity index */
+/* other than 0). The headers of the packets that are played anyway   */
+/* are parsed; nothing is read or decoded for it.                     */
+/* ------------------------------------------------------------------ */
+typedef struct
+{
+    const uint8_t *data;
+    size_t         size;
+    size_t         bitpos;
+    int            ok;
+} eac3_bits_t;
+
+static uint32_t eac3_bits_read(eac3_bits_t *br, unsigned int n)
+{
+    uint32_t value = 0;
+
+    if (!br->ok || n > br->size * 8 - br->bitpos)
+    {
+        br->ok = 0;
+        return 0;
+    }
+    while (n--)
+    {
+        value = (value << 1) | ((br->data[br->bitpos >> 3] >> (7 - (br->bitpos & 7))) & 1);
+        ++br->bitpos;
+    }
+    return value;
+}
+
+static void eac3_bits_skip(eac3_bits_t *br, unsigned int n)
+{
+    if (!br->ok || n > br->size * 8 - br->bitpos)
+        br->ok = 0;
+    else
+        br->bitpos += n;
+}
+
+/* Parses the header (bsi) of one E-AC-3 syncframe, ETSI TS 102 366 E.1.2.
+ * Returns 1 for a valid frame of substream 0 with its size in *frame_size;
+ * *atmos is set if the frame signals JOC. */
+static int eac3_parse_frame(const uint8_t *data, size_t size, unsigned int *frame_size, int *atmos)
+{
+    eac3_bits_t br = { data, size, 0, 1 };
+    unsigned int i, frame_type, substreamid, sr_code, num_blocks, channel_mode, lfe_on, bitstream_id;
+
+    *frame_size = 0;
+    *atmos = 0;
+
+    if (!data || size < 7)
+        return 0;
+    if (eac3_bits_read(&br, 16) != 0x0b77)
+        return 0;
+
+    frame_type  = eac3_bits_read(&br, 2);
+    substreamid = eac3_bits_read(&br, 3);
+    *frame_size = (eac3_bits_read(&br, 11) + 1) << 1;
+    sr_code     = eac3_bits_read(&br, 2);
+
+    num_blocks = 6;
+    if (sr_code == 3)
+    {
+        if (eac3_bits_read(&br, 2) == 3)
+            return 0;
+    }
+    else
+    {
+        static const unsigned int blocks[4] = { 1, 2, 3, 6 };
+        num_blocks = blocks[eac3_bits_read(&br, 2)];
+    }
+
+    channel_mode = eac3_bits_read(&br, 3);
+    lfe_on       = eac3_bits_read(&br, 1);
+
+    if (!br.ok || frame_type == 3 || substreamid != 0 || *frame_size < 7 || *frame_size > size)
+        return 0;
+
+    /* the header is inside the frame, nothing behind it is looked at */
+    br.size = *frame_size;
+
+    bitstream_id = eac3_bits_read(&br, 5);
+    if (!br.ok || bitstream_id <= 10 || bitstream_id > 16)
+        return 0;
+
+    /* volume control parameters */
+    for (i = 0; i < (channel_mode ? 1U : 2U); ++i)
+    {
+        eac3_bits_skip(&br, 5);                 /* dialnorm */
+        if (eac3_bits_read(&br, 1))
+            eac3_bits_skip(&br, 8);             /* compression */
+    }
+
+    /* dependent stream channel map */
+    if (frame_type == 1)
+    {
+        if (eac3_bits_read(&br, 1))
+            eac3_bits_skip(&br, 16);
+    }
+
+    /* mixing metadata */
+    if (eac3_bits_read(&br, 1))
+    {
+        if (channel_mode > 2)
+        {
+            eac3_bits_skip(&br, 2);             /* preferred downmix */
+            if (channel_mode & 1)
+                eac3_bits_skip(&br, 6);         /* center mix levels */
+            if (channel_mode & 4)
+                eac3_bits_skip(&br, 6);         /* surround mix levels */
+        }
+
+        if (lfe_on && eac3_bits_read(&br, 1))
+            eac3_bits_skip(&br, 5);
+
+        if (frame_type == 0)
+        {
+            for (i = 0; i < (channel_mode ? 1U : 2U); ++i)
+            {
+                if (eac3_bits_read(&br, 1))
+                    eac3_bits_skip(&br, 6);     /* program scale factor */
+            }
+
+            if (eac3_bits_read(&br, 1))
+                eac3_bits_skip(&br, 6);         /* external program scale factor */
+
+            switch (eac3_bits_read(&br, 2))     /* mix control type */
+            {
+                case 1:
+                    eac3_bits_skip(&br, 5);
+                    break;
+                case 2:
+                    eac3_bits_skip(&br, 12);
+                    break;
+                case 3:
+                {
+                    unsigned int mix_data_size = (eac3_bits_read(&br, 5) + 2) << 3;
+                    eac3_bits_skip(&br, mix_data_size);
+                    break;
+                }
+                default:
+                    break;
+            }
+
+            if (channel_mode < 2)
+            {
+                for (i = 0; i < (channel_mode ? 1U : 2U); ++i)
+                {
+                    if (eac3_bits_read(&br, 1))
+                        eac3_bits_skip(&br, 14); /* pan information */
+                }
+            }
+
+            if (eac3_bits_read(&br, 1))         /* frame mixing configuration */
+            {
+                for (i = 0; i < num_blocks; ++i)
+                {
+                    if (num_blocks == 1 || eac3_bits_read(&br, 1))
+                        eac3_bits_skip(&br, 5);
+                }
+            }
+        }
+    }
+
+    /* informational metadata */
+    if (eac3_bits_read(&br, 1))
+    {
+        eac3_bits_skip(&br, 3);                 /* bsmod */
+        eac3_bits_skip(&br, 2);                 /* copyright + original */
+
+        if (channel_mode == 2)
+            eac3_bits_skip(&br, 4);             /* surround + headphone mode */
+        if (channel_mode >= 6)
+            eac3_bits_skip(&br, 2);             /* surround EX mode */
+
+        for (i = 0; i < (channel_mode ? 1U : 2U); ++i)
+        {
+            if (eac3_bits_read(&br, 1))
+                eac3_bits_skip(&br, 8);         /* audio production information */
+        }
+
+        if (sr_code != 3)
+            eac3_bits_skip(&br, 1);             /* source sample rate code */
+    }
+
+    if (frame_type == 0 && num_blocks != 6)
+        eac3_bits_skip(&br, 1);                 /* converter sync */
+
+    if (frame_type == 2)
+    {
+        int have_original_size = (num_blocks == 6);
+        if (!have_original_size)
+            have_original_size = eac3_bits_read(&br, 1) != 0;
+        if (have_original_size)
+            eac3_bits_skip(&br, 6);
+    }
+
+    if (!br.ok)
+        return 0;
+
+    /* additional bitstream information */
+    if (eac3_bits_read(&br, 1))
+    {
+        unsigned int addbsil = eac3_bits_read(&br, 6);
+        unsigned int flag, complexity = 0;
+
+        if (!br.ok)
+            return 0;
+
+        eac3_bits_skip(&br, 7);
+        flag = eac3_bits_read(&br, 1);
+        if (br.ok && flag && addbsil >= 1)
+            complexity = eac3_bits_read(&br, 8);
+        *atmos = br.ok && flag && addbsil >= 1 && complexity >= 1;
+    }
+
+    return br.ok;
+}
+
+/* Size of an AC-3 syncframe (bsid <= 10), 0 if it is not valid. */
+static unsigned int ac3_core_frame_size(const uint8_t *data, size_t size)
+{
+    static const unsigned int bitrates[19] = {
+        32, 40, 48, 56, 64, 80, 96, 112, 128, 160,
+        192, 224, 256, 320, 384, 448, 512, 576, 640
+    };
+    unsigned int fscod, frame_size_code, bitrate;
+
+    if (size < 7 || data[0] != 0x0b || data[1] != 0x77)
+        return 0;
+
+    fscod           = data[4] >> 6;
+    frame_size_code = data[4] & 0x3f;
+    if ((data[5] >> 3) > 10 || fscod == 3 || frame_size_code > 37)
+        return 0;
+
+    bitrate = bitrates[frame_size_code >> 1];
+    switch (fscod)
+    {
+        case 0:  return bitrate * 4;
+        case 1:  return (((bitrate * 320) / 147) + (frame_size_code & 1)) * 2;
+        case 2:  return bitrate * 6;
+        default: return 0;
+    }
+}
+
+/* Walks the syncframes of one packet, 8 at most; 1 if one signals JOC. */
+static int eac3_packet_has_atmos(const uint8_t *data, size_t size)
+{
+    size_t offset = 0;
+    unsigned int frame;
+
+    if (!data || size < 7 || data[0] != 0x0b || data[1] != 0x77)
+        return 0;
+
+    for (frame = 0; frame < 8 && offset + 7 <= size; ++frame)
+    {
+        unsigned int frame_size = 0;
+        int atmos = 0;
+
+        if ((data[offset + 5] >> 3) <= 10)
+        {
+            /* AC-3 frame in front of the E-AC-3 frames */
+            frame_size = ac3_core_frame_size(data + offset, size - offset);
+            if (!frame_size || frame_size > size - offset)
+                break;
+            offset += frame_size;
+            continue;
+        }
+
+        if (!eac3_parse_frame(data + offset, size - offset, &frame_size, &atmos))
+            break;
+        if (atmos)
+            return 1;
+        offset += frame_size;
+    }
+    return 0;
+}
+
+/* Packets with JOC that make it Atmos, with no more than STALE packets
+ * without JOC in between; packets without JOC that end it again. Frames
+ * without JOC are normal inside an Atmos stream (dependent substreams). */
+#define EAC3_ATMOS_CONFIRM_PACKETS 3
+#define EAC3_ATMOS_STALE_PACKETS   16
+#define EAC3_ATMOS_LOST_PACKETS    48
+
+/* What the demuxer thread knows about the audio track it plays. Written by
+ * the demuxer thread, read by the command thread through the audio manager:
+ * under audio_live_mutex. No other lock is taken while it is held. */
+static pthread_mutex_t audio_live_mutex    = PTHREAD_MUTEX_INITIALIZER;
+static int32_t         audio_live_track_id = -1;
+static int             audio_live_channels = 0;   /* of the decoded frames, 0 = not decoded here */
+static int             audio_live_atmos    = -1;  /* E-AC-3: -1 unknown, 0 no, 1 yes */
+static int             audio_live_gen      = 0;   /* counts the changes of the values above */
+/* demuxer thread only */
+static unsigned int    audio_live_atmos_pos = 0;
+static unsigned int    audio_live_atmos_neg = 0;
+
+/* Changes when a value of container_ffmpeg_audio_live_info() has changed. */
+int container_ffmpeg_audio_info_gen(void)
+{
+    int gen;
+
+    pthread_mutex_lock(&audio_live_mutex);
+    gen = audio_live_gen;
+    pthread_mutex_unlock(&audio_live_mutex);
+    return gen;
+}
+
+/* For the audio manager. Returns 0 if track_id is not the track that plays.
+ * *channels: channel count of the decoded frames, 0 if the track is not
+ * decoded here. *description: a constant string if the packets say more than
+ * the codec parameters did, else NULL. */
+int container_ffmpeg_audio_live_info(int32_t track_id, int *channels, const char **description)
+{
+    int ret = 0;
+
+    pthread_mutex_lock(&audio_live_mutex);
+    if (track_id >= 0 && track_id == audio_live_track_id)
+    {
+        *channels    = audio_live_channels;
+        *description = audio_live_atmos == 1 ? AUDIO_DESC_EAC3_ATMOS :
+                       (audio_live_atmos == 0 ? AUDIO_DESC_EAC3 : NULL);
+        ret = 1;
+    }
+    pthread_mutex_unlock(&audio_live_mutex);
+    return ret;
+}
+
+/* Called for every packet of the audio track that plays. */
+static void audio_live_packet(int32_t track_id, int codec_id, const uint8_t *data, size_t size)
+{
+    int is_eac3 = codec_id == AV_CODEC_ID_EAC3;
+    int detected = is_eac3 ? eac3_packet_has_atmos(data, size) : 0;
+    int changed = 0;
+
+    pthread_mutex_lock(&audio_live_mutex);
+    if (track_id != audio_live_track_id)
+    {
+        audio_live_track_id  = track_id;
+        audio_live_channels  = 0;
+        audio_live_atmos     = -1;
+        audio_live_atmos_pos = 0;
+        audio_live_atmos_neg = 0;
+        ++audio_live_gen;
+    }
+
+    if (is_eac3)
+    {
+        if (detected)
+        {
+            ++audio_live_atmos_pos;
+            audio_live_atmos_neg = 0;
+        }
+        else
+        {
+            ++audio_live_atmos_neg;
+            if (audio_live_atmos != 1 && audio_live_atmos_neg > EAC3_ATMOS_STALE_PACKETS)
+                audio_live_atmos_pos = 0;
+        }
+
+        if (audio_live_atmos != 1 && audio_live_atmos_pos >= EAC3_ATMOS_CONFIRM_PACKETS)
+        {
+            audio_live_atmos = 1;
+            changed = 1;
+        }
+        else if (audio_live_atmos == 1 && audio_live_atmos_neg >= EAC3_ATMOS_LOST_PACKETS)
+        {
+            audio_live_atmos     = 0;
+            audio_live_atmos_pos = 0;
+            changed = 1;
+        }
+        if (changed)
+            ++audio_live_gen;
+    }
+    pthread_mutex_unlock(&audio_live_mutex);
+
+    if (changed)
+        ffmpeg_printf(1, "E-AC-3 Atmos (JOC) %s on audio track %d\n", detected ? "detected" : "no longer present", (int)track_id);
+}
+
+/* Called for every decoded frame of the audio track that plays. The codec
+ * parameters do not follow a stream that changes its channel layout, as a
+ * broadcast does between programme and commercials. */
+static void audio_live_frame(int32_t track_id, int channels)
+{
+    int old = 0;
+
+    pthread_mutex_lock(&audio_live_mutex);
+    if (track_id == audio_live_track_id && channels > 0 && channels != audio_live_channels)
+    {
+        old = audio_live_channels;
+        audio_live_channels = channels;
+        ++audio_live_gen;
+    }
+    else
+    {
+        channels = 0;
+    }
+    pthread_mutex_unlock(&audio_live_mutex);
+
+    if (channels)
+        ffmpeg_printf(10, "audio track %d: %d channels decoded (before: %d)\n", (int)track_id, channels, old);
+}
+
 static int64_t doCalcPts(int64_t start_time, const AVRational time_base, int64_t pts)
 {
     if (pts == AV_NOPTS_VALUE)
@@ -1732,6 +2279,11 @@ static void FFMPEGThread(Context_t *context)
                     continue;
                 }
 
+                if (packet.data && packet.size > 0)
+                {
+                    audio_live_packet(audioTrack->Id, (int)get_codecpar(audioTrack->stream)->codec_id, packet.data, (size_t)packet.size);
+                }
+
                 if (audioTrack->inject_raw_pcm != 1 && audioTrack->inject_as_pcm != 1 &&
                     (get_codecpar(audioTrack->stream)->codec_id == AV_CODEC_ID_AAC ||
                      get_codecpar(audioTrack->stream)->codec_id == AV_CODEC_ID_AAC_LATM))
@@ -1895,6 +2447,7 @@ static void FFMPEGThread(Context_t *context)
 #else
                         const int32_t frame_channels = decoded_frame->channels;
 #endif
+                        audio_live_frame(audioTrack->Id, frame_channels);
                         /* the resampler is set up for the format of the first
                          * frame: a stream that changes its channels or rate
                          * (5.1 to stereo at a programme change) needs a new one */
@@ -3391,6 +3944,12 @@ int32_t container_ffmpeg_update_tracks(Context_t *context, char *filename, int32
                     ffmpeg_printf(10, "Language %s\n", track.Name);
 
                     track.Encoding       = encoding;
+                    track.Description    = Codec2AudioDescription((int32_t)get_codecpar(stream)->codec_id, (int)get_codecpar(stream)->profile);
+#if HAVE_CH_LAYOUT
+                    track.channels       = get_codecpar(stream)->ch_layout.nb_channels;
+#else
+                    track.channels       = get_codecpar(stream)->channels;
+#endif
                     track.stream         = stream;
                     track.Id             = ((AVStream *) (track.stream))->id;
                     track.aacbuf         = 0;
