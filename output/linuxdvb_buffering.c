@@ -250,6 +250,14 @@ int32_t LinuxDvbBuffOpen(Context_t *context, char *type, int outfd, void *mtx)
 
         g_pDVBMtx = mtx;
 
+        /* init synchronization prymitives, the thread uses them at once */
+        pthread_mutex_init(&bufferingMtx, NULL);
+
+        pthread_cond_init(&bufferingExitCond, NULL);
+        pthread_cond_init(&bufferingDataConsumedCond, NULL);
+        pthread_cond_init(&bufferingWriteFinishedCond, NULL);
+        pthread_cond_init(&bufferingdDataAddedCond, NULL);
+
         if((error = pthread_create(&bufferingThread, &attr, (void *)&LinuxDvbBuffThread, context)) != 0) 
         {
             buff_printf(10, "Creating thread, error:%d:%s\n", error, strerror(error));
@@ -261,14 +269,6 @@ int32_t LinuxDvbBuffOpen(Context_t *context, char *type, int outfd, void *mtx)
         {
             buff_printf(10, "Created thread\n");
             hasBufferingThreadStarted = true;
-
-            /* init synchronization prymitives */
-            pthread_mutex_init(&bufferingMtx, NULL);
-            
-            pthread_cond_init(&bufferingExitCond, NULL);
-            pthread_cond_init(&bufferingDataConsumedCond, NULL);
-            pthread_cond_init(&bufferingWriteFinishedCond, NULL);
-            pthread_cond_init(&bufferingdDataAddedCond, NULL);
         }
     }
     
