@@ -159,7 +159,8 @@ static int32_t ffmpeg_read_wrapper_base(void *opaque, uint8_t *buf, int32_t buf_
         }
     }
     //printf("len [%d] finishTimeout[%d]\n", len, finishTimeout);
-    return len;
+    /* a read callback must not return 0 at the end */
+    return len > 0 ? len : AVERROR_EOF;
 }
 
 static int32_t ffmpeg_read_wrapper(void *opaque, uint8_t *buf, int32_t buf_size)
