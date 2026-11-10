@@ -1293,7 +1293,7 @@ int main(int argc, char* argv[])
                         else if(!force && ergSec >= lengthInt)
                         {
                             sec = (lengthInt - CurrentSec) - 5;
-                            if(0 < sec)
+                            if(0 > sec)
                             {
                                 sec = 0; // no jump we are at the end
                             }
