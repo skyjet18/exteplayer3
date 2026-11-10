@@ -127,6 +127,59 @@ void FlushBits(BitPacker_t * ld)
     ld->BitBuffer = 0;
 }
 
+/* true when the first line of the file names a HiSilicon SoC,
+ * e.g. "hi3798mv200" or "Hi3716MV430" in /proc/stb/info/chipset */
+static bool IsHiSiliconChipsetFile(const char *path)
+{
+    char buf[64];
+    size_t i;
+    FILE *f = fopen(path, "r");
+
+    if (NULL == f)
+    {
+        return false;
+    }
+    if (NULL == fgets(buf, (int)sizeof(buf), f))
+    {
+        fclose(f);
+        return false;
+    }
+    fclose(f);
+
+    for (i = 0; buf[i] != '\0'; ++i)
+    {
+        if (buf[i] >= 'A' && buf[i] <= 'Z')
+        {
+            buf[i] = (char)(buf[i] - 'A' + 'a');
+        }
+    }
+    return 0 == strncmp(buf, "hi3", 3) || NULL != strstr(buf, "hisi");
+}
+
+/* The device tree node is missing on a number of HiSilicon receivers, so
+ * also accept what the vendor SDK creates and the chipset name of the box. */
+static bool IsHiSiliconSTB(void)
+{
+    static const char *const markers[] = {
+        "/sys/firmware/devicetree/base/soc/hisilicon_clock/name",
+        "/proc/hisi",
+        "/dev/hi_mem",
+        "/dev/hi_dmx",
+        "/sys/module/hi_media",
+        NULL
+    };
+    int i;
+
+    for (i = 0; markers[i] != NULL; ++i)
+    {
+        if (access(markers[i], F_OK) != -1)
+        {
+            return true;
+        }
+    }
+    return IsHiSiliconChipsetFile("/proc/stb/info/chipset");
+}
+
 stb_type_t GetSTBType()
 {
     static stb_type_t type = STB_UNKNOWN;
@@ -142,7 +195,7 @@ stb_type_t GetSTBType()
             // please see: https://gitlab.com/e2i/e2iplayer/issues/282
             type = STB_VUPLUS;
         }
-        else if (access("/sys/firmware/devicetree/base/soc/hisilicon_clock/name", F_OK) != -1) {
+        else if (IsHiSiliconSTB()) {
             type = STB_HISILICON;
         }
         else {
