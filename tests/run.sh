@@ -72,6 +72,7 @@ rm -f "$tmp/net_stall"
 # the test: the thread has ended when container_ffmpeg_play() goes on.
 $cc -g -fsanitize=undefined -ffunction-sections -fdata-sections \
     -Wno-deprecated-declarations -Iinclude -Iexternal \
+    -Dff_mpeg4audio_channels=exteplayer3_mpeg4audio_channels external/ffmpeg/src/mpeg4audio.c \
     -I"$FFMPEG_BUILD" -I"$FFMPEG_SOURCE" \
     tests/play_thread_test.c tools/debug.c tools/pcm_export.c tools/hevc_hdr.c \
     -Wl,--gc-sections -pthread "$FFMPEG_BUILD/libavformat/libavformat.a" \
