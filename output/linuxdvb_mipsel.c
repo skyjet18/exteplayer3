@@ -676,10 +676,11 @@ int LinuxDvbClear(Context_t  *context __attribute__((unused)), char *type)
                         linuxdvb_err("AUDIO_SET_BYPASS_MODE: %s\n", strerror(errno));
                         ret = cERR_LINUXDVB_ERROR;
                     }
+                    /* The buffer is cleared at this point. Restarting a decoder
+                     * that still runs is not an error of the clear. */
                     if (ioctl(audiofd, AUDIO_PLAY) < 0)
                     {
                         linuxdvb_err("AUDIO_PLAY: %s\n", strerror(errno));
-                        ret = cERR_LINUXDVB_ERROR;
                     }
                 }
                 free(encoding);
@@ -687,7 +688,6 @@ int LinuxDvbClear(Context_t  *context __attribute__((unused)), char *type)
             if (ioctl(audiofd, AUDIO_CONTINUE) < 0)
             {
                 linuxdvb_err("AUDIO_CONTINUE: %s\n", strerror(errno));
-                ret = cERR_LINUXDVB_ERROR;
             }
         }
 
