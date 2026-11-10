@@ -145,7 +145,8 @@ static char *mov_get_text(const char *str, int len)
         return strdup("");
     }
 
-    char *result = malloc(len + 1);
+    /* an escaped character takes two bytes */
+    char *result = malloc(2 * (size_t)len + 1);
 
     if (!result)
     {
@@ -243,7 +244,20 @@ static char *mov_get_text(const char *str, int len)
 
 static char * json_string_escape(char *str)
 {
-    static char tmp[2048];
+    /* an escaped character takes two bytes */
+    static char *tmp = NULL;
+    static size_t tmpSize = 0;
+    size_t need = 2 * strlen(str) + 1;
+    if (need > tmpSize)
+    {
+        char *n = realloc(tmp, need);
+        if (!n)
+        {
+            return "";
+        }
+        tmp = n;
+        tmpSize = need;
+    }
     char *ptr1 = tmp;
     char *ptr2 = str;
     while (*ptr2 != '\0')
