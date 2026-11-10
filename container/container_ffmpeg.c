@@ -1276,6 +1276,8 @@ static void FFMPEGThread(Context_t *context)
     int32_t swr_in_channels = 0;
     int32_t swr_in_rate = 0;
     int32_t swr_in_format = -1;
+    /* the resampler has got a timestamp to count on from */
+    int32_t swr_has_pts = 0;
     AVFrame *decoded_frame = NULL;
     int32_t out_sample_rate = 44100;
 #if HAVE_CH_LAYOUT
@@ -1902,6 +1904,7 @@ static void FFMPEGThread(Context_t *context)
                             swr_in_channels = frame_channels;
                             swr_in_rate = decoded_frame->sample_rate;
                             swr_in_format = decoded_frame->format;
+                            swr_has_pts = 0;
                             if(insert_pcm_as_lpcm)
                             {
                                 out_sample_rate = 48000;
@@ -2005,12 +2008,24 @@ static void FFMPEGThread(Context_t *context)
                             ffmpeg_err("av_samples_alloc: %d\n", -e);
                             continue;
                         }
-                        int64_t next_in_pts = av_rescale(wrapped_frame_get_best_effort_timestamp(decoded_frame),
+                        int64_t best_effort_ts = wrapped_frame_get_best_effort_timestamp(decoded_frame);
+                        int64_t next_in_pts = INT64_MIN;
+                        int64_t next_out_pts = AV_NOPTS_VALUE;
+                        if (best_effort_ts != AV_NOPTS_VALUE)
+                        {
+                            next_in_pts = av_rescale(best_effort_ts,
                                          ((AVStream*) audioTrack->stream)->time_base.num * (int64_t)out_sample_rate * c->sample_rate,
                                          ((AVStream*) audioTrack->stream)->time_base.den);
-                        int64_t next_out_pts = av_rescale(swr_next_pts(swr, next_in_pts),
+                            swr_has_pts = 1;
+                        }
+                        /* a frame without a timestamp goes on from the samples
+                         * converted since the last one that had it */
+                        if (swr_has_pts)
+                        {
+                            next_out_pts = av_rescale(swr_next_pts(swr, next_in_pts),
                                          ((AVStream*) audioTrack->stream)->time_base.den,
                                          ((AVStream*) audioTrack->stream)->time_base.num * (int64_t)out_sample_rate * c->sample_rate);
+                        }
                         
                         currentAudioPts = audioTrack->pts = pts = calcPts(cAVIdx, audioTrack->stream, next_out_pts);
                         out_samples = swr_convert(swr, &output[0], out_samples, (const uint8_t **) &decoded_frame->data[0], in_samples);
