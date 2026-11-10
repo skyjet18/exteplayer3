@@ -1464,6 +1464,11 @@ static void FFMPEGThread(Context_t *context)
                 {
                     if (multiContextLastPts[0] != INVALID_PTS_VALUE) {
                         int64_t target = av_rescale(multiContextLastPts[0], AV_TIME_BASE, 90000);
+                        /* multiContextLastPts counts from the start of its context */
+                        if (avContextTab[1]->start_time != AV_NOPTS_VALUE)
+                        {
+                            target = av_sat_add64(target, avContextTab[1]->start_time);
+                        }
                         avformat_seek_file(avContextTab[1], -1, INT64_MIN, target, INT64_MAX, 0);
                         prev_seek_time_sec = -1;
                         wrapped_avcodec_flush_buffers(1);
