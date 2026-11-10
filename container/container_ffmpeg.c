@@ -342,12 +342,13 @@ static AVProgram *select_program(AVFormatContext *av)
 {
     AVProgram *best = NULL, *audio = NULL;
     int64_t bandwidth = 0;
+    int best_sized = 0;
     unsigned int i, j;
     for (i = 0; i < av->nb_programs; i++)
     {
         AVProgram *p = av->programs[i];
         int64_t candidate;
-        int has_video = 0, has_audio = 0;
+        int has_video = 0, has_audio = 0, sized;
         if (!p->nb_stream_indexes)
             continue;
         if (g_sel_program_id > 0)
@@ -372,10 +373,15 @@ static AVProgram *select_program(AVFormatContext *av)
             continue;
         }
         candidate = variant_bandwidth(p->metadata);
-        if (!best || (g_quality_mode == 1 ? candidate < bandwidth : candidate > bandwidth))
+        /* no picture size: the video of this program was never probed
+         * (scrambled program of a multi program TS) */
+        sized = get_codecpar(av->streams[p->stream_index[j]])->width > 0;
+        if (!best || (g_quality_mode == 1 ? candidate < bandwidth : candidate > bandwidth) ||
+            (candidate == bandwidth && sized && !best_sized))
         {
             best = p;
             bandwidth = candidate;
+            best_sized = sized;
         }
     }
     return best ? best : (g_sel_program_id > 0 ? NULL : audio);
