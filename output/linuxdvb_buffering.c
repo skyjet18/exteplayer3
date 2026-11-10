@@ -476,7 +476,8 @@ ssize_t BufferingWriteV(int fd, const struct iovec *iov, int ic)
     pthread_mutex_lock(&bufferingMtx);
     while (0 == PlaybackDieNow(0))
     {
-        if (bufferingDataSize + chunkSize >= maxBufferingDataSize)
+        /* a chunk larger than the whole buffer is taken when the queue is empty */
+        if (bufferingQueueHead != NULL && bufferingDataSize + chunkSize >= maxBufferingDataSize)
         {
             /* Buffering queue is full we need wait for space*/
             pthread_cond_wait(&bufferingDataConsumedCond, &bufferingMtx);
