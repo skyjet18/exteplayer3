@@ -30,7 +30,7 @@ typedef struct HevcHdrDetector_s {
     size_t first_sps_at;
     int nal_length_size;
     int length_prefixed;
-    int result; /* -1 while unknown, otherwise HEVC_HDR_* */
+    int result; /* -1 while unknown, otherwise HEVC_HDR_*; HEVC_HDR_GENERIC may still become HDR10 or HLG until done */
     int done;
 } HevcHdrDetector;
 

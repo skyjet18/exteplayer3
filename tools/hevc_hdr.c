@@ -508,15 +508,19 @@ static int detector_evaluate(HevcHdrDetector *detector, int force)
     result = hevc_hdr_classify(detector->buffer + detector->last_classify,
                                detector->size - detector->last_classify, &saw_sps);
     detector->last_classify = detector->size;
-    if (result != HEVC_HDR_SDR)
+    if (result == HEVC_HDR_HDR10 || result == HEVC_HDR_HLG)
         return detector_finish(detector, result);
+    /* A BT.2020 VUI is not the last word: backwards compatible HLG signals
+     * transfer 14 there and 18 in an alternative transfer SEI, which is not
+     * part of the extradata. Report it and keep looking. */
+    if (result == HEVC_HDR_GENERIC)
+        detector->result = HEVC_HDR_GENERIC;
     if (saw_sps && !detector->first_sps_at)
         detector->first_sps_at = detector->size;
-    if (detector->first_sps_at &&
-        detector->size - detector->first_sps_at >= HEVC_HDR_SDR_COMMIT)
-        return detector_finish(detector, HEVC_HDR_SDR);
-    if (detector->size >= HEVC_HDR_MAX_ES_BYTES)
-        return detector_finish(detector, HEVC_HDR_SDR);
+    if ((detector->first_sps_at &&
+         detector->size - detector->first_sps_at >= HEVC_HDR_SDR_COMMIT) ||
+        detector->size >= HEVC_HDR_MAX_ES_BYTES)
+        return detector_finish(detector, detector->result >= 0 ? detector->result : HEVC_HDR_SDR);
     return 0;
 }
 
