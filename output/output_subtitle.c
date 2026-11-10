@@ -358,6 +358,30 @@ static char * remove_ass_formating(char *str)
     return str;
 }
 
+/* turn the "\n" left by ass_get_text() into a line feed, json_string_escape() writes it as \n again */
+static char * ass_line_breaks(char *str)
+{
+    char *out = str;
+    char *p;
+
+    for( p = str; *p; p++ )
+    {
+        if( p[0] == '\\' && p[1] == 'n' )
+        {
+            *out++ = '\n';
+            p++;
+        }
+        else
+        {
+            *out++ = *p;
+        }
+    }
+
+    *out = '\0';
+
+    return str;
+}
+
 static int Flush()
 {
     if (g_subWriter)
@@ -428,7 +452,7 @@ static int Write(void *_context, void *data)
             E2iSendMsg("{\"s_a\":{\"id\":%d,\"s\":%"PRId64",\"e\":%"PRId64",\"t\":\"%s\"}}\n", out->trackId, out->pts / 90, out->pts / 90 + out->durationMS, json_string_escape( remove_ass_formating((char *)out->data) ));
         break;
         case SUBTITLE_CODEC_ID_ASS:
-            E2iSendMsg("{\"s_a\":{\"id\":%d,\"s\":%"PRId64",\"e\":%"PRId64",\"t\":\"%s\"}}\n", out->trackId, out->pts / 90, out->pts / 90 + out->durationMS, remove_ass_formating( ass_get_text((char *)out->data) ));
+            E2iSendMsg("{\"s_a\":{\"id\":%d,\"s\":%"PRId64",\"e\":%"PRId64",\"t\":\"%s\"}}\n", out->trackId, out->pts / 90, out->pts / 90 + out->durationMS, json_string_escape( ass_line_breaks( remove_ass_formating( ass_get_text((char *)out->data) ) ) ));
         break;
         case SUBTITLE_CODEC_ID_MOV_TEXT:
         {
