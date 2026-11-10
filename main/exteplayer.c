@@ -61,6 +61,10 @@ extern void       mp3_software_decoder_set(const int32_t val);
 extern void       amr_software_decoder_set(const int32_t val);
 extern void    vorbis_software_decoder_set(const int32_t val);
 extern void      opus_software_decoder_set(const int32_t val);
+extern void         dts_ac3_transcoder_set(const int32_t val);
+extern void      truehd_ac3_transcoder_set(const int32_t val);
+extern void          aac_he_transcoder_set(const int32_t val);
+extern int32_t        audio_transcode_caps(void);
 
 extern void            rtmp_proto_impl_set(const int32_t val);
 extern void        flv2mpeg4_converter_set(const int32_t val);
@@ -683,15 +687,25 @@ static int ParseParams(int argc,char* argv[], PlayFiles_t *playbackFiles, int *p
     int ret = 0;
     int c;
     int quality = 0, default_audio = 0, export_pcm = 0;
+    int xcode = 0; /* 1: -Z, 2: -X, 4: -Y */
     int digit_optind = 0;
     int aopt = 0, bopt = 0;
     char *copt = 0, *dopt = 0;
-    while ( (c = getopt(argc, argv, "KG:W:H:A:V:U:we3dlsrimvCa:j:n:x:u:c:h:o:p:P:t:9:0:1:4:5:6:7:f:b:F:S:O:T:L:Q:D:M:")) != -1)
+    while ( (c = getopt(argc, argv, "ZXYKG:W:H:A:V:U:we3dlsrimvCa:j:n:x:u:c:h:o:p:P:t:9:0:1:4:5:6:7:f:b:F:S:O:T:L:Q:D:M:")) != -1)
     {
         switch (c) 
         {
         case 'K':
             export_pcm = 1;
+            break;
+        case 'Z':
+            xcode |= 1;
+            break;
+        case 'X':
+            xcode |= 2;
+            break;
+        case 'Y':
+            xcode |= 4;
             break;
         case 'G':
             g_graphic_sub_path = optarg;
@@ -944,6 +958,26 @@ static int ParseParams(int argc,char* argv[], PlayFiles_t *playbackFiles, int *p
         vorbis_software_decoder_set(1);
         opus_software_decoder_set(1);
     }
+    if (xcode && export_pcm)
+    {
+        printf("Audio transcoding (-Z, -X, -Y) is off: the PCM export (-K) takes the decoded audio\n");
+    }
+    else if (xcode)
+    {
+        /* 1: AC3 encoder, 2: AAC encoder */
+        const int32_t caps = audio_transcode_caps();
+        if ((xcode & 3) && !(caps & 1))
+            printf("No AC3 encoder in this FFmpeg: -Z and -X are ignored\n");
+        else if (xcode & 3)
+            printf("%s%s%s will be transcoded to AC3 5.1\n", (xcode & 1) ? "DTS" : "", (xcode & 3) == 3 ? " and " : "", (xcode & 2) ? "TrueHD" : "");
+        if ((xcode & 4) && !(caps & 2))
+            printf("No AAC encoder in this FFmpeg: -Y is ignored\n");
+        else if (xcode & 4)
+            printf("HE-AAC will be transcoded to AAC-LC\n");
+        dts_ac3_transcoder_set((xcode & 1) && (caps & 1));
+        truehd_ac3_transcoder_set((xcode & 2) && (caps & 1));
+        aac_he_transcoder_set((xcode & 4) && (caps & 2));
+    }
     if (0 == ret && optind < argc)
     {
         playbackFiles->szFirstFile = map_inter_file_path(argv[optind]);
@@ -1004,7 +1038,11 @@ int main(int argc, char* argv[])
     int commandRetVal = -1;
 
     /* inform client that we can handle additional commands */
-    E2iSendMsg("{\"EPLAYER3_EXTENDED\":{\"version\":%d}}\n", 186);
+    /* xcode: the audio transcoding this build can do, 1: to AC3 (-Z, -X), 2: to AAC-LC (-Y) */
+    E2iSendMsg("{\"EPLAYER3_EXTENDED\":{\"version\":%d"
+               ",\"xcode\":%d"
+               "}}\n", 186,
+               audio_transcode_caps());
 
     PlayFiles_t playbackFiles;
     memset(&playbackFiles, 0x00, sizeof(playbackFiles));
@@ -1029,6 +1067,10 @@ int main(int argc, char* argv[])
         printf("[-w] WMA2, WMA/PRO software decoding\n");
         printf("[-l] software decoder use LPCM for injection (otherwise wav PCM will be used)\n");
         printf("[-s] software decoding as stereo [downmix]\n");
+        printf("[-Z] DTS transcoding to AC3 5.1 (also with -d)\n");
+        printf("[-X] TrueHD/MLP transcoding to AC3 5.1\n");
+        printf("[-Y] HE-AAC transcoding to AAC-LC (not for AAC decoded in software, -a)\n");
+        printf("     -Z, -X and -Y need the encoder in FFmpeg (\"xcode\" in EPLAYER3_EXTENDED) and are off with -K\n");
 #ifdef HAVE_FLV2MPEG4_CONVERTER
         printf("[-4 0|1] - disable/enable flv2mpeg4 converter\n");
 #endif
