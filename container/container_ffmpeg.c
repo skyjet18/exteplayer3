@@ -4091,8 +4091,12 @@ static int32_t container_ffmpeg_switch_audio(Context_t *context, int32_t *arg)
     int64_t sec = 0;
     int32_t ret;
     ffmpeg_printf(10, "track %d\n", *arg);
+    /* PLAYBACK_SEEK is refused while paused or in trick play. The switch then
+     * takes effect at the read position, as it does on streams without duration. */
     if (!context->playback->isDash &&
-        (!avContextTab[0] || use_custom_io[0] || avContextTab[0]->duration > 0))
+        (!avContextTab[0] || use_custom_io[0] || avContextTab[0]->duration > 0) &&
+        !context->playback->isPaused && !context->playback->isForwarding &&
+        !context->playback->BackWard && !context->playback->SlowMotion)
     {
         ret = context->playback->Command(context, PLAYBACK_SEEK, &sec);
         if (ret != 0)
