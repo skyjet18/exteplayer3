@@ -64,6 +64,10 @@ typedef struct Track_s {
     uint8_t*              aacbuf;
     unsigned int          aacbuflen;
     int                   have_aacheader;
+    /* audio: name of the codec for display, a constant string or NULL */
+    const char           *Description;
+    /* audio: channel count from the codec parameters, 0 if unknown */
+    int                   channels;
 
     /* If player2 or the elf do not support decoding of audio codec set this.
      * AVCodec is than used for softdecoding and stream will be injected as PCM */
@@ -79,6 +83,10 @@ typedef struct TrackDescription_s
     int                   Id;
     char *                Name;
     char *                Encoding;
+    /* audio only: a constant string (not to be freed) or NULL */
+    const char *          Description;
+    /* audio only: 0 if unknown */
+    int                   channels;
     unsigned int          frame_rate;
     int                   width;
     int                   height;
