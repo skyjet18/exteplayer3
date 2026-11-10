@@ -654,7 +654,7 @@ static int ParseParams(int argc,char* argv[], PlayFiles_t *playbackFiles, int *p
             break;
         case 'U':
             printf("Software decoder will be used for OPUS codec\n");
-            vorbis_software_decoder_set(atoi(optarg));
+            opus_software_decoder_set(atoi(optarg));
             break;
         case '3':
             printf("Software decoder will be used for AC3 codec\n");
@@ -935,7 +935,7 @@ int main(int argc, char* argv[])
         printf("[-m] MP3 software decoding\n");
         printf("[-A 0|1] disable|enable AMR software decoding\n");
         printf("[-V 0|1] disable|enable VORBIS software decoding\n");
-        printf("[-U 0|1] disable|enable AMR software decoding\n");
+        printf("[-U 0|1] disable|enable OPUS software decoding\n");
         printf("[-w] WMA2, WMA/PRO software decoding\n");
         printf("[-l] software decoder use LPCM for injection (otherwise wav PCM will be used)\n");
         printf("[-s] software decoding as stereo [downmix]\n");
