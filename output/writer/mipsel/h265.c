@@ -221,7 +221,7 @@ static int writeData(void* _call)
     if( (call->InfoFlags & 0x1) &&
         (
             (call->private_size == 0) ||
-            (call->private_size > 2 && call->private_data[0] == 0x00 && call->private_data[0] == 0x00 && call->private_data[2] == 0x01)
+            (call->private_size > 2 && call->private_data[0] == 0x00 && call->private_data[1] == 0x00 && call->private_data[2] == 0x01)
         )
     )   // TS Container
     {
