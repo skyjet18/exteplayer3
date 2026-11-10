@@ -1096,8 +1096,27 @@ static void radio_metadata_update(AVFormatContext *av, AVStream *stream,
  * buffered (PTS gap + 800 ms). EP3_LIVE_SYNC=0 disables it. */
 #include <time.h>
 static volatile int     ls_state  = 0;   /* 0 not started, 1 holding, 2 done/off */
-static volatile int64_t ls_last_v = INVALID_PTS_VALUE;
-static volatile int64_t ls_last_a = INVALID_PTS_VALUE;
+/* written by the demuxer thread, read by ls_thread: under ls_pts_mutex,
+ * a 64-bit load or store is not atomic on 32-bit ARM and MIPS */
+static pthread_mutex_t  ls_pts_mutex = PTHREAD_MUTEX_INITIALIZER;
+static int64_t          ls_last_v = INVALID_PTS_VALUE;
+static int64_t          ls_last_a = INVALID_PTS_VALUE;
+
+static void ls_set_pts(int64_t *dst, int64_t pts)
+{
+    pthread_mutex_lock(&ls_pts_mutex);
+    *dst = pts;
+    pthread_mutex_unlock(&ls_pts_mutex);
+}
+
+static int64_t ls_get_pts(const int64_t *src)
+{
+    int64_t pts;
+    pthread_mutex_lock(&ls_pts_mutex);
+    pts = *src;
+    pthread_mutex_unlock(&ls_pts_mutex);
+    return pts;
+}
 
 static int64_t ls_now_ms(void)
 {
@@ -1116,10 +1135,12 @@ static void *ls_thread(void *arg)
     while (ls_state == 1 && context->playback && context->playback->isPlaying)
     {
         int64_t el = ls_now_ms() - t0;
+        int64_t last_v = ls_get_pts(&ls_last_v);
+        int64_t last_a = ls_get_pts(&ls_last_a);
         need = -1;
-        if (ls_last_v != INVALID_PTS_VALUE && ls_last_a != INVALID_PTS_VALUE)
+        if (last_v != INVALID_PTS_VALUE && last_a != INVALID_PTS_VALUE)
         {
-            int64_t gap = (ls_last_v - ls_last_a) / 90;
+            int64_t gap = (last_v - last_a) / 90;
             if (gap > maxgap) maxgap = gap;
             need = maxgap > 200 ? maxgap + margin : 0;
             if (need > 3000) need = 3000;
@@ -1153,7 +1174,8 @@ static void *ls_thread(void *arg)
     while (context->playback && context->playback->isPlaying)
     {
         usleep(250000);
-        if (context->playback->isPaused || ls_last_a == INVALID_PTS_VALUE)
+        int64_t last_a = ls_get_pts(&ls_last_a);
+        if (context->playback->isPaused || last_a == INVALID_PTS_VALUE)
         {
             low = 0;
             continue;
@@ -1161,7 +1183,7 @@ static void *ls_thread(void *arg)
         unsigned long long int cur = 0;
         if (context->output->Command(context, OUTPUT_PTS, &cur) != 0 || cur == 0)
             continue;
-        int64_t d = ((int64_t)ls_last_a - (int64_t)cur) & 0x1FFFFFFFFLL;
+        int64_t d = (last_a - (int64_t)cur) & 0x1FFFFFFFFLL;
         if (d >= 0x100000000LL)
             d -= 0x200000000LL;
         int64_t slack = d / 90;
@@ -1179,7 +1201,7 @@ static void *ls_thread(void *arg)
         while (context->playback && context->playback->isPlaying && !context->playback->isPaused &&
                ls_now_ms() - t1 < 3000)
         {
-            int64_t dd = ((int64_t)ls_last_a - (int64_t)cur) & 0x1FFFFFFFFLL;
+            int64_t dd = (ls_get_pts(&ls_last_a) - (int64_t)cur) & 0x1FFFFFFFFLL;
             if (dd >= 0x100000000LL)
                 dd -= 0x200000000LL;
             if (dd / 90 >= 1000)
@@ -1198,7 +1220,7 @@ static void *ls_thread(void *arg)
 
 static void ls_on_video(Context_t *context, int64_t pts)
 {
-    if (pts != INVALID_PTS_VALUE) ls_last_v = pts;
+    if (pts != INVALID_PTS_VALUE) ls_set_pts(&ls_last_v, pts);
     if (ls_state != 0) return;
     const char *env = getenv("EP3_LIVE_SYNC");
     if ((env && env[0] == '0') || !avContextTab[0] ||
@@ -1694,7 +1716,7 @@ static void FFMPEGThread(Context_t *context)
                     ffmpeg_printf(10, "first audio: raw_pts=%"PRId64" tb=%d/%d pts90=%"PRId64" dts90=%"PRId64"\n",
                                   packet.pts, stream->time_base.num,
                                   stream->time_base.den, pts, dts);
-                if (currentAudioPts != INVALID_PTS_VALUE) ls_last_a = currentAudioPts;
+                if (currentAudioPts != INVALID_PTS_VALUE) ls_set_pts(&ls_last_a, currentAudioPts);
 
                 if ((currentAudioPts != INVALID_PTS_VALUE) && (currentAudioPts > latestPts) && (!videoTrack))
                 {
