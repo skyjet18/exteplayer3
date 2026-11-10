@@ -788,7 +788,15 @@ static int ParseParams(int argc,char* argv[], PlayFiles_t *playbackFiles, int *p
     if (0 == ret && optind < argc)
     {
         playbackFiles->szFirstFile = map_inter_file_path(argv[optind]);
-        printf("file: [%s]\n", playbackFiles->szFirstFile);
+        if (NULL == playbackFiles->szFirstFile)
+        {
+            printf("file: [%s] cannot be read\n", argv[optind]);
+            ret = -1;
+        }
+        else
+        {
+            printf("file: [%s]\n", playbackFiles->szFirstFile);
+        }
         ++optind;
     }
     else
