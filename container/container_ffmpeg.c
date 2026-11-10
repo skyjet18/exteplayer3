@@ -2248,6 +2248,11 @@ static void FFMPEGThread(Context_t *context)
                 }
                 else
                 {
+                    /* a dead live source fails again at once */
+                    if (context->playback->isTSLiveMode)
+                    {
+                        usleep(100000);
+                    }
                     continue;
                 }
             }
