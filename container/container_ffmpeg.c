@@ -2392,7 +2392,7 @@ int64_t SAM_SeekFunc(void *ptr, int64_t pos, int whence)
                 ret = pos;
                 break;
             case SEEK_CUR:
-                ret += pos;
+                ret = io->iOffset + pos;
                 break;
             case SEEK_END:
                 ret = io->iFileSize + pos;
