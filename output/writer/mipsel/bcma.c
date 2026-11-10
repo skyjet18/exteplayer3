@@ -198,7 +198,7 @@ static int writeData(void *_call)
     PesHeader[6] |= 1;
     UpdatePesHeaderPayloadSize(PesHeader, headerSize - 6 + private_size + call->len);
 
-    struct iovec iov[5];
+    struct iovec iov[8];
 
     i = 0;
     iov[i].iov_base = PesHeader;
@@ -206,12 +206,13 @@ static int writeData(void *_call)
 
     if (private_size > 0) {
         if (pcmPrivateData->codec_id == AV_CODEC_ID_VORBIS) {
-            for (i=0; i<3; ++i) {
-                iov[i].iov_base = vorbis_header_len_raw[i];
+            uint32_t n;
+            for (n=0; n<3; ++n) {
+                iov[i].iov_base = vorbis_header_len_raw[n];
                 iov[i++].iov_len  = 2;
 
-                iov[i].iov_base = vorbis_header_start;
-                iov[i++].iov_len  = vorbis_header_len[i];
+                iov[i].iov_base = (void *)vorbis_header_start[n];
+                iov[i++].iov_len  = vorbis_header_len[n];
             }
         }
         else {
