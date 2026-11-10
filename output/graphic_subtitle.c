@@ -184,7 +184,11 @@ static int32_t Open(SubtitleCodecId_t codecId, uint8_t *extradata, int extradata
     int ret = avcodec_open2(context, codec, NULL);
 
     if (ret < 0) {
+        /* extradata is not allocated by us */
+        context->extradata = NULL;
+        context->extradata_size = 0;
         free(g_sys);
+        g_sys = NULL;
         avcodec_free_context(&context);
         return -1;
     }
