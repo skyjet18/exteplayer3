@@ -448,13 +448,13 @@ static void process_suburi(PlayFiles_t *play_files)
     }
 }
 
-static int kbhit(void)
+static int kbhit(int ms)
 {
     struct timeval tv;
     fd_set readfds;
 
-    tv.tv_sec = 1;
-    tv.tv_usec = 0;
+    tv.tv_sec = ms / 1000;
+    tv.tv_usec = (ms % 1000) * 1000;
 
     FD_ZERO(&readfds);
     FD_SET(0,&readfds);
@@ -471,6 +471,28 @@ static int kbhit(void)
     }
 
     return 0;
+}
+
+extern int LinuxDvbEac3RestartState(void);
+
+/* What an audio track switch does, without a change of track: the 0 s seek
+ * of the container where it does one for a switch, then the restart of the
+ * audio decoder. Done once after a DD+ passthrough start on Vu+ Ultimo 4K /
+ * Duo 4K SE, which stays silent without it. isSeeking keeps the demuxer
+ * thread out of the output meanwhile, as it does for a switch. */
+static void Eac3PassthroughRestart(void)
+{
+    uint8_t wasSeeking = g_player->playback->isSeeking;
+    int32_t id = -1;
+
+    g_player->playback->isSeeking = 1;
+    if (0 == g_player->manager->audio->Command(g_player, MANAGER_GET, &id) && id >= 0 &&
+        g_player->container && g_player->container->selectedContainer &&
+        0 == g_player->container->selectedContainer->Command(g_player, CONTAINER_SWITCH_AUDIO, &id))
+    {
+        g_player->output->audio->Command(g_player, OUTPUT_SWITCH, (void*)"audio");
+    }
+    g_player->playback->isSeeking = wasSeeking;
 }
 
 static void SetBuffering()
@@ -1154,7 +1176,7 @@ int main(int argc, char* argv[])
             if( NULL == fgets(argvBuff, sizeof(argvBuff)-1 , stdin) )
             {
                 /* wait for data - max 1s */
-                kbhit();
+                kbhit(1000);
                 continue;
             }
 
@@ -1238,8 +1260,14 @@ int main(int argc, char* argv[])
             /* we made fgets non blocking */
             if( NULL == fgets(argvBuff, sizeof(argvBuff)-1 , stdin) )
             {
-                /* wait for data - max 1s */
-                kbhit();
+                int eac3Restart = LinuxDvbEac3RestartState();
+                if (2 == eac3Restart)
+                {
+                    Eac3PassthroughRestart();
+                    continue;
+                }
+                /* wait for data - max 1s, 20 ms while a DD+ restart is close */
+                kbhit(1 == eac3Restart ? 20 : 1000);
                 continue;
             }
 

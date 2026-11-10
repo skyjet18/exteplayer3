@@ -39,6 +39,7 @@
 #include <errno.h>
 #include <poll.h>
 #include <sys/time.h>
+#include <time.h>
 
 #include "bcm_ioctls.h"
 
@@ -73,6 +74,19 @@ static struct DVBApiVideoInfo_s videoInfo = {-1,-1,-1,-1,-1};
 
 unsigned long long int sCURRENT_PTS = 0;
 bool isBufferedOutput = false;
+
+/* Vu+ Ultimo 4K / Duo 4K SE: the first DD+ passthrough start through the
+ * playpump stays silent, while an audio track switch made after it gives
+ * sound. So on these two models the start is followed once by the restart
+ * a track switch does, see LinuxDvbEac3RestartState().
+ * 0 = none (always, on every other box), 1 = waiting for the first DD+
+ * packet, 2 = packet written. */
+#define EAC3_RESTART_DELAY_MS 100
+#define EAC3_RESTART_FAST_POLL_MS 5000
+static volatile int eac3Restart = 0;
+static int eac3RestartChecked = 0;
+static struct timespec eac3PlayTime;   /* set before the state becomes 1 */
+static struct timespec eac3PacketTime; /* set before the state becomes 2 */
 
 pthread_mutex_t LinuxDVBmutex;
 
@@ -149,6 +163,65 @@ static int LinuxDvbApplyAVSync(Context_t *context)
 
 #define getLinuxDVBMutex() pthread_mutex_lock(&LinuxDVBmutex)
 #define releaseLinuxDVBMutex() pthread_mutex_unlock(&LinuxDVBmutex)
+
+static bool LinuxDvbReadProcLine(const char *path, char *buf, size_t size)
+{
+    FILE *f = fopen(path, "r");
+    bool ok = false;
+
+    if (f)
+    {
+        ok = (NULL != fgets(buf, size, f));
+        fclose(f);
+        if (ok)
+            buf[strcspn(buf, "\r\n")] = '\0';
+    }
+    return ok;
+}
+
+/* Read once, at the first audio start: one of the two models, and the box
+ * is set to hand DD+ on as a bitstream. */
+static bool LinuxDvbEac3NeedsRestart(void)
+{
+    char model[32] = "";
+    char mode[32] = "";
+
+    if (STB_VUPLUS != GetSTBType())
+        return false;
+    if (!LinuxDvbReadProcLine("/proc/stb/info/vumodel", model, sizeof(model)) ||
+        !LinuxDvbReadProcLine("/proc/stb/audio/ac3", mode, sizeof(mode)))
+        return false;
+    return (!strcmp(model, "ultimo4k") || !strcmp(model, "duo4kse")) &&
+           !strcmp(mode, "passthrough");
+}
+
+static long LinuxDvbElapsedMs(const struct timespec *since)
+{
+    struct timespec now;
+
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    return (now.tv_sec - since->tv_sec) * 1000 + (now.tv_nsec - since->tv_nsec) / 1000000;
+}
+
+/* Polled by the command loop: 2 (once) when the restart is due, 1 while it
+ * is expected within milliseconds, 0 otherwise. */
+int LinuxDvbEac3RestartState(void)
+{
+    int state = eac3Restart;
+
+    if (0 == state)
+        return 0;
+    if (1 == state)
+    {
+        /* a stream that takes long to deliver its first DD+ packet is not
+         * polled fast for ever, the restart then comes with the next poll */
+        return LinuxDvbElapsedMs(&eac3PlayTime) < EAC3_RESTART_FAST_POLL_MS ? 1 : 0;
+    }
+    if (LinuxDvbElapsedMs(&eac3PacketTime) < EAC3_RESTART_DELAY_MS)
+        return 1;
+
+    return __sync_bool_compare_and_swap(&eac3Restart, 2, 0) ? 2 : 0;
+}
 
 static int LinuxDvbMapBypassMode(int bypass, bool primary)
 {
@@ -417,6 +490,18 @@ int LinuxDvbPlay(Context_t  *context, char *type) {
             }
             timing_after_switch = 1;
         }
+        /* the first audio start only, a loop restart plays on */
+        if (!eac3RestartChecked)
+        {
+            eac3RestartChecked = 1;
+            if (writer && AUDIOTYPE_AC3_PLUS == writer->caps->dvbStreamType &&
+                !context->playback->isDash && LinuxDvbEac3NeedsRestart())
+            {
+                linuxdvb_printf(10, "DD+ passthrough start, audio restart armed\n");
+                clock_gettime(CLOCK_MONOTONIC, &eac3PlayTime);
+                eac3Restart = 1;
+            }
+        }
         if (ioctl(audiofd, AUDIO_PLAY) < 0)
         {
             linuxdvb_err("AUDIO_PLAY: ERROR %d, %s\n", errno, strerror(errno));
@@ -474,6 +559,7 @@ int LinuxDvbStop(Context_t  *context __attribute__((unused)), char * type)
             ret = cERR_LINUXDVB_ERROR;
         }
         ioctl(audiofd, AUDIO_SELECT_SOURCE, AUDIO_SOURCE_DEMUX);
+        eac3Restart = 0;
     }
 
     releaseLinuxDVBMutex();
@@ -1081,6 +1167,13 @@ static int Write(void  *_context, void *_out)
                 res = writer->writeData(&call);
             }
 
+            if (1 == eac3Restart && res >= 0 && AUDIOTYPE_AC3_PLUS == writer->caps->dvbStreamType)
+            {
+                /* the delay counts from the first DD+ packet */
+                clock_gettime(CLOCK_MONOTONIC, &eac3PacketTime);
+                __sync_bool_compare_and_swap(&eac3Restart, 1, 2);
+            }
+
             if (res < 0)
             {
                 linuxdvb_err("failed to write data %d - %d\n", res, errno);
@@ -1194,6 +1287,9 @@ static int Command(void  *_context, OutputCmd_t command, void * argument) {
         break;
     }
     case OUTPUT_SWITCH: {
+        /* a switch is the restart the DD+ start was waiting for */
+        if (!strcmp("audio", (char*)argument))
+            eac3Restart = 0;
         ret = LinuxDvbSwitch(context, (char*)argument);
         break;
     }
