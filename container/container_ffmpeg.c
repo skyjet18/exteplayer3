@@ -623,6 +623,11 @@ static char* Codec2Encoding(int32_t codec_id, int32_t media_type, uint8_t *extra
             if (off < 0) {
                 return "A_IPCM";
             }
+            else if (AOT_USAC_NOSBR == m4ac.object_type) {
+                // xHE-AAC (USAC) is object type 42: the bundled mpeg4audio.h still names that AOT_USAC_NOSBR
+                // ADTS has no profile for it, the AAC writer would send it as AAC-LC
+                return "A_IPCM";
+            }
             else if (0 == m4ac.chan_config && STB_HISILICON != GetSTBType()) {
                 // according to https://wiki.multimedia.cx/index.php/ADTS
                 // "MPEG-4 Channel Configuration  - in the case of 0, the channel configuration is sent via an inband PCE"	
