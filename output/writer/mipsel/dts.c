@@ -49,6 +49,7 @@
 #include "misc.h"
 #include "pes.h"
 #include "writer.h"
+#include "dts_frame.h"
 
 /* ***************************** */
 /* Makros/Constants              */
@@ -76,6 +77,25 @@
 static int32_t reset()
 {
     return 0;
+}
+
+/*
+ * Whether lone DTS core frames are padded to a multiple of four bytes, see
+ * dts_frame.h.  On by default on the boxes whose drivers are known to need
+ * it; EP3_DTS_PAD=1 / EP3_DTS_PAD=0 in the environment forces it on / off.
+ */
+static int padCoreFrames(void)
+{
+    static int enabled = -1;
+    if (enabled < 0)
+    {
+        const char *env = getenv("EP3_DTS_PAD");
+        stb_type_t type = GetSTBType();
+        enabled = STB_VUPLUS == type || STB_HISILICON == type;
+        if (env && (env[0] == '0' || env[0] == '1') && env[1] == '\0')
+            enabled = env[0] == '1';
+    }
+    return enabled;
 }
 
 static int32_t writeData(void* _call)
@@ -133,6 +153,18 @@ static int32_t writeData(void* _call)
         Data[i+1] = Tmp;
     }
 #endif
+
+    if (padCoreFrames())
+    {
+        static uint8_t Padded[DTS_CORE_MAX_FRAME_SIZE];
+        size_t padded = dts_core_aligned_size(Data, Size);
+        if (padded)
+        {
+            dts_core_align(Padded, padded, Data, Size);
+            Data = Padded;
+            Size = padded;
+        }
+    }
 
     struct iovec iov[2];
     iov[0].iov_base = PesHeader;
