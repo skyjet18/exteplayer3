@@ -64,6 +64,7 @@ extern void      opus_software_decoder_set(const int32_t val);
 extern void         dts_ac3_transcoder_set(const int32_t val);
 extern void      truehd_ac3_transcoder_set(const int32_t val);
 extern void          aac_he_transcoder_set(const int32_t val);
+extern void            eac3_transcoder_set(const int32_t val);
 extern int32_t        audio_transcode_caps(void);
 
 extern void            rtmp_proto_impl_set(const int32_t val);
@@ -688,10 +689,11 @@ static int ParseParams(int argc,char* argv[], PlayFiles_t *playbackFiles, int *p
     int c;
     int quality = 0, default_audio = 0, export_pcm = 0;
     int xcode = 0; /* 1: -Z, 2: -X, 4: -Y */
+    int xcode_eac3 = 0; /* -E */
     int digit_optind = 0;
     int aopt = 0, bopt = 0;
     char *copt = 0, *dopt = 0;
-    while ( (c = getopt(argc, argv, "ZXYKG:W:H:A:V:U:we3dlsrimvCa:j:n:x:u:c:h:o:p:P:t:9:0:1:4:5:6:7:f:b:F:S:O:T:L:Q:D:M:")) != -1)
+    while ( (c = getopt(argc, argv, "EZXYKG:W:H:A:V:U:we3dlsrimvCa:j:n:x:u:c:h:o:p:P:t:9:0:1:4:5:6:7:f:b:F:S:O:T:L:Q:D:M:")) != -1)
     {
         switch (c) 
         {
@@ -706,6 +708,9 @@ static int ParseParams(int argc,char* argv[], PlayFiles_t *playbackFiles, int *p
             break;
         case 'Y':
             xcode |= 4;
+            break;
+        case 'E':
+            xcode_eac3 = 1;
             break;
         case 'G':
             g_graphic_sub_path = optarg;
@@ -964,18 +969,24 @@ static int ParseParams(int argc,char* argv[], PlayFiles_t *playbackFiles, int *p
     }
     else if (xcode)
     {
-        /* 1: AC3 encoder, 2: AAC encoder */
+        /* 1: AC3 encoder, 2: AAC encoder, 4: E-AC-3 encoder */
         const int32_t caps = audio_transcode_caps();
-        if ((xcode & 3) && !(caps & 1))
+        /* -E: E-AC-3 as the target of -Z and -X, AC3 when its encoder is missing */
+        const int eac3 = xcode_eac3 && (caps & 4);
+        const int dolby = eac3 || (caps & 1);
+        if ((xcode & 3) && xcode_eac3 && !eac3)
+            printf("No E-AC-3 encoder in this FFmpeg: -E is ignored%s\n", (caps & 1) ? ", AC3 is used" : "");
+        if ((xcode & 3) && !dolby)
             printf("No AC3 encoder in this FFmpeg: -Z and -X are ignored\n");
         else if (xcode & 3)
-            printf("%s%s%s will be transcoded to AC3 5.1\n", (xcode & 1) ? "DTS" : "", (xcode & 3) == 3 ? " and " : "", (xcode & 2) ? "TrueHD" : "");
+            printf("%s%s%s will be transcoded to %s 5.1\n", (xcode & 1) ? "DTS" : "", (xcode & 3) == 3 ? " and " : "", (xcode & 2) ? "TrueHD" : "", eac3 ? "E-AC-3" : "AC3");
         if ((xcode & 4) && !(caps & 2))
             printf("No AAC encoder in this FFmpeg: -Y is ignored\n");
         else if (xcode & 4)
             printf("HE-AAC will be transcoded to AAC-LC\n");
-        dts_ac3_transcoder_set((xcode & 1) && (caps & 1));
-        truehd_ac3_transcoder_set((xcode & 2) && (caps & 1));
+        dts_ac3_transcoder_set((xcode & 1) && dolby);
+        truehd_ac3_transcoder_set((xcode & 2) && dolby);
+        eac3_transcoder_set(eac3);
         aac_he_transcoder_set((xcode & 4) && (caps & 2));
     }
     if (0 == ret && optind < argc)
@@ -1038,7 +1049,7 @@ int main(int argc, char* argv[])
     int commandRetVal = -1;
 
     /* inform client that we can handle additional commands */
-    /* xcode: the audio transcoding this build can do, 1: to AC3 (-Z, -X), 2: to AAC-LC (-Y) */
+    /* xcode: the audio transcoding this build can do, 1: to AC3 (-Z, -X), 2: to AAC-LC (-Y), 4: to E-AC-3 (-E) */
     E2iSendMsg("{\"EPLAYER3_EXTENDED\":{\"version\":%d"
                ",\"xcode\":%d"
                "}}\n", 186,
@@ -1069,6 +1080,7 @@ int main(int argc, char* argv[])
         printf("[-s] software decoding as stereo [downmix]\n");
         printf("[-Z] DTS transcoding to AC3 5.1 (also with -d)\n");
         printf("[-X] TrueHD/MLP transcoding to AC3 5.1\n");
+        printf("[-E] -Z and -X transcode to E-AC-3 5.1 instead of AC3 (AC3 when FFmpeg has no E-AC-3 encoder)\n");
         printf("[-Y] HE-AAC transcoding to AAC-LC (not for AAC decoded in software, -a)\n");
         printf("     -Z, -X and -Y need the encoder in FFmpeg (\"xcode\" in EPLAYER3_EXTENDED) and are off with -K\n");
 #ifdef HAVE_FLV2MPEG4_CONVERTER

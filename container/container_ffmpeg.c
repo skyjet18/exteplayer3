@@ -1233,6 +1233,10 @@ static void ls_on_video(Context_t *context, int64_t pts)
 /* Track_t::transcode, and the bits of audio_transcode_caps() */
 #define AUDIO_XCODE_AC3 1
 #define AUDIO_XCODE_AAC 2
+#define AUDIO_XCODE_EAC3 4
+/* E-AC-3 5.1: more than AC3 can have (640 kbit/s), and inside what the
+ * encoder takes with six blocks in a frame (1024 kbit/s at 48 kHz) */
+#define AUDIO_XCODE_EAC3_BITRATE 768000
 /* avcodec_send_frame() and encoders that are found without registration */
 #define HAVE_AUDIO_XCODE (LIBAVCODEC_VERSION_MAJOR >= 58)
 /* the timestamps of the stream may differ this much (90 kHz) from the
@@ -1242,6 +1246,13 @@ static void ls_on_video(Context_t *context, int64_t pts)
 static int32_t dts_ac3_transcode = 0;
 static int32_t truehd_ac3_transcode = 0;
 static int32_t aac_he_transcode = 0;
+/* DTS and TrueHD go to E-AC-3 instead of AC3 */
+static int32_t eac3_transcode = 0;
+
+void eac3_transcoder_set(const int32_t val)
+{
+    eac3_transcode = val;
+}
 
 void aac_he_transcoder_set(const int32_t val)
 {
@@ -1258,12 +1269,13 @@ void truehd_ac3_transcoder_set(const int32_t val)
     truehd_ac3_transcode = val;
 }
 
-/* the encoders of the linked FFmpeg: AUDIO_XCODE_AC3 | AUDIO_XCODE_AAC */
+/* the encoders of the linked FFmpeg: AUDIO_XCODE_AC3 | AUDIO_XCODE_AAC | AUDIO_XCODE_EAC3 */
 int32_t audio_transcode_caps(void)
 {
 #if HAVE_AUDIO_XCODE
     return (avcodec_find_encoder(AV_CODEC_ID_AC3) ? AUDIO_XCODE_AC3 : 0) |
-           (avcodec_find_encoder(AV_CODEC_ID_AAC) ? AUDIO_XCODE_AAC : 0);
+           (avcodec_find_encoder(AV_CODEC_ID_AAC) ? AUDIO_XCODE_AAC : 0) |
+           (avcodec_find_encoder(AV_CODEC_ID_EAC3) ? AUDIO_XCODE_EAC3 : 0);
 #else
     return 0;
 #endif
@@ -1328,7 +1340,8 @@ static int AudioTranscoderTarget(AVStream *stream, const char *encoding)
 
     if ((id == AV_CODEC_ID_DTS && dts_ac3_transcode) ||
         ((id == AV_CODEC_ID_TRUEHD || id == AV_CODEC_ID_MLP) && truehd_ac3_transcode))
-        target = AUDIO_XCODE_AC3;
+        /* AC3 also when E-AC-3 is asked for and its encoder is missing */
+        target = (eac3_transcode && (audio_transcode_caps() & AUDIO_XCODE_EAC3)) ? AUDIO_XCODE_EAC3 : AUDIO_XCODE_AC3;
     /* only AAC that would go to the decoder of the box: not what is decoded
      * in software by an option or because no ADTS header can describe it */
     else if (aac_he_transcode && (!strcmp(encoding, "A_AAC") || !strcmp(encoding, "A_AAC_LATM")) &&
@@ -1402,7 +1415,7 @@ static uint64_t AudioTranscoderLayout(int target, int channels)
     static const uint64_t aac[] = { 0, AV_CH_LAYOUT_MONO, AV_CH_LAYOUT_STEREO, AV_CH_LAYOUT_SURROUND,
                                     AV_CH_LAYOUT_4POINT0, AV_CH_LAYOUT_5POINT0_BACK, AV_CH_LAYOUT_5POINT1_BACK };
 
-    if (target == AUDIO_XCODE_AC3)
+    if (target == AUDIO_XCODE_AC3 || target == AUDIO_XCODE_EAC3)
         return AV_CH_LAYOUT_5POINT1;
     if (channels < 1)
         return 0;
@@ -1472,7 +1485,8 @@ static void AudioTranscoderClose(AudioTranscoder_t *state)
 static int AudioTranscoderInit(AudioTranscoder_t *state, const AVFrame *in)
 {
     const int target = state->target;
-    const AVCodec *codec = avcodec_find_encoder(target == AUDIO_XCODE_AC3 ? AV_CODEC_ID_AC3 : AV_CODEC_ID_AAC);
+    const AVCodec *codec = avcodec_find_encoder(target == AUDIO_XCODE_AC3 ? AV_CODEC_ID_AC3 :
+                                                target == AUDIO_XCODE_EAC3 ? AV_CODEC_ID_EAC3 : AV_CODEC_ID_AAC);
     const uint64_t layout = AudioTranscoderLayout(target, state->in_channels);
     AVCodecContext *enc;
     int channels;
@@ -1502,6 +1516,11 @@ static int AudioTranscoderInit(AudioTranscoder_t *state, const AVFrame *in)
     if (target == AUDIO_XCODE_AC3)
     {
         enc->bit_rate = 640000;
+        enc->sample_rate = 48000;
+    }
+    else if (target == AUDIO_XCODE_EAC3)
+    {
+        enc->bit_rate = AUDIO_XCODE_EAC3_BITRATE;
         enc->sample_rate = 48000;
     }
     else

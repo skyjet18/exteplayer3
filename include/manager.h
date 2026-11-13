@@ -70,7 +70,7 @@ typedef struct Track_s {
     int                   inject_as_pcm;
     int                   inject_raw_pcm;
     /* Not 0: the track is decoded and encoded again before it is written,
-     * to AC3 (1) or to AAC-LC (2). The output is set up for that codec,
+     * to AC3 (1), to AAC-LC (2) or to E-AC-3 (4). The output is set up for that codec,
      * Encoding keeps the codec of the stream. */
     int                   transcode;
 
