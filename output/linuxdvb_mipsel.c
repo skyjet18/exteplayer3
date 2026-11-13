@@ -213,6 +213,112 @@ static int LinuxDvbMapBypassMode(int bypass, bool primary)
     return bypass;
 }
 
+/*
+ * Some drivers pass DTS-HD MA and DTS:X through in full only in their DTS-HD
+ * mode (bypass mode 0x10); in plain DTS mode (2) they send the core alone.
+ * The track does not say whether the stream carries the HD extension, so the
+ * decoder is started in plain DTS mode as always and the first frame written
+ * after that decides: with an extension the decoder is restarted in DTS-HD
+ * mode before the frame goes out, see LinuxDvbDtsHdStart().
+ *
+ * Only where the driver's DTS-HD mode is known to cope with a receiver that
+ * has no DTS-HD: the drivers with /proc/stb/audio/dtshd.  Others may give
+ * such a receiver no sound at all, so everything else stays on plain DTS.
+ * EP3_DTS_HD_MODE=1 / EP3_DTS_HD_MODE=0 in the environment forces it on / off.
+ */
+static int LinuxDvbDtsHdModeUsable(void)
+{
+    static int usable = -1;
+    if (usable < 0)
+    {
+        const char *env = getenv("EP3_DTS_HD_MODE");
+        usable = STB_DREAMBOX != GetSTBType() && access("/proc/stb/audio/dtshd", F_OK) == 0;
+        if (env && (env[0] == '0' || env[0] == '1') && env[1] == '\0')
+            usable = env[0] == '1';
+    }
+    return usable;
+}
+
+/*
+ * Whether a framed DTS buffer carries a DTS-HD extension substream (DTS-HD
+ * HRA, DTS-HD MA, DTS:X, DTS Express): it starts with one, or one follows a
+ * 16 bit big endian core frame.
+ *
+ * This function and its comment are dvb_dts_has_hd_extension() of dtsframe.h
+ * in the dvbaudiosink of gstreamer1.0-plugin-dvbmediasink as patched by
+ * oe-alliance-core (0004-dvbaudiosink-dts-driver-fixes.patch), renamed and
+ * reindented.  SPDX-License-Identifier: MIT (the licence of that file).
+ */
+static int LinuxDvbDtsHasHdExtension(const uint8_t *input, size_t size)
+{
+    static const uint8_t exss[4] = { 0x64, 0x58, 0x20, 0x25 };
+    size_t frame_size;
+
+    if (!input || size < 8)
+        return 0;
+    if (!memcmp(input, exss, 4))
+        return 1;
+    if (input[0] != 0x7f || input[1] != 0xfe || input[2] != 0x80 || input[3] != 0x01)
+        return 0;
+    frame_size = (((size_t)input[5] & 0x03) << 12 | (size_t)input[6] << 4 | input[7] >> 4) + 1;
+    return size >= frame_size + 4 && !memcmp(input + frame_size, exss, 4);
+}
+
+/* Set where the audio decoder is started for a DTS track in plain DTS mode
+ * (LinuxDvbPlay, LinuxDvbSwitch), cleared by the first frame after that. */
+static int dts_hd_pending;
+
+/*
+ * Called with the first DTS frame after a start of the decoder.  A frame
+ * with an HD extension restarts the decoder in DTS-HD mode; nothing has been
+ * written to it yet.  Any other frame leaves the decoder as it is.
+ *
+ * A paused decoder is left alone and a later frame decides: restarting it
+ * here could not be told apart from a continue command arriving at the same
+ * time, and the decoder would stay paused or start too early.
+ */
+static void LinuxDvbDtsHdStart(Context_t *context, const uint8_t *data, size_t size)
+{
+    getLinuxDVBMutex();
+    if (dts_hd_pending && audiofd != -1 &&
+        context->playback->isPlaying && !context->playback->isPaused)
+    {
+        dts_hd_pending = 0;
+        if (LinuxDvbDtsHasHdExtension(data, size))
+        {
+            linuxdvb_printf(10, "DTS with HD extension, set bypass 0x%02x\n", AUDIOTYPE_DTS_HD);
+            if (ioctl(audiofd, AUDIO_STOP, NULL) == -1)
+            {
+                linuxdvb_err("AUDIO_STOP: ERROR %d, %s\n", errno, strerror(errno));
+            }
+            if (ioctl(audiofd, AUDIO_CLEAR_BUFFER) == -1)
+            {
+                linuxdvb_err("AUDIO_CLEAR_BUFFER: ERROR %d, %s\n", errno, strerror(errno));
+            }
+            if (ioctl(audiofd, AUDIO_SET_BYPASS_MODE, AUDIOTYPE_DTS_HD) < 0)
+            {
+                linuxdvb_err("AUDIO_SET_BYPASS_MODE: ERROR %d, %s\n", errno, strerror(errno));
+                /* back to the mode the decoder was started in */
+                if (ioctl(audiofd, AUDIO_SET_BYPASS_MODE, AUDIOTYPE_DTS) < 0)
+                {
+                    linuxdvb_err("AUDIO_SET_BYPASS_MODE: ERROR %d, %s\n", errno, strerror(errno));
+                }
+            }
+            if (context->playback->isDash)
+                LinuxDvbApplyAVSync(context);
+            if (ioctl(audiofd, AUDIO_PLAY) == -1)
+            {
+                linuxdvb_err("AUDIO_PLAY: ERROR %d, %s\n", errno, strerror(errno));
+            }
+            if (ioctl(audiofd, AUDIO_CONTINUE) == -1)
+            {
+                linuxdvb_err("AUDIO_CONTINUE: ERROR %d, %s\n", errno, strerror(errno));
+            }
+        }
+    }
+    releaseLinuxDVBMutex();
+}
+
 static int LinuxDvbMapStreamType(int streamtype, bool primary)
 {
     if (STB_DREAMBOX == GetSTBType()) {
@@ -419,6 +525,7 @@ int LinuxDvbPlay(Context_t  *context, char *type) {
         linuxdvb_printf(20, "0 A %s\n", Encoding);
 
         writer = getWriter(Encoding);
+        dts_hd_pending = writer && AUDIOTYPE_DTS == writer->caps->dvbStreamType && LinuxDvbDtsHdModeUsable();
         
         if (writer == NULL)
         {
@@ -808,6 +915,7 @@ int LinuxDvbSwitch(Context_t  *context, char *type)
                 linuxdvb_printf(10, "A %s\n", Encoding);
 
                 writer = getWriter(Encoding);
+                dts_hd_pending = writer && AUDIOTYPE_DTS == writer->caps->dvbStreamType && LinuxDvbDtsHdModeUsable();
 
                 if (ioctl(audiofd, AUDIO_STOP ,NULL) == -1)
                 {
@@ -1377,6 +1485,9 @@ static int Write(void  *_context, void *_out)
             call.InfoFlags      = out->infoFlags;
             call.Version        = 0;
             call.WriteV         = isBufferedOutput ? BufferingWriteV : writev_with_retry;
+
+            if (dts_hd_pending && AUDIOTYPE_DTS == writer->caps->dvbStreamType)
+                LinuxDvbDtsHdStart(context, out->data, out->len);
 
             if (writer->writeData)
             {
