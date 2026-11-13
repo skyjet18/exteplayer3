@@ -64,8 +64,6 @@ static inline int64_t pts_clock_update(PtsClock *clock, int kind,
     PtsTrackClock *other = &clock->track[!kind];
     PtsOffset *entry = NULL;
     int64_t difference = 0, corrected;
-    int self_fresh = self->ready && now >= self->time_us &&
-                     now - self->time_us < PTS_CLOCK_FRESH_US;
     int fresh = other->ready && now >= other->time_us &&
                 now - other->time_us < PTS_CLOCK_FRESH_US;
     int changed = 0;
@@ -93,10 +91,6 @@ static inline int64_t pts_clock_update(PtsClock *clock, int kind,
         entry->stream = stream;
         if (clock->preserve_timeline)
             entry->offset = -clock->base;
-        else if (kind && self_fresh)
-            entry->offset = self->corrected - raw;
-        else if (self->ready && fresh && clock->delta_ready && other->trusted)
-            entry->offset = other->corrected + (kind ? clock->delta : -clock->delta) - raw;
         else
             entry->offset = self->ready ? self->offset : -clock->base;
     }

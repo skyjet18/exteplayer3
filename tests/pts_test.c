@@ -23,9 +23,9 @@ int main(void)
         assert(audio_pts - video_pts == 9000);
     }
     assert(clock.delta_locked);
-    /* A newly selected audio stream may have a small, persistent PTS offset. */
+    /* A newly selected audio stream starts 30 ms after the last delivered sample. */
     assert(pts_clock_update(&clock, 1, &replacement_audio,
-                            audio_pts + clock.base + 2700, 5960002) == audio_pts);
+                            audio_pts + clock.base + 2700, 5960002) == audio_pts + 2700);
     assert(pts_clock_update(&clock, 1, &audio,
                             audio_pts + clock.base + 3600, 5960003) == audio_pts + 3600);
     /* A new stream and clock reset inherit the established AV relationship. */
