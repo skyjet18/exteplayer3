@@ -46,6 +46,12 @@ void LinuxDvbBuffSetStamp(void *stamp)
     (void)stamp;
 }
 
+/* The play thread picks the live sync default of the box. */
+stb_type_t GetSTBType(void)
+{
+    return STB_UNKNOWN;
+}
+
 static int32_t output_command(void *opaque, OutputCmd_t command, void *argument)
 {
     (void)opaque;

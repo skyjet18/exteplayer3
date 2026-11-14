@@ -48,7 +48,8 @@ Core of movie player for E2 based on the libeplayer using the ffmpeg solution
   as an error instead of silently assigning a guessed presentation time.
 
 `EP3_LIVE_SYNC=0|1` controls the optional live-output hold/watch; the variable
-name includes `3`. Known positive-duration inputs, including static DASH VOD,
+name includes `3`. Unset, it is active on Dreambox receivers only.
+Known positive-duration inputs, including static DASH VOD,
 bypass this mechanism regardless of that setting. For receiver-only startup
 problems, `-L FFMPEG_DEBUG_LEVEL:10 -L FFMPEG_SILENT:0` adds input duration,
 start time, initial raw/mapped A/V timestamps, live-sync bypass and seek
