@@ -2951,6 +2951,13 @@ int32_t container_ffmpeg_init_av_context(Context_t *context, char *filename, uin
             av_dict_set(&avio_opts, "reconnect_at_eof", "1", 0);
             av_dict_set(&avio_opts, "reconnect_streamed", "1", 0);
         }
+        /* segments behind tracking redirects carry no file extension
+         * (FAST channels), others are named .jpg or .php: the content
+         * decides. For every http url, a playlist is found by its content
+         * type too (.php?id=, a token path), not only by .m3u in its name.
+         * Options of the HLS demuxer only, the others leave them unused. */
+        av_dict_set(&avio_opts, "allowed_segment_extensions", "ALL", 0);
+        av_dict_set(&avio_opts, "extension_picky",          "0", 0);
 
         if( strncmp(filename, "http://127.0.0.1", 16) == 0 )
         {
