@@ -13,6 +13,20 @@ Core of movie player for E2 based on the libeplayer using the ffmpeg solution
 - `-M WIDTHxHEIGHT`: optional automatic H.264 resolution limit; `0x0` (default)
   disables it. Unknown dimensions remain eligible. HEVC is not restricted.
   Explicit positive program IDs selected with `-P` override automatic limits.
+- Automatic HLS/DASH selection prefers variants whose video codec the player
+  can output. Video is never decoded in software: a codec without a writer
+  (AV1, VVC) gets no video track, so such a variant plays audio only. HLS
+  programs and DASH representations with a writer rank above those without
+  before bandwidth is compared; if none has one, the choice is unchanged.
+  With native HLS preselection (no `-P`, no `-M` limit) the demuxer opens one
+  variant by bandwidth alone. When the playlist has several variants and the
+  opened one has video but none with a writer, the input is closed and opened
+  once more without `hls_quality_mode`; the player then chooses among all
+  variants, still honoring `-Q`. Audio-only variants (a cover picture is not
+  video), single-variant playlists and other formats never cause the second
+  open. `-P` and a DASH `-0` representation are not overridden. Whether the
+  receiver's decoder supports a codec that has a writer (HEVC, VP9) is not
+  judged. `-L FFMPEG_DEBUG_LEVEL:1` logs the skipped variant and the reopen.
 - HTTP MPEG-TS uses approximate byte seeking when duration, resource size,
   transport packet layout (188/192/204 bytes) and HTTP seekability are known.
   Positions are packet-aligned; timestamp seeking is the fallback. Variable
@@ -83,6 +97,20 @@ round, so that track arrives about 26.5 hours away. It then starts where the
 other track started. Distances up to 60 seconds, further streams of a track
 (audio renditions) and DASH are not affected. Nothing in such a source relates
 the two origins, so its lip sync is only as good as its interleaving.
+
+`EP3_DTS_PAD=0|1` controls padding of DTS core frames in the non-SH4 DTS
+bitstream writer. Unset, it is active on VU+ and HiSilicon receivers only.
+Only the exact values `0` and `1` are honored; anything else selects that
+default. Several audio drivers handle only core frames whose size is a
+multiple of four bytes, while DVD-style full-rate DTS (1509.75 kbit/s at
+48 kHz) uses 2013-byte frames. A packet holding exactly one 16-bit big-endian
+core frame of unaligned size is copied, zero-padded to the next multiple of
+four, and its `FSIZE` raised to match, together with the size field of an
+X96 or XCH extension inside it. The PES header is built for the padded size;
+the decoded audio is unchanged. Passed through untouched: aligned frames,
+packets that are not one lone core frame (core plus DTS-HD extension
+substream, 14-bit and little-endian streams), frames with a header CRC, and
+frames whose IEC 61937 burst has no room for the padding.
 
 Add `-L LINUXDVB_DEBUG_LEVEL:10 -L LINUXDVB_SILENT:0` for hardware diagnostics.
 `hardware sync` reports the requested/applied policy. `hardware timing` samples
@@ -450,6 +478,12 @@ provider/SSAI behavior. Before deployment, check on representative receivers:
   timestamps more than 60 seconds apart): audible audio and its lip sync.
 - AAC dejitter and passthrough versus software PCM; DTS/PES B-frame output,
   initial/changed H.264 SPS/PPS, busy decoder devices and stop latency.
+- DTS core-frame padding has been checked on one receiver only (VU+ Uno 4K
+  SE, openATV 8.0.2, ffmpeg-ext 6.1.1, with an AV receiver): 2013-byte
+  DVD-style frames are silent with `EP3_DTS_PAD=0` and play as DTS with the
+  padding, 1006-byte frames play. Still open: HiSilicon, DTS-ES and 96/24
+  frames whose extension size is raised, unchanged output for DTS-HD tracks,
+  and `EP3_DTS_PAD=1` on other chipsets.
 - MP4/MKV/adaptive subtitle selection and disabling, forced flags, ICY and
   metadata clearing across stations; retained DRM/MOV_TEXT behavior.
 - `-K` off/on CPU cost, export consumers joining/leaving, slow readers,
