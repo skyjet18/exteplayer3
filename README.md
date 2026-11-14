@@ -25,6 +25,16 @@ Core of movie player for E2 based on the libeplayer using the ffmpeg solution
   video. All DASH audio switches reset A/V buffers as described below.
   The companion FFmpeg DASH demuxer must include the single-file
   seek/reactivation fix so a reselected audio file does not restart at zero.
+- While playback is paused, winding forward or backward, or in slow motion,
+  the playback seek is refused, so an audio switch in those states does not
+  seek. The selection changes at the demuxer read position, as for
+  unknown-duration network input, and `a_s` reports `"sts":0`. A seek that
+  fails during normal playback still fails the switch and restores the
+  previous selection.
+- When the driver rejects `AUDIO_PLAY` or `AUDIO_CONTINUE` after an audio
+  buffer clear, the error is logged (`-L LINUXDVB_SILENT:0`) and the clear
+  still succeeds. The seek or audio switch that requested the clear is no
+  longer reported as failed.
 - Mixed-TS HLS (video plus embedded audio, with separate TS audio renditions)
   needs both the player's unique HLS track IDs and the companion FFmpeg runtime
   playlist-reactivation fix. FFmpeg's HLS stream IDs identify playlists and
@@ -49,6 +59,9 @@ Core of movie player for E2 based on the libeplayer using the ffmpeg solution
 
 `EP3_LIVE_SYNC=0|1` controls the optional live-output hold/watch; the variable
 name includes `3`. Unset, it is active on Dreambox receivers only.
+A value beginning with `0` disables it and any other value enables it on
+every receiver. On other receivers the default therefore neither pauses output
+at the first live video packet nor prints `{"log":"live sync: ..."}` to stdout.
 Known positive-duration inputs, including static DASH VOD,
 bypass this mechanism regardless of that setting. For receiver-only startup
 problems, `-L FFMPEG_DEBUG_LEVEL:10 -L FFMPEG_SILENT:0` adds input duration,
