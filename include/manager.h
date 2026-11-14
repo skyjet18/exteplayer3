@@ -68,6 +68,8 @@ typedef struct Track_s {
     const char           *Description;
     /* audio: channel count from the codec parameters, 0 if unknown */
     int                   channels;
+    /* audio, subtitle: title of the track, owned like Name, NULL if none */
+    char                 *Title;
 
     /* If player2 or the elf do not support decoding of audio codec set this.
      * AVCodec is than used for softdecoding and stream will be injected as PCM */
@@ -94,6 +96,8 @@ typedef struct TrackDescription_s
     int32_t               aspect_ratio_den;
     int                   progressive;
     int                   is_forced;
+    /* audio, subtitle: to be freed like Name, NULL if the track has none */
+    char *                Title;
     
 } TrackDescription_t;
 

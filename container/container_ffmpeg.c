@@ -439,6 +439,19 @@ static int is_hls_input(const AVFormatContext *av)
          av_match_name("applehttp", av->iformat->name));
 }
 
+/* Title of a track for display, NULL if it has none. The HLS demuxer exports
+ * the NAME of a rendition (#EXT-X-MEDIA) as "comment". */
+static char *stream_title(const AVFormatContext *av, const AVStream *stream)
+{
+    AVDictionaryEntry *title = av_dict_get(stream->metadata, "title", NULL, 0);
+
+    if (!title && is_hls_input(av))
+    {
+        title = av_dict_get(stream->metadata, "comment", NULL, 0);
+    }
+    return title ? title->value : NULL;
+}
+
 static int packet_matches_track(const Track_t *track, unsigned int context_index,
                                 const AVStream *stream)
 {
@@ -3942,6 +3955,7 @@ int32_t container_ffmpeg_update_tracks(Context_t *context, char *filename, int32
                     track.Name = lang ? lang->value : "und";
 
                     ffmpeg_printf(10, "Language %s\n", track.Name);
+                    track.Title = stream_title(avContext, stream);
 
                     track.Encoding       = encoding;
                     track.Description    = Codec2AudioDescription((int32_t)get_codecpar(stream)->codec_id, (int)get_codecpar(stream)->profile);
@@ -4268,6 +4282,7 @@ int32_t container_ffmpeg_update_tracks(Context_t *context, char *filename, int32
                     lang = av_dict_get(stream->metadata, "language", NULL, 0);
                     track.Name = lang ? lang->value : "und";
                     ffmpeg_printf(10, "Language %s\n", track.Name);
+                    track.Title = stream_title(avContext, stream);
 
                     track.Encoding       = encoding;
                     track.stream         = stream;
