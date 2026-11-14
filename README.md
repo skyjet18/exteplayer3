@@ -126,6 +126,42 @@ report `A_IPCM` or `A_LPCM`, not `A_AAC`. Keep
 `AV_DEBUG_LEVEL` disabled: the companion's existing FFmpeg diagnostics can
 include decryption material. Redact URLs/headers before sharing logs.
 
+Audio `a_l` list entries and `a_c` current-track JSON add three keys after
+`n`, in this order: `"c"` (channel count, `0` when unknown), `"d"` (codec name
+for display, `""` only when there is no track) and `"t"` (track title, `""`
+when the track has none):
+`{"a_c":{"id":1,"e":"A_EAC3","n":"eng","c":6,"d":"Dolby Atmos","t":"Commentary"}}`.
+Subtitle `s_l` entries and `s_c` add `"t"` after `f`:
+`{"s_c":{"id":3,"e":"S_TEXT/ASS","n":"ger","f":1,"t":"Forced"}}`.
+The keys are always present, including in the no-track answers (`"id":-1`,
+`"c":0,"d":"","t":""`). `id`, `e`, `n` and `f` are unchanged; `e` remains the
+codec ID that selects the writer. `v_c` and the `a_s`/`s_s` switch results
+are unchanged.
+
+`d` is derived from codec ID and profile: `DTS`, `DTS-ES`, `DTS 96/24`,
+`DTS Express`, `DTS-HD HRA`, `DTS-HD MA`, `DTS:X`, `DTS:X IMAX`,
+`Dolby Digital`, `Dolby Digital +`, `Dolby Atmos`, `Dolby TrueHD`, `MLP`,
+`AAC`, `AAC-LC`, `HE-AAC`, `HE-AAC v2`, `AAC-LD`, `AAC-ELD`, `xHE-AAC`, `MP2`,
+`MP3`, `FLAC`, `Opus`, `Vorbis`, `PCM`, `LPCM` and similar names; codecs
+without an entry report FFmpeg's codec name. Profiles the linked FFmpeg does
+not define (DTS:X, DTS:X IMAX, E-AC-3 Atmos and xHE-AAC on older releases)
+report the base name. `c` and `d` come from the codec parameters read when
+tracks are listed, so they are only as exact as FFmpeg's probing.
+
+Two values follow the selected audio track during playback. When that track
+is decoded in software, `c` is the channel count of the decoded frames. For
+E-AC-3, `d` becomes `Dolby Atmos` after three packets signalling JOC in the
+syncframe header and returns to `Dolby Digital +` after 48 consecutive
+packets without it; only headers of packets that are played anyway are
+parsed. No message is emitted for such a change: request `ac` or `al` again.
+A cached `a_l` answer is rebuilt when one of these values changed.
+
+`t` is the stream's `title` metadata tag (Matroska track name, AVI stream
+name). For HLS it falls back to `comment`, where the demuxer exports the
+`NAME` of an `EXT-X-MEDIA` rendition. DASH exports no name. Titles pass
+through the same JSON escaping as `n` and are cut to fit a 256-byte escaped
+buffer.
+
 Subtitle `s_l` list entries and `s_c` current-track JSON add `"f":0|1` for the
 forced flag, from stream disposition or a standalone `forced` title token.
 Language alone never implies forced subtitles. Disabled subtitles report ID
