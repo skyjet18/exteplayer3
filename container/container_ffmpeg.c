@@ -2632,6 +2632,15 @@ static void container_ffmpeg_free_custom_io(int32_t AVIdx, AVIOContext **pb)
 }
 #endif
 
+/* The http protocol of FFmpeg inflates a gzip answer only when built with
+ * zlib and fails the request otherwise. Only a build configured with
+ * --enable-zlib counts; an autodetected zlib does not show in the string. */
+static int ffmpeg_has_zlib(void)
+{
+    const char *cfg = avformat_configuration();
+    return cfg && strstr(cfg, "--enable-zlib") && !strstr(cfg, "--disable-zlib");
+}
+
 int32_t container_ffmpeg_init_av_context(Context_t *context, char *filename, uint64_t fileSize, char *moovAtomFile, uint64_t moovAtomOffset, int32_t AVIdx)
 {
     int32_t err = 0;
@@ -2950,6 +2959,26 @@ int32_t container_ffmpeg_init_av_context(Context_t *context, char *filename, uin
             av_dict_set(&avio_opts, "seekable", "0", 0);
             av_dict_set(&avio_opts, "reconnect_at_eof", "1", 0);
             av_dict_set(&avio_opts, "reconnect_streamed", "1", 0);
+        }
+
+        if (strstr(filename, ".m3u"))
+        {
+            /* a large live playlist is reloaded every few seconds and comes
+             * much smaller with gzip; FFmpeg asks for it only when told.
+             * Not without zlib, not over an Accept-Encoding of the caller. */
+            AVDictionaryEntry *enc = av_dict_get(avio_opts, "headers", NULL, 0);
+            if (ffmpeg_has_zlib() && (!enc || !enc->value || !av_stristr(enc->value, "Accept-Encoding:")))
+            {
+                if (enc && enc->value && enc->value[0])
+                {
+                    size_t elen = strlen(enc->value);
+                    if (elen < 2 || enc->value[elen - 2] != '\r' || enc->value[elen - 1] != '\n')
+                    {
+                        av_dict_set(&avio_opts, "headers", "\r\n", AV_DICT_APPEND);
+                    }
+                }
+                av_dict_set(&avio_opts, "headers", "Accept-Encoding: gzip\r\n", AV_DICT_APPEND);
+            }
         }
         /* segments behind tracking redirects carry no file extension
          * (FAST channels), others are named .jpg or .php: the content
