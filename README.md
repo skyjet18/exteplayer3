@@ -186,6 +186,55 @@ stopping playback. Initialization errors fail playback initialization.
 The FIFO remains on disk across sessions for reconnecting readers. Close
 descriptors on stop; never replace the FIFO while a session is active.
 
+## Optional audio transcoding
+
+- `-Z`: decode DTS and encode it to AC-3 5.1 (48 kHz, 640 kbit/s). It also
+  applies when DTS software decoding (`-d`) is requested.
+- `-X`: the same for TrueHD/MLP.
+- `-E`: `-Z` and `-X` encode to E-AC-3 5.1 (48 kHz, 768 kbit/s) instead of
+  AC-3. It does nothing without `-Z` or `-X` and does not affect `-Y`.
+- `-Y`: decode HE-AAC and encode it to AAC-LC with ADTS headers, keeping the
+  decoded sample rate and channel count (64 kbit/s per channel; more than six
+  channels are mixed down to 5.1).
+
+All four are flags without an argument and disabled by default. Transcoding
+decodes and re-encodes in software, increasing receiver CPU usage, and needs
+libavcodec 58 or newer with the corresponding decoders and encoders.
+
+The startup message reports the available encoders as a bit mask:
+`{"EPLAYER3_EXTENDED":{"version":186,"xcode":7}}`. `1` is AC-3 (`-Z`, `-X`),
+`2` AAC (`-Y`) and `4` E-AC-3 (`-E`); `xcode` is always present and `0` when
+none is available. Front ends should offer the options from this value, not
+from the version number. Unavailable requests are reduced, each with one line
+on stdout:
+
+- Without an E-AC-3 encoder, `-E` is ignored and AC-3 is used.
+- Without a usable AC-3 or E-AC-3 target, `-Z` and `-X` are ignored. With an
+  E-AC-3 encoder but no AC-3 encoder they work only together with `-E`.
+- Without an AAC encoder, `-Y` is ignored.
+- With `-K`, `-Z`, `-X` and `-Y` are all ignored: PCM export needs the decoded
+  samples of every track.
+
+An ignored option leaves the track on its normal path, as does a track whose
+decoder cannot be opened. Track JSON is unchanged: `e` in `a_l`/`a_c` keeps
+the value it has without transcoding (`A_DTS`, `A_IPCM`, `A_AAC`), while the
+audio output is configured for AC-3, E-AC-3 or AAC.
+
+`-Y` applies only to tracks that would otherwise reach the receiver's AAC
+decoder (`A_AAC`, `A_AAC_LATM`), not to AAC already decoded in software
+(`-a`). HE-AAC is recognized by profile (HE, HE v2, MPEG-2 HE) or explicit
+SBR/PS in the AudioSpecificConfig; implicitly signalled SBR is not detected
+and stays untouched. A decoded sample rate that ADTS cannot express fails the
+encoder setup.
+
+The encoder is rebuilt when the decoded channel count, sample rate or sample
+format changes or another track is selected, and dropped after a seek. Output
+timestamps follow the encoded sample count and restart from the stream when
+they differ by more than 60 ms. A failed setup or encoder is logged once
+(`-L FFMPEG_SILENT:0`) and leaves that track silent until its format changes
+or a seek; playback continues. Stereo downmix (`-s`) is not applied to
+transcoded tracks.
+
 ## Native validation
 
 Set `FFMPEG_SOURCE` to the companion source tree and `FFMPEG_BUILD` to its
@@ -454,3 +503,10 @@ provider/SSAI behavior. Before deployment, check on representative receivers:
   metadata clearing across stations; retained DRM/MOV_TEXT behavior.
 - `-K` off/on CPU cost, export consumers joining/leaving, slow readers,
   format changes, seeks and audio switching without decoder silence.
+- `-Z`/`-X`/`-E`/`-Y` transcoding has been checked on one receiver only (VU+
+  Uno 4K SE, openATV 8.0.2, ffmpeg-ext 6.1.1, with an AV receiver): `-Z` and
+  `-X` give Dolby Digital with sound, `-Z -E` Dolby Digital Plus, and with
+  `--dts-eac3 --truehd-ac3` each source gets its own target; `-Y` plays;
+  seeks and pause/continue keep the sound. Still open: other chipsets, CPU
+  cost on weaker boxes, a measured lip sync, track switches and mid-stream
+  format changes.
