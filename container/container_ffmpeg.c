@@ -2765,7 +2765,10 @@ int32_t container_ffmpeg_init_av_context(Context_t *context, char *filename, uin
     //avContextTab[AVIdx]->iformat->flags |= AVFMT_SEEK_TO_PTS;
     avContextTab[AVIdx]->flags = AVFMT_FLAG_GENPTS;
 
-    if (context->playback->noprobe)
+    /* HLS streams have no parser of their own: what the segment header does
+     * not carry (MPEG-TS: picture size, frame rate, audio layout) is only
+     * filled in by avformat_find_stream_info() */
+    if (context->playback->noprobe && !is_hls_input(avContextTab[AVIdx]))
     {
         wrapped_set_max_analyze_duration(avContextTab[AVIdx], 1);
     }
