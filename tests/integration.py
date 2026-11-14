@@ -135,6 +135,15 @@ def main():
                 "-metadata:s:s:0", "language=eng", "-metadata:s:s:1", "language=deu",
                 "-disposition:s:0", "forced", "-disposition:s:1", "0", str(target))
             embedded.append(target)
+        named = []
+        for name, language in (('na"me.mkv', 'a"b\\c\x01'), ("long.mkv", "x" * 1500)):
+            target = root / name
+            run(args.ffmpeg, "-y", "-i", str(media), "-c", "copy",
+                "-metadata:s:a:0", "language=" + language, str(target))
+            named.append((target, language))
+        codecs = root / "codecs.mkv"
+        run(args.ffmpeg, "-y", "-i", str(media), "-map", "0:v", "-map", "0:a", "-map", "0:a",
+            "-c:v", "copy", "-c:a:0", "opus", "-c:a:1", "vorbis", "-strict", "-2", str(codecs))
 
         requests = []
         payload = media.read_bytes()
@@ -307,6 +316,43 @@ def main():
                                          capture_output=True, timeout=5)
                 assert invalid.returncode != 0, option
             print("PASS strict CLI validation")
+
+            missing = subprocess.run([args.player, "iptv://" + str(root / "missing")],
+                                     capture_output=True, timeout=5)
+            assert missing.returncode == 1 and b"cannot be read" in missing.stdout, missing
+            print("PASS unreadable iptv:// file: parameter error instead of a crash")
+
+            for target, language in named:
+                player = Player(args.player, str(target))
+                try:
+                    assert player.wait("PLAYBACK_OPEN")["file"] == "file://" + str(target)
+                    tracks = player.wait("a_l")
+                    assert [track["n"] for track in tracks] == [language[:511]], tracks
+                    assert player.wait("a_c")["n"] == language[:511]
+                finally:
+                    player.stop()
+            print("PASS track names: valid JSON with quotes and control bytes, long names cut")
+
+            player = Player(args.player, str(embedded[1]))
+            try:
+                assert player.wait("PLAYBACK_PLAY")["sts"] == 0
+                player.command("kc 900")
+                position = player.wait("J")["ms"] // 1000
+                length = player.wait("PLAYBACK_LENGTH")["length"]
+                assert length >= 10 and position < length - 5, (position, length)
+                jump = player.wait("PLAYBACK_SEEK")
+                assert jump == {"sec": length - position - 5, "sts": 0}, (jump, position, length)
+            finally:
+                player.stop()
+            print("PASS relative seek past the end: jump to five seconds before the end")
+
+            player = Player(args.player, "-U", "0", str(codecs))
+            try:
+                tracks = player.wait("a_l")
+                assert [track["e"] for track in tracks] == ["A_OPUS", "A_IPCM"], tracks
+            finally:
+                player.stop()
+            print("PASS -U 0: Opus passed through, Vorbis still software decoded")
         finally:
             server.shutdown()
             server.server_close()
