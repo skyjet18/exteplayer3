@@ -154,6 +154,51 @@ the existing demuxer skip/error behavior; individual network opens still obey
 their normal IO timeout policy. HLS association retains absent track identities
 and selected/discarded state without merging multiple audio tracks.
 
+### HTTP input: HLS options and stall limits
+
+For every `http://` and `https://` input the player additionally sets
+`allowed_segment_extensions=ALL`, `extension_picky=0` and `seg_max_retry=3`.
+These are HLS demuxer options; other demuxers, and FFmpeg builds without them,
+leave them unused. HLS segments without a file extension, or named `.jpg`,
+`.png` or `.php`, are therefore accepted and their content decides. A segment
+that fails to open is requested up to three more times, without a pause,
+before the demuxer skips it. Errors in the middle of a segment are not
+retried. Local playlists keep the FFmpeg defaults.
+
+URLs containing `.m3u` additionally send `Accept-Encoding: gzip`, but only when
+`avformat_configuration()` contains `--enable-zlib` and the `-h` headers hold
+no `Accept-Encoding:` line of their own; `-h "Accept-Encoding: identity"`
+therefore disables it. An autodetected zlib does not appear in that string and
+does not count. The HLS demuxer copies its headers to every request, so
+segments, initialization sections and keys carry the header too. Compressed
+media requested by byte range (`EXT-X-BYTERANGE`) is not handled. `-h` headers
+not ending in CRLF get one appended before the added line.
+
+`-T` (HTTP timeout in ms, default 10000) bounds one wait on a socket, not the
+time a demuxer spends reconnecting or skipping segments inside one call.
+HTTP(S) inputs, including a separate `-x` audio input, therefore get a stall
+limit of three times `-T`, at least 60 s. `-T 0` disables it. Local files,
+custom IO and other protocols have no limit. It applies separately to:
+
+- `avformat_open_input()`: duration of the whole call.
+- `avformat_find_stream_info()`: time without a byte read through the input's
+  IO context. HLS and DASH read through connections of their own, so for them
+  it is the duration of the whole call.
+- Each `av_read_frame()` during playback: duration of the call. The clock
+  restarts while paused; time spent writing to the decoders is outside it.
+
+A stalled open fails like any other open:
+`{"FF_ERROR":{"msg":"Connection timed out","code":-110}}`, a negative
+`PLAYBACK_OPEN` `sts` and exit code 10. With `-L FFMPEG_SILENT:0`, stdout has
+`open not finished after 60 s, ended` or
+`stream info not finished after 60 s, ended`, and for a stalled read
+`no packet for more than 60 s, read ended`. That read returns what the
+demuxer makes of the interruption: `AVERROR_EXIT` and `AVERROR_EOF` take
+normal end-of-stream handling (`-v` live TS mode restarts the source), other
+errors enter the existing 10-second network read retry. Name resolution
+cannot be interrupted and is not covered, nor is a server that keeps sending
+a few bytes within every limit during stream probing.
+
 ## Optional decoded PCM export
 
 `-K` enables `/tmp/exteplayer3_pcm_audio.fifo`, otherwise export is disabled.
