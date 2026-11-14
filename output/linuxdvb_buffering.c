@@ -250,6 +250,14 @@ int32_t LinuxDvbBuffOpen(Context_t *context, char *type, int outfd, void *mtx)
 
         g_pDVBMtx = mtx;
 
+        /* init synchronization prymitives, the thread uses them at once */
+        pthread_mutex_init(&bufferingMtx, NULL);
+
+        pthread_cond_init(&bufferingExitCond, NULL);
+        pthread_cond_init(&bufferingDataConsumedCond, NULL);
+        pthread_cond_init(&bufferingWriteFinishedCond, NULL);
+        pthread_cond_init(&bufferingdDataAddedCond, NULL);
+
         if((error = pthread_create(&bufferingThread, &attr, (void *)&LinuxDvbBuffThread, context)) != 0) 
         {
             buff_printf(10, "Creating thread, error:%d:%s\n", error, strerror(error));
@@ -261,14 +269,6 @@ int32_t LinuxDvbBuffOpen(Context_t *context, char *type, int outfd, void *mtx)
         {
             buff_printf(10, "Created thread\n");
             hasBufferingThreadStarted = true;
-
-            /* init synchronization prymitives */
-            pthread_mutex_init(&bufferingMtx, NULL);
-            
-            pthread_cond_init(&bufferingExitCond, NULL);
-            pthread_cond_init(&bufferingDataConsumedCond, NULL);
-            pthread_cond_init(&bufferingWriteFinishedCond, NULL);
-            pthread_cond_init(&bufferingdDataAddedCond, NULL);
         }
     }
     
@@ -476,7 +476,8 @@ ssize_t BufferingWriteV(int fd, const struct iovec *iov, int ic)
     pthread_mutex_lock(&bufferingMtx);
     while (0 == PlaybackDieNow(0))
     {
-        if (bufferingDataSize + chunkSize >= maxBufferingDataSize)
+        /* a chunk larger than the whole buffer is taken when the queue is empty */
+        if (bufferingQueueHead != NULL && bufferingDataSize + chunkSize >= maxBufferingDataSize)
         {
             /* Buffering queue is full we need wait for space*/
             pthread_cond_wait(&bufferingDataConsumedCond, &bufferingMtx);

@@ -221,7 +221,8 @@ static int writeData(void* _call)
     if( (call->InfoFlags & 0x1) &&
         (
             (call->private_size == 0) ||
-            (call->private_size > 2 && call->private_data[0] == 0x00 && call->private_data[0] == 0x00 && call->private_data[2] == 0x01)
+            (call->private_size > 2 && call->private_data[0] == 0x00 && call->private_data[1] == 0x00 &&
+                (call->private_data[2] == 0x01 || (call->private_size > 3 && call->private_data[2] == 0x00 && call->private_data[3] == 0x01)))
         )
     )   // TS Container
     {
@@ -283,7 +284,7 @@ static int writeData(void* _call)
         uint32_t pos = 0;
         do
         {
-            if (ic >= IOVEC_SIZE)
+            if (ic + 2 > IOVEC_SIZE)
             {
                 h264_err(">> Drop data due to ic overflow\n");
 //                exit(-1);
@@ -292,13 +293,18 @@ static int writeData(void* _call)
             
             uint32_t pack_len = 0;
             uint32_t i = 0;
+            if (call->len - pos < NalLengthBytes)
+            {
+                h264_err("packet too short for a NAL length [%u]\n", call->len);
+                break;
+            }
             for (i = 0; i < NalLengthBytes; i++, pos++)
             {
                 pack_len <<= 8;
                 pack_len += call->data[pos];
             }
             
-            if ( (pos + pack_len) > call->len )
+            if ( pack_len > call->len - pos )
             {
                 pack_len = call->len - pos;
             }

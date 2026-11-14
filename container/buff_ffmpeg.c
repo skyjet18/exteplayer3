@@ -127,6 +127,11 @@ static int32_t ffmpeg_read_wrapper_base(void *opaque, uint8_t *buf, int32_t buf_
     if(0 == PlaybackDieNow(0))
     {
         len = ffmpeg_real_read_org(opaque, buf, buf_size);
+        if (len < 0)
+        {
+            /* nothing read yet, len is the offset into buf below */
+            len = 0;
+        }
         while(len < buf_size && g_context && 0 == PlaybackDieNow(0))
         {
             if(type && len > 0)
@@ -154,7 +159,8 @@ static int32_t ffmpeg_read_wrapper_base(void *opaque, uint8_t *buf, int32_t buf_
         }
     }
     //printf("len [%d] finishTimeout[%d]\n", len, finishTimeout);
-    return len;
+    /* a read callback must not return 0 at the end */
+    return len > 0 ? len : AVERROR_EOF;
 }
 
 static int32_t ffmpeg_read_wrapper(void *opaque, uint8_t *buf, int32_t buf_size)

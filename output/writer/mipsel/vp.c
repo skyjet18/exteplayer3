@@ -146,7 +146,7 @@ static int writeData(void *_call, bool is_vp6, bool is_vp9)
             payload_len = 0x8008;
 
         int offs = 0;
-        int bytes = payload_len - 10 - 8;
+        int bytes = payload_len - (pes_header_len - 6);
         UpdatePesHeaderPayloadSize(PesHeader, payload_len);
         // pes header
         if (pes_header_len != WriteExt(call->WriteV, call->fd, PesHeader, pes_header_len)) return -1;
@@ -200,7 +200,7 @@ static int writeData(void *_call, bool is_vp6, bool is_vp9)
         PesHeader[29] = 0xFF;
         PesHeader[33] = 0x85;
 
-        if (pes_header_len != WriteExt(call->WriteV, call->fd, PesHeader, 184)) return -1;
+        if (184 != WriteExt(call->WriteV, call->fd, PesHeader, 184)) return -1;
 
         return 1;
     }

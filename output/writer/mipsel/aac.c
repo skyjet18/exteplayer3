@@ -167,7 +167,7 @@ static int _writeData(void *_call, int type)
         {
             // change profile AAC Main -> AAC LC (Low Complexity)
             aac_printf(1, "change profile AAC Main -> AAC LC (Low Complexity) in the ADTS header");
-            call->data[2] = (call->data[2] & 0x1F) | 0x40;
+            call->data[2] = (call->data[2] & 0x3F) | 0x40;
         }
     }
     else // check LOAS header

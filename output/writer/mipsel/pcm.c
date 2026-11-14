@@ -195,7 +195,7 @@ static int32_t writeData(void *_call)
         uint32_t nfixed_buffersize = rate * 30 / 1000;
         nfixed_buffersize *= channels * depth / 8;
         fixed_buffertimestamp = call->Pts;
-        fixed_bufferduration = 90000 * nfixed_buffersize /  byterate;
+        fixed_bufferduration = 90000ULL * nfixed_buffersize /  byterate;
         
         if(fixed_buffersize != nfixed_buffersize || NULL == fixed_buffer)
         {

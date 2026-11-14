@@ -199,7 +199,7 @@ static int writeData(void* _call)
             codec_data_size = call->private_size;
         }
 
-        while (pos <= data_len - 4)
+        while (data_len >= 4 && pos <= data_len - 4)
         {
             if (memcmp(&data[pos], "\x00\x00\x01\xb8", 4)) /* find group start code */
             {

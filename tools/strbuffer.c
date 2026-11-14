@@ -107,7 +107,7 @@ int strbuffer_add_len( strbuffer_t *buffer, const char *str, size_t str_len )
 		{
 			buffer->size += buffer->init_size;
 		}
-		while( (buffer->size - used) < str_len );
+		while( (buffer->size - used) <= str_len );
 
 
 		if( (buffer->buffer = realloc( buffer->buffer, buffer->size )) == NULL )
