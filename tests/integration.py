@@ -126,6 +126,21 @@ def main():
             "-metadata", f"artist={artist}", "-f", "mp4", str(radio))
         subtitles = root / "subtitles.srt"
         subtitles.write_text("1\n00:00:00,000 --> 00:00:10,000\nHello\n", encoding="utf-8")
+        # Every quote takes two bytes in the JSON message: 2200 for this cue.
+        cue = '"one"\n' + '"' * 1100
+        quoted_cues = root / "quoted.srt"
+        quoted_cues.write_text("".join(
+            f"{i + 1}\n00:00:{i // 2:02},{i % 2 * 500:03} --> "
+            f"00:00:{i // 2:02},{i % 2 * 500 + 400:03}\nSay {cue}\n\n"
+            for i in range(24)), encoding="utf-8")
+        quoted = []
+        for name, codec in (("quoted.mp4", "mov_text"), ("quoted-srt.mkv", "copy"),
+                            ("quoted-ass.mkv", "ass")):
+            target = root / name
+            run(args.ffmpeg, "-y", "-i", str(media), "-f", "srt", "-i", str(quoted_cues),
+                "-map", "0:v", "-map", "0:a", "-map", "1", "-c", "copy", "-c:s", codec,
+                str(target))
+            quoted.append(target)
         embedded = []
         for extension, codec in (("mp4", "mov_text"), ("mkv", "copy")):
             target = root / ("subtitles." + extension)
@@ -259,6 +274,20 @@ def main():
                 finally:
                     player.stop()
             print("PASS MP4/MKV subtitles: forced-list/current JSON, selecting and disabling")
+
+            for target in quoted:
+                player = Player(args.player, str(target))
+                try:
+                    assert len(player.wait("s_l")) == 1
+                    player.command("si0")
+                    assert player.wait("s_s")["sts"] == 0
+                    text = ""
+                    while not text:  # mov_text ends every cue with an empty sample
+                        text = player.wait("s_a")["t"]
+                    assert text.endswith(cue), text[:80]
+                finally:
+                    player.stop()
+            print("PASS MP4/MKV subtitles: long mov_text, SubRip and ASS cues with quotes as JSON")
 
             player = Player(args.player, str(radio))
             try:
