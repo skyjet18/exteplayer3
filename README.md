@@ -126,6 +126,25 @@ characters are escaped, valid UTF-8 is preserved, and invalid legacy bytes
 are encoded as Unicode escapes. Video/TV metadata is not emitted as radio text.
 JSON IPC remains on stderr and diagnostics on stdout.
 
+The `v_c` current-video-track JSON adds `"hdr":0|1|2|3` as its last key:
+`{"v_c":{"id":256,"e":"V_HEVC","n":"und","w":3840,"h":2160,"f":50000,"p":1,"an":1,"ad":1,"hdr":1}}`.
+`0` is SDR, `1` HDR10 (PQ transfer or a mastering-display SEI), `2` HLG and
+`3` another BT.2020 transfer (`transfer_characteristics` 14 or 15 without
+PQ/HLG signalling). The value comes from the HEVC SPS VUI and the
+mastering-display and alternative-transfer SEI of the selected video stream;
+an alternative-transfer SEI overrides the VUI. Codecs other than HEVC always
+report `0`. Dolby Vision and HDR10+ signalling is not evaluated. The `v_c`
+sent when there is no video track (`"id":-1`) has no `hdr` key.
+
+Detection starts with the first packet of the selected video stream, from its
+extradata (Annex-B or hvcC) and then from the packets themselves, so a `vc`
+answered before that packet reports `0`. When the value changes later, `v_c`
+is emitted again without a request, as for a changed progressive flag. HDR10
+and HLG are final when seen. SDR and `3` remain provisional until 768 KiB of
+video after the first SPS, or 2 MiB in total, were inspected; `3` can still
+become `1` or `2` in that time. Packets are only copied for inspection;
+nothing extra is read from the input and no video is decoded.
+
 ## FFmpeg companions
 
 These backports target the local FFmpeg 6.1-derived tree, not an unmodified
