@@ -916,6 +916,19 @@ static char* searchMeta(void * metadata, char* ourTag)
 /* Worker Thread                */
 /* **************************** */
 
+/* Stall watchdog of http(s) contexts: one av_read_frame() that runs longer
+ * than the limit of its context is ended through the interrupt callback.
+ * A limit of 0 means not armed. 32 bit values only: the callback can run in
+ * another thread, which must not see half of a 64 bit value. */
+static uint32_t readStallLimitMs[IPTV_AV_CONTEXT_MAX_NUM] = {0, 0};
+static volatile uint32_t readStallStartMs = 0;
+static volatile uint32_t readStallActiveMs = 0; /* limit of the running read */
+
+static uint32_t read_stall_now_ms(void)
+{
+    return (uint32_t)(av_gettime_relative() / 1000);
+}
+
 static int network_read_retry(int64_t start, int64_t now)
 {
     return now >= start && now - start < 10 * AV_TIME_BASE;
@@ -1516,7 +1529,15 @@ static void FFMPEGThread(Context_t *context)
 
         if( !isWaitingForFinish )
         {
+            readStallStartMs = read_stall_now_ms();
+            readStallActiveMs = readStallLimitMs[cAVIdx];
             ffmpegStatus = av_read_frame(avContextTab[cAVIdx], &packet);
+            if (ffmpegStatus < 0 && readStallActiveMs &&
+                read_stall_now_ms() - readStallStartMs > readStallActiveMs)
+            {
+                ffmpeg_err("no packet for more than %u s, read ended (%d)\n", readStallActiveMs / 1000, ffmpegStatus);
+            }
+            readStallActiveMs = 0;
         }
 
         if (!isWaitingForFinish && (ffmpegStatus == 0) )
@@ -2350,6 +2371,23 @@ static int32_t terminating = 0;
 static int32_t interrupt_cb(void *ctx)
 {
     PlaybackHandler_t *p = (PlaybackHandler_t *)ctx;
+    /* rw_timeout bounds one wait on a socket, not the time a demuxer spends
+     * in one read: HLS skips a segment that fails and loads the next one,
+     * http reconnects, all without returning */
+    uint32_t limit = readStallActiveMs;
+    if (limit)
+    {
+        uint32_t now = read_stall_now_ms();
+        if (p->isPaused)
+        {
+            /* the time in pause does not count */
+            readStallStartMs = now;
+        }
+        else if (now - readStallStartMs > limit)
+        {
+            return 1;
+        }
+    }
     return p->abortRequested || PlaybackDieNow(0);
 }
 
@@ -2648,6 +2686,7 @@ int32_t container_ffmpeg_init_av_context(Context_t *context, char *filename, uin
     AVDictionary *avio_opts = NULL;
     AVDictionary **pavio_opts = NULL;
     av_dict_copy(&avio_opts, g_avio_opts, 0);
+    readStallLimitMs[AVIdx] = 0;
 
     eRTMPProtoImplType rtmpProtoImplType = RTMP_NONE;
     uint8_t numOfRTMPImpl = 0;
@@ -2898,6 +2937,13 @@ int32_t container_ffmpeg_init_av_context(Context_t *context, char *filename, uin
     	sprintf( num, "%u000", context->playback->httpTimeout );
         av_dict_set(&avio_opts, "timeout", num, 0); // default is 10s
         av_dict_set(&avio_opts, "rw_timeout", num, 0);
+        /* a read that returns nothing for 3x the timeout, at least 60 s, is
+         * ended; a timeout of 0 (none) leaves that off as well */
+        if (context->playback->httpTimeout)
+        {
+            uint64_t limit = (uint64_t)context->playback->httpTimeout * 3;
+            readStallLimitMs[AVIdx] = limit < 60000 ? 60000 : limit > INT32_MAX ? INT32_MAX : (uint32_t)limit;
+        }
         av_dict_set(&avio_opts, "reconnect", "1", 0);
         if (context->playback->isTSLiveMode) // special mode for live TS stream with skip packet 
         {
