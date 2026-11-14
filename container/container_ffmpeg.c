@@ -2958,6 +2958,9 @@ int32_t container_ffmpeg_init_av_context(Context_t *context, char *filename, uin
          * Options of the HLS demuxer only, the others leave them unused. */
         av_dict_set(&avio_opts, "allowed_segment_extensions", "ALL", 0);
         av_dict_set(&avio_opts, "extension_picky",          "0", 0);
+        /* a segment that fails to open is asked for again before the
+         * demuxer skips it (default: skipped at the first failure) */
+        av_dict_set(&avio_opts, "seg_max_retry",            "3", 0);
 
         if( strncmp(filename, "http://127.0.0.1", 16) == 0 )
         {
