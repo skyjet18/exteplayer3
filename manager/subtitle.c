@@ -153,6 +153,7 @@ static TrackDescription_t* ManagerList(Context_t  *context __attribute__((unused
             tracklist[j].Name = strdup(Tracks[i].Name);
             tracklist[j].Encoding = strdup(Tracks[i].Encoding);
             tracklist[j].is_forced = Tracks[i].is_forced;
+            tracklist[j].Title = Tracks[i].Title ? strdup(Tracks[i].Title) : NULL;
             ++j;
         }
         tracklist[j].Id = -1;
@@ -245,6 +246,7 @@ static int32_t Command(void  *_context, ManagerCmd_t command, void *argument)
                 track->Name     = strdup(Tracks[CurrentTrack].Name);
                 track->Encoding = strdup(Tracks[CurrentTrack].Encoding);
                 track->is_forced = Tracks[CurrentTrack].is_forced;
+                track->Title    = Tracks[CurrentTrack].Title ? strdup(Tracks[CurrentTrack].Title) : NULL;
             }
         }
         else

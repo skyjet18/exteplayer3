@@ -563,6 +563,9 @@ static int HandleTracks(Manager_t *ptrManager, const PlaybackCmd_t playbackSwitc
         		char enc[128];
         		char name[512];
         		char desc[64];
+        		/* an audio entry with every string and both numbers at their
+        		 * limit is 1018 bytes: mind tmp_str when a buffer grows */
+        		char title[256];
 
 				TrackDescription_t *TrackList = NULL;
 				ptrManager->Command(g_player, MANAGER_LIST, &TrackList);
@@ -581,11 +584,11 @@ static int HandleTracks(Manager_t *ptrManager, const PlaybackCmd_t playbackSwitc
 						}
 
 						if ('s' == argvBuff[0])
-							snprintf(tmp_str, sizeof(tmp_str), "{\"id\":%d,\"e\":\"%s\",\"n\":\"%s\",\"f\":%d}", TrackList[i].Id, JsonEscape(enc, sizeof(enc), TrackList[i].Encoding), JsonEscape(name, sizeof(name), TrackList[i].Name), TrackList[i].is_forced);
+							snprintf(tmp_str, sizeof(tmp_str), "{\"id\":%d,\"e\":\"%s\",\"n\":\"%s\",\"f\":%d,\"t\":\"%s\"}", TrackList[i].Id, JsonEscape(enc, sizeof(enc), TrackList[i].Encoding), JsonEscape(name, sizeof(name), TrackList[i].Name), TrackList[i].is_forced, JsonEscape(title, sizeof(title), TrackList[i].Title));
 						else if ('a' == argvBuff[0])
 						{
 							AudioLiveInfo(&TrackList[i]);
-							snprintf(tmp_str, sizeof(tmp_str), "{\"id\":%d,\"e\":\"%s\",\"n\":\"%s\",\"c\":%d,\"d\":\"%s\"}", TrackList[i].Id, JsonEscape(enc, sizeof(enc), TrackList[i].Encoding), JsonEscape(name, sizeof(name), TrackList[i].Name), TrackList[i].channels, JsonEscape(desc, sizeof(desc), TrackList[i].Description));
+							snprintf(tmp_str, sizeof(tmp_str), "{\"id\":%d,\"e\":\"%s\",\"n\":\"%s\",\"c\":%d,\"d\":\"%s\",\"t\":\"%s\"}", TrackList[i].Id, JsonEscape(enc, sizeof(enc), TrackList[i].Encoding), JsonEscape(name, sizeof(name), TrackList[i].Name), TrackList[i].channels, JsonEscape(desc, sizeof(desc), TrackList[i].Description), JsonEscape(title, sizeof(title), TrackList[i].Title));
 						}
 						else
 							snprintf(tmp_str, sizeof(tmp_str), "{\"id\":%d,\"e\":\"%s\",\"n\":\"%s\"}", TrackList[i].Id, JsonEscape(enc, sizeof(enc), TrackList[i].Encoding), JsonEscape(name, sizeof(name), TrackList[i].Name));
@@ -593,6 +596,7 @@ static int HandleTracks(Manager_t *ptrManager, const PlaybackCmd_t playbackSwitc
 
 						free(TrackList[i].Encoding);
 						free(TrackList[i].Name);
+						free(TrackList[i].Title);
 					}
 					strbuffer_add( ptrManager->tracks_cache, "]}\n");
 					free(TrackList);
@@ -624,19 +628,21 @@ static int HandleTracks(Manager_t *ptrManager, const PlaybackCmd_t playbackSwitc
             {
                 char enc[128];
                 char name[512];
+                char title[256];
 
                 JsonEscape(enc, sizeof(enc), track->Encoding);
                 JsonEscape(name, sizeof(name), track->Name);
+                JsonEscape(title, sizeof(title), track->Title);
                 if ('s' == argvBuff[0])
                 {
-                    E2iSendMsg("{\"s_c\":{\"id\":%d,\"e\":\"%s\",\"n\":\"%s\",\"f\":%d}}\n", track->Id, enc, name, track->is_forced);
+                    E2iSendMsg("{\"s_c\":{\"id\":%d,\"e\":\"%s\",\"n\":\"%s\",\"f\":%d,\"t\":\"%s\"}}\n", track->Id, enc, name, track->is_forced, title);
                 }
                 else if ('a' == argvBuff[0])
                 {
                     char desc[64];
 
                     AudioLiveInfo(track);
-                    E2iSendMsg("{\"%c_%c\":{\"id\":%d,\"e\":\"%s\",\"n\":\"%s\",\"c\":%d,\"d\":\"%s\"}}\n", argvBuff[0], argvBuff[1], track->Id , enc, name, track->channels, JsonEscape(desc, sizeof(desc), track->Description));
+                    E2iSendMsg("{\"%c_%c\":{\"id\":%d,\"e\":\"%s\",\"n\":\"%s\",\"c\":%d,\"d\":\"%s\",\"t\":\"%s\"}}\n", argvBuff[0], argvBuff[1], track->Id , enc, name, track->channels, JsonEscape(desc, sizeof(desc), track->Description), title);
                 }
                 else // video
                 {
@@ -645,6 +651,7 @@ static int HandleTracks(Manager_t *ptrManager, const PlaybackCmd_t playbackSwitc
                 }
                 free(track->Encoding);
                 free(track->Name);
+                free(track->Title);
                 free(track);
             }
             else
@@ -652,11 +659,11 @@ static int HandleTracks(Manager_t *ptrManager, const PlaybackCmd_t playbackSwitc
                 // no tracks
                 if ('s' == argvBuff[0])
                 {
-                    E2iSendMsg("{\"s_c\":{\"id\":-1,\"e\":\"\",\"n\":\"\",\"f\":0}}\n");
+                    E2iSendMsg("{\"s_c\":{\"id\":-1,\"e\":\"\",\"n\":\"\",\"f\":0,\"t\":\"\"}}\n");
                 }
                 else if ('a' == argvBuff[0])
                 {
-                    E2iSendMsg("{\"%c_%c\":{\"id\":%d,\"e\":\"%s\",\"n\":\"%s\",\"c\":%d,\"d\":\"%s\"}}\n", argvBuff[0], argvBuff[1], -1, "", "", 0, "");
+                    E2iSendMsg("{\"%c_%c\":{\"id\":%d,\"e\":\"%s\",\"n\":\"%s\",\"c\":%d,\"d\":\"%s\",\"t\":\"%s\"}}\n", argvBuff[0], argvBuff[1], -1, "", "", 0, "", "");
                 }
                 else // video
                 {
@@ -691,6 +698,7 @@ static int HandleTracks(Manager_t *ptrManager, const PlaybackCmd_t playbackSwitc
                                 }
                                 free(TrackList[i].Encoding);
                                 free(TrackList[i].Name);
+                                free(TrackList[i].Title);
                             }
                             free(TrackList);
                         }
