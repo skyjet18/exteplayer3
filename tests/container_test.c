@@ -300,5 +300,94 @@ int main(void)
         use_custom_io[0] = 0;
         avContextTab[0] = NULL;
     }
+    {
+        /* Progressive playback: the download appends after the reader caught up. */
+        CustomIOCtx_t growing = {0};
+        growing.pFile = tmpfile();
+        assert(growing.pFile);
+        assert(fwrite("abc", 1, 3, growing.pFile) == 3);
+        rewind(growing.pFile);
+        progressive_playback = 1;
+        assert(SAM_ReadFunc(&growing, bytes, sizeof(bytes)) == 3);
+        assert(SAM_ReadFunc(&growing, bytes, sizeof(bytes)) == 0);
+        assert(pwrite(fileno(growing.pFile), "de", 2, 3) == 2);
+        assert(SAM_ReadFunc(&growing, bytes, sizeof(bytes)) == 2 && !memcmp(bytes, "de", 2));
+        assert(SAM_ReadFunc(&growing, bytes, sizeof(bytes)) == 0);
+        progressive_playback = 0;
+        fclose(growing.pFile);
+    }
+    {
+        /* Separate moov atom file: offsets from 6 on are read from it. */
+        CustomIOCtx_t split = {.iFileSize = 9, .iMoovAtomOffset = 6};
+        split.pFile = tmpfile();
+        split.pMoovFile = tmpfile();
+        assert(split.pFile && split.pMoovFile);
+        assert(fwrite("abcdef", 1, 6, split.pFile) == 6);
+        assert(fwrite("xyz", 1, 3, split.pMoovFile) == 3);
+        rewind(split.pFile);
+        rewind(split.pMoovFile);
+        assert(SAM_SeekFunc(&split, 0, AVSEEK_SIZE) == 9);
+        assert(SAM_SeekFunc(&split, 2, SEEK_SET) == 2);
+        assert(SAM_SeekFunc(&split, 0, SEEK_CUR) == 2);
+        assert(SAM_SeekFunc(&split, 3, SEEK_CUR) == 5);
+        assert(SAM_ReadFunc(&split, bytes, sizeof(bytes)) == 4 && !memcmp(bytes, "fxyz", 4));
+        assert(SAM_SeekFunc(&split, -2, SEEK_CUR) == 7);
+        assert(SAM_ReadFunc(&split, bytes, 1) == 1 && bytes[0] == 'y');
+        fclose(split.pFile);
+        fclose(split.pMoovFile);
+    }
+    {
+        /* MPEG-TS programs have no bandwidth: a probed video beats an unprobed one. */
+        AVFormatContext *av = avformat_alloc_context();
+        AVStream *unprobed, *probed;
+        AVProgram *a, *b;
+        assert(av);
+        unprobed = avformat_new_stream(av, NULL);
+        probed = avformat_new_stream(av, NULL);
+        assert(unprobed && probed);
+        unprobed->codecpar->codec_type = probed->codecpar->codec_type = AVMEDIA_TYPE_VIDEO;
+        unprobed->codecpar->codec_id = probed->codecpar->codec_id = AV_CODEC_ID_MPEG2VIDEO;
+        probed->codecpar->width = 720;
+        probed->codecpar->height = 576;
+        a = av_new_program(av, 1);
+        b = av_new_program(av, 2);
+        assert(a && b);
+        av_program_add_stream_index(av, 1, 0);
+        av_program_add_stream_index(av, 2, 1);
+        adaptive_quality_set(0, 0);
+        assert(select_program(av) == b);
+        adaptive_quality_set(1, 0);
+        assert(select_program(av) == b);
+        unprobed->codecpar->width = 720;
+        unprobed->codecpar->height = 576;
+        assert(select_program(av) == a); /* Both probed: the first one, as before. */
+        unprobed->codecpar->width = probed->codecpar->width = 0;
+        assert(select_program(av) == a); /* Nothing probed: the first one, as before. */
+        adaptive_quality_set(0, 0);
+        avformat_free_context(av);
+    }
+    {
+        /* The selected track takes its duration from its own stream, not the last one. */
+        AVFormatContext *av = avformat_alloc_context();
+        Manager_t track_manager = {.Command = seek_manager};
+        ManagerHandler_t managers = {.audio = &track_manager};
+        Context_t context = {.manager = &managers};
+        AVStream *played, *other;
+        assert(av);
+        played = avformat_new_stream(av, NULL);
+        other = avformat_new_stream(av, NULL);
+        assert(played && other);
+        played->codecpar->codec_type = other->codecpar->codec_type = AVMEDIA_TYPE_AUDIO;
+        played->time_base = other->time_base = (AVRational){1, 1000};
+        played->duration = 10000;
+        other->duration = 4000;
+        seek_track.stream = played;
+        avContextTab[0] = av;
+        assert(!container_ffmpeg_update_duration(&context));
+        assert(seek_track.duration == 10000);
+        avContextTab[0] = NULL;
+        seek_track.stream = NULL;
+        avformat_free_context(av);
+    }
     return 0;
 }
