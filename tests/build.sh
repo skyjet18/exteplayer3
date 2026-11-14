@@ -18,6 +18,7 @@ ${CC:-cc} ${CFLAGS:-} -g -D_FILE_OFFSET_BITS=64 -D_LARGEFILE64_SOURCE \
     -Wno-deprecated-declarations -Iinclude -Iexternal -Iexternal/flv2mpeg4 \
     -I"$FFMPEG_SOURCE" -I"$FFMPEG_BUILD" \
     main/exteplayer.c tools/debug.c tools/strbuffer.c tools/pcm_export.c $alias_flags \
+    tools/hevc_hdr.c \
     container/container.c container/container_ffmpeg.c \
     manager/manager.c manager/audio.c manager/video.c manager/subtitle.c \
     playback/playback.c output/output.c output/output_subtitle.c output/graphic_subtitle.c \

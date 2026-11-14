@@ -37,7 +37,7 @@ done
 $cc -g -fsanitize=undefined -ffunction-sections -fdata-sections \
     -Wno-deprecated-declarations -Iinclude -Iexternal \
     -I"$FFMPEG_BUILD" -I"$FFMPEG_SOURCE" \
-    tests/play_thread_test.c tools/debug.c tools/pcm_export.c \
+    tests/play_thread_test.c tools/debug.c tools/pcm_export.c tools/hevc_hdr.c \
     -Wl,--gc-sections -pthread "$FFMPEG_BUILD/libavformat/libavformat.a" \
     "$FFMPEG_BUILD/libavcodec/libavcodec.a" "$FFMPEG_BUILD/libswresample/libswresample.a" \
     "$FFMPEG_BUILD/libavutil/libavutil.a" -lm ${FFMPEG_EXTRA_LIBS:-} -o "$tmp/play_thread"

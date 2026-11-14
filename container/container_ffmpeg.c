@@ -65,6 +65,7 @@
 #include "pcm_export.h"
 #include "pts_clock.h"
 #include "ffmpeg_metadata.h"
+#include "hevc_hdr.h"
 
 /* ***************************** */
 /* Makros/Constants              */
@@ -443,6 +444,58 @@ static int packet_matches_track(const Track_t *track, unsigned int context_index
                                 const AVStream *stream)
 {
     return track && track->AVIdx == context_index && track->stream == stream;
+}
+
+/* HDR type of the selected video stream, HEVC_HDR_*. The play thread finds it
+ * in the parameter sets and SEI of the stream, the track info message reads
+ * it from other threads. */
+static HevcHdrDetector hevcHdrDetector;
+static const AVStream *hevcHdrStream = NULL;
+static int32_t hevcHdrType = HEVC_HDR_SDR;
+
+int32_t container_ffmpeg_get_hdr_type(void)
+{
+    return __atomic_load_n(&hevcHdrType, __ATOMIC_RELAXED);
+}
+
+static void hevc_hdr_publish(Context_t *context, int type)
+{
+    if (type < HEVC_HDR_SDR || type > HEVC_HDR_GENERIC ||
+        type == __atomic_load_n(&hevcHdrType, __ATOMIC_RELAXED))
+        return;
+
+    __atomic_store_n(&hevcHdrType, type, __ATOMIC_RELAXED);
+    ffmpeg_printf(10, "HDR type of the video stream: %d\n", type);
+    context->manager->video->Command(context, MANAGER_UPDATED_TRACK_INFO, NULL);
+}
+
+/* Looks at the packets of the selected video stream until the type is known;
+ * hevc_hdr.c bounds how much of the stream that takes. */
+static void hevc_hdr_update(Context_t *context, AVStream *stream, const AVPacket *packet)
+{
+    AVCodecParameters *par = get_codecpar(stream);
+
+    if (hevcHdrStream != stream)
+    {
+        hevc_hdr_detector_reset(&hevcHdrDetector);
+        hevcHdrStream = stream;
+        hevc_hdr_publish(context, HEVC_HDR_SDR);
+        if (par->codec_id != AV_CODEC_ID_HEVC)
+        {
+            hevcHdrDetector.done = 1;
+        }
+        else if (par->extradata && par->extradata_size > 0)
+        {
+            hevc_hdr_detector_configure(&hevcHdrDetector, par->extradata, (size_t)par->extradata_size);
+            hevc_hdr_publish(context, hevc_hdr_detector_result(&hevcHdrDetector));
+        }
+    }
+
+    if (!hevcHdrDetector.done && packet->data && packet->size > 0)
+    {
+        hevc_hdr_detector_feed(&hevcHdrDetector, packet->data, (size_t)packet->size);
+        hevc_hdr_publish(context, hevc_hdr_detector_result(&hevcHdrDetector));
+    }
 }
 
 static void select_subtitle_stream(AVFormatContext *av, int id)
@@ -1566,6 +1619,7 @@ static void FFMPEGThread(Context_t *context)
             if (packet_matches_track(videoTrack, cAVIdx,
                                      avContextTab[cAVIdx]->streams[packet.stream_index]))
             {
+                hevc_hdr_update(context, avContextTab[cAVIdx]->streams[packet.stream_index], &packet);
 #if LIBAVCODEC_VERSION_INT >= AV_VERSION_INT(56, 34, 100)
                 AVCodecContext *codec_context = videoTrack->avCodecCtx;
                 if (codec_context && codec_context->codec_id == AV_CODEC_ID_MPEG4 && NULL != mpeg4p2_context)
@@ -2331,6 +2385,8 @@ static void FFMPEGThread(Context_t *context)
         for (i = 0; i < IPTV_AV_CONTEXT_MAX_NUM; i++)
             av_free(lastRadioMessage[i]);
     }
+    hevc_hdr_detector_reset(&hevcHdrDetector);
+    hevcHdrStream = NULL;
     if (pcm_audio_export_enabled)
     {
         ffmpeg_printf(0, "PCM export dropped %"PRIu64" chunks\n", pcmExport.dropped_chunks);

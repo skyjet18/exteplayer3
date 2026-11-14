@@ -30,6 +30,7 @@ typedef struct Context_s
 } Context_t;
 
 int container_ffmpeg_update_tracks(Context_t *context, char *filename, int initial);
+int32_t container_ffmpeg_get_hdr_type(void);
 
 const char* GetGraphicSubPath();
 int32_t GetGraphicWindowWidth();
