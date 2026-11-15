@@ -410,6 +410,29 @@ def main():
                 player.stop()
             print("PASS -U 0: Opus passed through, Vorbis still software decoded")
 
+            # Audio switch of a file while paused: no seek, the track changes.
+            dual = root / "dual-audio.mkv"
+            run(args.ffmpeg, "-y", "-i", str(media), "-map", "0:v", "-map", "0:a", "-map", "0:a",
+                "-c", "copy", str(dual))
+            player = Player(args.player, str(dual))
+            try:
+                assert player.wait("PLAYBACK_PLAY")["sts"] == 0
+                tracks = player.wait("a_l")
+                assert len(tracks) == 2, tracks
+                assert player.wait("a_c")["id"] == tracks[0]["id"]
+                player.command("p")
+                assert player.wait("PLAYBACK_PAUSE")["sts"] == 0
+                player.command("ai1")
+                status = player.wait("a_s")
+                assert status == {"id": tracks[1]["id"], "sts": 0}, status
+                player.command("ac")
+                assert player.wait("a_c")["id"] == tracks[1]["id"]
+                player.command("c")
+                assert player.wait("PLAYBACK_CONTINUE")["sts"] == 0
+            finally:
+                player.stop()
+            print("PASS audio switch while paused: the track changes and the switch succeeds")
+
             # Follow-up fixes of main and of the container.
             for option in ("-x", "-F"):
                 unreadable = subprocess.run(
