@@ -97,6 +97,117 @@ class Player:
             self.process.returncode, self.messages, output[-6000:], "".join(self.raw_stderr)[-6000:])
 
 
+# HEVC HDR: a raw HEVC stream written bit by bit. The parameter sets are valid;
+# the slices are IDR headers with filler that no decoder is asked to show.
+class HevcBits:
+    def __init__(self):
+        self.bits = []
+
+    def put(self, value, count):
+        self.bits += [(value >> i) & 1 for i in range(count - 1, -1, -1)]
+
+    def ue(self, value):
+        code = value + 1
+        self.put(0, code.bit_length() - 1)
+        self.put(code, code.bit_length())
+
+    def nal(self, nal_type):
+        """Annex-B NAL unit with trailing bits and emulation prevention."""
+        self.put(1, 1)
+        self.put(0, -len(self.bits) % 8)
+        out, zeros = bytearray(b"\0\0\0\1" + bytes([nal_type << 1, 1])), 0
+        for i in range(0, len(self.bits), 8):
+            byte = int("".join(map(str, self.bits[i:i + 8])), 2)
+            if zeros >= 2 and byte <= 3:
+                out.append(3)
+                zeros = 0
+            out.append(byte)
+            zeros = zeros + 1 if byte == 0 else 0
+        return bytes(out)
+
+
+def hevc_profile_tier_level(bits):
+    bits.put(1, 8)  # profile space 0, Main tier, Main profile
+    bits.put(0x60000000, 32)
+    bits.put(9, 4)  # progressive, frame only
+    bits.put(0, 44)
+    bits.put(60, 8)  # level 2
+
+
+def hevc_stream(transfer, alternative=None, frames=60):
+    vps = HevcBits()
+    vps.put(0, 4)
+    vps.put(3, 2)
+    vps.put(0, 6)  # one layer
+    vps.put(0, 3)  # one sub-layer
+    vps.put(1, 1)
+    vps.put(0xFFFF, 16)
+    hevc_profile_tier_level(vps)
+    vps.put(1, 1)
+    for _ in range(3):
+        vps.ue(0)
+    vps.put(0, 6)
+    vps.ue(0)
+    vps.put(0, 2)  # no timing info, no extension
+    sps = HevcBits()
+    sps.put(0, 4)
+    sps.put(0, 3)
+    sps.put(1, 1)
+    hevc_profile_tier_level(sps)
+    for value in (0, 1, 64, 64):  # SPS id, 4:2:0, 64x64
+        sps.ue(value)
+    sps.put(0, 1)  # no conformance window
+    for value in (0, 0, 4):  # 8 bit, 8 bit POC LSB
+        sps.ue(value)
+    sps.put(1, 1)
+    for value in (0, 0, 0, 0, 1, 0, 2, 0, 0):  # DPB; 8x8 CU, 16x16 CTB; 4x4 to 16x16 TU
+        sps.ue(value)
+    sps.put(0, 4)  # scaling list, AMP, SAO, PCM
+    sps.ue(0)  # no short term reference picture sets
+    sps.put(0, 3)  # long term, temporal MVP, strong intra smoothing
+    sps.put(1, 1)  # VUI
+    sps.put(0, 2)
+    sps.put(1, 1)  # video signal type
+    sps.put(5, 3)
+    sps.put(0, 1)
+    sps.put(1, 1)  # colour description: BT.2020 primaries and matrix
+    sps.put(9, 8)
+    sps.put(transfer, 8)
+    sps.put(9, 8)
+    sps.put(0, 7)
+    sps.put(0, 1)
+    pps = HevcBits()
+    pps.ue(0)
+    pps.ue(0)
+    pps.put(0, 7)
+    for _ in range(3):
+        pps.ue(0)
+    pps.put(0, 3)
+    pps.ue(0)
+    pps.ue(0)
+    pps.put(0, 10)
+    pps.ue(0)
+    pps.put(0, 2)
+    stream = vps.nal(32) + sps.nal(33) + pps.nal(34)
+    if alternative is not None:
+        sei = HevcBits()
+        sei.put(147, 8)  # alternative transfer characteristics
+        sei.put(1, 8)
+        sei.put(alternative, 8)
+        stream += sei.nal(39)
+    idr = HevcBits()
+    idr.put(1, 1)  # first slice segment in the picture
+    idr.put(0, 1)
+    idr.ue(0)  # PPS 0
+    idr.ue(2)  # I slice
+    idr.ue(0)  # slice QP delta 0
+    idr.put(1, 1)  # byte alignment
+    idr.put(0, -len(idr.bits) % 8)
+    for _ in range(2000):
+        idr.put(0xA5, 8)
+    return stream + idr.nal(19) * frames
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--player", required=True)
@@ -471,6 +582,26 @@ def main():
             finally:
                 player.stop()
             print("PASS relative seek past the end: jump to five seconds before the end")
+
+            # HEVC HDR type in v_c: PQ in the VUI, and BT.2020 (14) in the VUI
+            # with HLG (18) in an alternative transfer SEI of the first frame.
+            for name, transfer, alternative, expected in (("pq", 16, None, 1), ("hlg", 14, 18, 2)):
+                raw = root / f"{name}.hevc"
+                raw.write_bytes(hevc_stream(transfer, alternative))
+                target = root / f"{name}.ts"
+                run(args.ffmpeg, "-y", "-f", "hevc", "-framerate", "25", "-i", str(raw),
+                    "-c", "copy", str(target))
+                player = Player(args.player, str(target))
+                try:
+                    seen = []
+                    while not seen or seen[-1].get("hdr") != expected:
+                        seen.append(player.wait("v_c"))
+                    types = [current.get("hdr") for current in seen]
+                    assert set(types) <= {0, 3, expected}, types
+                    assert seen[-1]["e"] == "V_HEVC" and seen[-1]["w"] == 64, seen
+                finally:
+                    player.stop()
+            print("PASS HEVC HDR: HDR10 from the SPS, HLG from an SEI after a BT.2020 SPS")
 
             player = Player(args.player, "-U", "0", str(codecs))
             try:

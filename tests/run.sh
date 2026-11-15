@@ -81,6 +81,13 @@ status=0
 timeout 20 "$tmp/play_thread" || status=$?
 rm -f "$tmp/play_thread"
 [ "$status" = 0 ] || exit "$status"
+# The HDR type of HEVC streams: SPS and SEI written bit by bit, Annex-B and
+# hvcC extradata, the inspection limits, cut and random input. ASan sees reads
+# beyond the input and LeakSanitizer the copies the detector keeps.
+$cc -g -fsanitize=address,undefined -ffunction-sections -fdata-sections -Iinclude \
+    tests/hevc_hdr_test.c tools/hevc_hdr.c -Wl,--gc-sections -o "$tmp/hevc_hdr"
+ASAN_OPTIONS=detect_leaks=1 timeout 20 "$tmp/hevc_hdr"
+rm -f "$tmp/hevc_hdr"
 # The subtitle and writer programs link no command table, so ASan checks them too.
 trap 'rm -rf "$tmp"' EXIT HUP INT TERM
 export ASAN_OPTIONS=detect_leaks=0
