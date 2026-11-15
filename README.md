@@ -221,6 +221,16 @@ forced flag, from stream disposition or a standalone `forced` title token.
 Language alone never implies forced subtitles. Disabled subtitles report ID
 `-1`, `f:0`. Adaptive demuxers discard unselected subtitles; embedded MP4/MKV
 subtitle handling remains enabled.
+Graphic subtitles (PGS, DVB, XSUB) are offered only with `-G DIRECTORY`: each
+picture is saved there as an RGBA PNG file, and the `s_a` message names the
+files with their position and size. The `exteplayer3png.so` plugin writes
+them when `dlopen()` finds it. Otherwise the PNG encoder of libavcodec writes
+them (FFmpeg with `--enable-encoder=png`, libavcodec 57.37.100 or newer),
+under a temporary name renamed when complete. Only when neither is available
+are the pictures not saved; the tracks are still listed, `s_a` messages carry
+no rectangles and `{"e_plugin":["png","init",...]}` reports the failure.
+`-L PLUGIN_SILENT:0` logs why the plugin was not loaded and whether the
+encoder takes its place.
 
 The current video track is reported as
 `{"v_c":{"id":2,"e":"V_MPEG4/ISO/AVC","n":"und","w":1280,"h":720,"f":25000,"p":1,"an":1,"ad":1}}`:
