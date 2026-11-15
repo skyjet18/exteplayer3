@@ -136,6 +136,37 @@ void E2iSendMsg(const char *format, ...)
     va_end(args);
 }
 
+/* enigma2 follows the video of players outside its services here, e.g. for
+ * the automatic resolution. An empty path turns it off. */
+#ifndef EXTEPLAYER_VIDEO_SOCKET
+#define EXTEPLAYER_VIDEO_SOCKET "/var/run/video.socket"
+#endif
+
+static void SendExternalVideo(const char *msg)
+{
+    static int fd = -1;
+    struct sockaddr_un addr;
+
+    memset(&addr, 0, sizeof(addr));
+    addr.sun_family = AF_UNIX;
+    strncpy(addr.sun_path, EXTEPLAYER_VIDEO_SOCKET, sizeof(addr.sun_path) - 1);
+    if (!addr.sun_path[0])
+    {
+        return;
+    }
+    if (fd < 0)
+    {
+        fd = socket(AF_UNIX, SOCK_DGRAM, 0);
+        if (fd < 0)
+        {
+            return;
+        }
+        fcntl(fd, F_SETFD, FD_CLOEXEC);
+    }
+    /* without enigma2 listening it goes nowhere */
+    (void)sendto(fd, msg, strlen(msg), MSG_DONTWAIT, (struct sockaddr *)&addr, sizeof(addr));
+}
+
 /* Length of the well-formed UTF-8 sequence (2..4 bytes, no overlong form,
  * no surrogate, at most U+10FFFF) at p, 0 when there is none. Stops at the
  * terminating NUL. */
@@ -694,8 +725,11 @@ static int HandleTracks(Manager_t *ptrManager, const PlaybackCmd_t playbackSwitc
                 }
                 else // video
                 {
-                    E2iSendMsg("{\"%c_%c\":{\"id\":%d,\"e\":\"%s\",\"n\":\"%s\",\"w\":%d,\"h\":%d,\"f\":%u,\"p\":%d,\"an\":%d,\"ad\":%d,\"hdr\":%d}}\n", \
+                    char msg[sizeof(enc) + sizeof(name) + 192];
+                    snprintf(msg, sizeof(msg), "{\"%c_%c\":{\"id\":%d,\"e\":\"%s\",\"n\":\"%s\",\"w\":%d,\"h\":%d,\"f\":%u,\"p\":%d,\"an\":%d,\"ad\":%d,\"hdr\":%d}}\n", \
                     argvBuff[0], argvBuff[1], track->Id , enc, name, track->width, track->height, track->frame_rate, track->progressive, track->aspect_ratio_num, track->aspect_ratio_den, container_ffmpeg_get_hdr_type());
+                    E2iSendMsg("%s", msg);
+                    SendExternalVideo(msg);
                 }
                 free(track->Encoding);
                 free(track->Name);
