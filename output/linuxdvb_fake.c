@@ -498,6 +498,11 @@ static int Command(void  *_context, OutputCmd_t command, void * argument) {
         *((int*)argument) = videoInfo.progressive;
         break;
     }
+    case OUTPUT_GET_VIDEO_INFO: {
+        /* the track description stays as FFmpeg gave it */
+        ret = cERR_LINUXDVB_NO_ERROR;
+        break;
+    }
     case OUTPUT_SET_BUFFER_SIZE: {
         ret = cERR_LINUXDVB_ERROR;
         if (!isBufferedOutput)

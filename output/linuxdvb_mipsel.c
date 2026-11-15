@@ -71,6 +71,43 @@ struct DVBApiVideoInfo_s
 };
 static struct DVBApiVideoInfo_s videoInfo = {-1,-1,-1,-1,-1};
 
+#ifndef VIDEO_GET_FRAME_RATE
+#define VIDEO_GET_FRAME_RATE _IOR('o', 56, unsigned int)
+#endif
+
+static const char VIDEO_PROGRESSIVE_FILE[] = "/proc/stb/vmpeg/0/progressive";
+
+/*
+ * Completing a video track FFmpeg has no picture size of. videoInfo holds
+ * what the video events delivered, videoInfoAsked what the driver answered
+ * for the values no event came for.
+ */
+static struct DVBApiVideoInfo_s videoInfoAsked = {-1,-1,-1,-1,-1};
+enum
+{
+    VIDEO_INFO_START,   /* no video data written yet */
+    VIDEO_INFO_QUIET,   /* no event so far, the driver has not been asked */
+    VIDEO_INFO_HOLD,    /* asked; the answer is kept back until no event follows */
+    VIDEO_INFO_EVENTS,  /* events arrive; waiting for the last one */
+    VIDEO_INFO_DONE     /* reported */
+};
+static int videoInfoPhase = VIDEO_INFO_START;
+static bool videoInfoReported;
+/* the current video track has no picture size */
+static bool videoInfoWanted;
+static int videoInfoRetries;
+#define VIDEO_INFO_MAX_RETRIES 10
+/* video data and the position requests both read the video events */
+static pthread_mutex_t videoInfoMutex = PTHREAD_MUTEX_INITIALIZER;
+static void LinuxDvbVideoInfoPoll(Context_t *context, unsigned long long pts);
+/* the periods are measured with the decoder PTS (90 kHz) */
+#define VIDEO_INFO_QUIET_PTS   9000
+#define VIDEO_INFO_SETTLE_PTS 45000
+#define VIDEO_INFO_MAX_STEP  900000
+static unsigned long long videoInfoPts;
+static unsigned long long videoInfoProgress;
+static int videoInfoPtsSamples;
+
 unsigned long long int sCURRENT_PTS = 0;
 bool isBufferedOutput = false;
 
@@ -708,6 +745,8 @@ int LinuxDvbPts(Context_t  *context __attribute__((unused)), unsigned long long 
     if (videofd > -1 && !ioctl(videofd, VIDEO_GET_PTS, (void*)&sCURRENT_PTS))
     {
         ret = cERR_LINUXDVB_NO_ERROR;
+        /* front ends ask for the position all the time, also when no more data is written */
+        LinuxDvbVideoInfoPoll(context, sCURRENT_PTS);
     }
     else if (videofd > -1)
     {
@@ -906,6 +945,296 @@ audio_switch_done:
     return ret;
 }
 
+/*
+ * Reads one video event the driver has queued; the caller holds
+ * videoInfoMutex. progressive is set for a progressive event, values when
+ * the events have delivered all values ("v_e"). Returns true when an event
+ * was read.
+ */
+static bool LinuxDvbReadVideoEvent(bool *progressive, bool *values)
+{
+    struct pollfd pfd[1];
+    struct video_event evt;
+    bool changed = false;
+    pfd[0].fd = videofd;
+    pfd[0].events = POLLPRI;
+    int pollret = poll(pfd, 1, 0);
+    if (!(pollret > 0 && pfd[0].revents & POLLPRI))
+    {
+        return false;
+    }
+
+    if (ioctl(videofd, VIDEO_GET_EVENT, &evt) == -1)
+    {
+        linuxdvb_err("ioctl failed with errno %d\n", errno);
+        linuxdvb_err("VIDEO_GET_EVENT: %s\n", strerror(errno));
+        return false;
+    }
+
+    if (evt.type == VIDEO_EVENT_SIZE_CHANGED)
+    {
+        linuxdvb_printf(10, "VIDEO_EVENT_SIZE_CHANGED type: 0x%x\n", evt.type);
+        linuxdvb_printf(10, "width  : %d\n", evt.u.size.w);
+        linuxdvb_printf(10, "height : %d\n", evt.u.size.h);
+        linuxdvb_printf(10, "aspect : %d\n", evt.u.size.aspect_ratio);
+        videoInfo.width = evt.u.size.w;
+        videoInfo.height = evt.u.size.h;
+        videoInfo.aspect_ratio = evt.u.size.aspect_ratio;
+        changed = true;
+    }
+    else if (evt.type == VIDEO_EVENT_FRAME_RATE_CHANGED)
+    {
+        linuxdvb_printf(10, "VIDEO_EVENT_FRAME_RATE_CHANGED type: 0x%x\n", evt.type);
+        linuxdvb_printf(10, "framerate : %d\n", evt.u.frame_rate);
+        videoInfo.frame_rate = evt.u.frame_rate;
+        changed = true;
+    }
+    else if (evt.type == 16 /*VIDEO_EVENT_PROGRESSIVE_CHANGED*/)
+    {
+        linuxdvb_printf(10, "VIDEO_EVENT_PROGRESSIVE_CHANGED type: 0x%x\n", evt.type);
+        linuxdvb_printf(10, "progressive : %d\n", evt.u.frame_rate);
+        videoInfo.progressive = evt.u.frame_rate;
+        *progressive = true;
+        changed = true;
+    }
+    else
+    {
+        linuxdvb_err("unhandled DVBAPI Video Event %d\n", evt.type);
+    }
+
+    if (changed &&
+        videoInfo.width != -1 &&
+        videoInfo.height != -1 &&
+        videoInfo.aspect_ratio != -1 &&
+        videoInfo.frame_rate != -1 &&
+        videoInfo.progressive != -1)
+    {
+        *values = true;
+    }
+    return true;
+}
+
+static void LinuxDvbSendVideoEvent(const struct DVBApiVideoInfo_s *info)
+{
+    E2iSendMsg("{\"v_e\":{\"w\":%d,\"h\":%d,\"a\":%d,\"f\":%d,\"p\":%d}}\n",
+        info->width, info->height, info->aspect_ratio, info->frame_rate, info->progressive);
+}
+
+/*
+ * Asks the driver for the values no video event has delivered, the way
+ * Enigma2 does it. There is no ioctl for the progressive flag.
+ */
+static void LinuxDvbAskVideoInfo(void)
+{
+    static const struct DVBApiVideoInfo_s unknown = {-1,-1,-1,-1,-1};
+
+    videoInfoAsked = unknown;
+    if (videoInfo.width <= 0 || videoInfo.height <= 0)
+    {
+        video_size_t size;
+        memset(&size, 0, sizeof(size));
+        if (ioctl(videofd, VIDEO_GET_SIZE, &size) == -1)
+        {
+            linuxdvb_printf(10, "video info: VIDEO_GET_SIZE: %s\n", strerror(errno));
+        }
+        else if (size.w > 0 && size.h > 0)
+        {
+            videoInfoAsked.width = size.w;
+            videoInfoAsked.height = size.h;
+        }
+        else
+        {
+            linuxdvb_printf(10, "video info: VIDEO_GET_SIZE: %dx%d\n", size.w, size.h);
+        }
+    }
+
+    if (videoInfo.frame_rate <= 0)
+    {
+        unsigned int frame_rate = 0;
+        if (ioctl(videofd, VIDEO_GET_FRAME_RATE, &frame_rate) == -1)
+        {
+            linuxdvb_printf(10, "video info: VIDEO_GET_FRAME_RATE: %s\n", strerror(errno));
+        }
+        else if (frame_rate > 0 && frame_rate <= INT32_MAX)
+        {
+            videoInfoAsked.frame_rate = frame_rate;
+        }
+    }
+
+    if (videoInfo.progressive == -1)
+    {
+        FILE *file = fopen(VIDEO_PROGRESSIVE_FILE, "r");
+        if (file)
+        {
+            unsigned int progressive = 0;
+            if (fscanf(file, "%x", &progressive) == 1)
+            {
+                videoInfoAsked.progressive = progressive ? 1 : 0;
+            }
+            fclose(file);
+        }
+    }
+
+    /* -1: known from an event, so not asked, or no answer */
+    linuxdvb_printf(10, "video info asked from the decoder: %dx%d framerate %d progressive %d\n",
+                    videoInfoAsked.width, videoInfoAsked.height, videoInfoAsked.frame_rate, videoInfoAsked.progressive);
+}
+
+/*
+ * Called for every video frame of a track FFmpeg has no picture size of and
+ * for every position request while it plays; the caller holds
+ * videoInfoMutex. event tells that a video event has been read just now,
+ * pts is the decoder PTS when the caller has read it. Returns true when the
+ * track is to be reported with the values of the decoder.
+ *
+ * The driver sends VIDEO_EVENT_SIZE_CHANGED, VIDEO_EVENT_FRAME_RATE_CHANGED
+ * and the progressive event only for a value that differs from the one of
+ * the previous playback; a decoder that showed 1280x720 before reports
+ * nothing for the next 1280x720 stream. What no event delivers has to be
+ * asked from the driver, but right after the start it still answers with the
+ * values of the previous playback, and the events of this stream follow a
+ * moment after it has been asked. So:
+ * - without an event the driver is asked after a short quiet period; that
+ *   answer is never used;
+ * - once no event has come for VIDEO_INFO_SETTLE_PTS, the values the events
+ *   left open are asked again and the track is reported once, with the final
+ *   values. Without a picture size the driver is asked again later.
+ * The periods are measured with the decoder PTS; the first step of it, from
+ * the value the previous playback left, does not count. A file is often
+ * written to the end before that, so the position requests of the front end
+ * go on with it.
+ */
+static bool LinuxDvbUpdateVideoInfo(bool event, const unsigned long long *knownPts)
+{
+    unsigned long long pts = 0, step = 0;
+
+    if (videoInfoPhase == VIDEO_INFO_DONE)
+    {
+        return false;
+    }
+
+    if (knownPts)
+    {
+        pts = *knownPts;
+    }
+    else if (ioctl(videofd, VIDEO_GET_PTS, (void*)&pts) == -1)
+    {
+        linuxdvb_printf(10, "video info: VIDEO_GET_PTS: %s\n", strerror(errno));
+        if (event)
+        {
+            videoInfoPhase = VIDEO_INFO_EVENTS;
+        }
+        else if (videoInfoPhase != VIDEO_INFO_EVENTS)
+        {
+            /* nothing tells when the decoder has left the previous playback */
+            videoInfoPhase = VIDEO_INFO_DONE;
+        }
+        return false;
+    }
+
+    if (videoInfoPtsSamples == 0)
+    {
+        videoInfoPtsSamples = 1;
+    }
+    else if (pts != videoInfoPts)
+    {
+        if (videoInfoPtsSamples == 1)
+        {
+            /* the step from the PTS the previous playback has left */
+            videoInfoPtsSamples = 2;
+        }
+        else if (pts > videoInfoPts && pts - videoInfoPts <= VIDEO_INFO_MAX_STEP)
+        {
+            step = pts - videoInfoPts;
+        }
+    }
+    videoInfoPts = pts;
+
+    if (event)
+    {
+        /* the period starts again with the last event */
+        videoInfoPhase = VIDEO_INFO_EVENTS;
+        videoInfoProgress = 0;
+        return false;
+    }
+    videoInfoProgress += step;
+
+    if (videoInfoPhase == VIDEO_INFO_START)
+    {
+        videoInfoPhase = VIDEO_INFO_QUIET;
+    }
+
+    if (videoInfoPhase == VIDEO_INFO_QUIET)
+    {
+        if (videoInfoProgress >= VIDEO_INFO_QUIET_PTS)
+        {
+            /* the answer can still be the previous playback; it makes the driver send its events */
+            LinuxDvbAskVideoInfo();
+            videoInfoPhase = VIDEO_INFO_HOLD;
+            videoInfoProgress = 0;
+        }
+        return false;
+    }
+
+    if (videoInfoProgress < VIDEO_INFO_SETTLE_PTS)
+    {
+        return false;
+    }
+
+    LinuxDvbAskVideoInfo();
+    videoInfoProgress = 0;
+    if ((videoInfo.width <= 0 || videoInfo.height <= 0) &&
+        (videoInfoAsked.width <= 0 || videoInfoAsked.height <= 0))
+    {
+        if (++videoInfoRetries < VIDEO_INFO_MAX_RETRIES)
+        {
+            return false;
+        }
+        linuxdvb_printf(10, "video info: the decoder reports no picture size\n");
+        videoInfoPhase = VIDEO_INFO_DONE;
+        return false;
+    }
+
+    videoInfoPhase = VIDEO_INFO_DONE;
+    videoInfoReported = true;
+    return true;
+}
+
+/*
+ * A position request: for a track without a picture size the video events
+ * are read and the periods go on, also when no more data is written.
+ */
+static void LinuxDvbVideoInfoPoll(Context_t *context, unsigned long long pts)
+{
+    bool progressive = false, values = false, report = false, event = false;
+    struct DVBApiVideoInfo_s known, now;
+    int i;
+
+    pthread_mutex_lock(&videoInfoMutex);
+    if (!videoInfoWanted || videoInfoPhase == VIDEO_INFO_DONE)
+    {
+        pthread_mutex_unlock(&videoInfoMutex);
+        return;
+    }
+    known = videoInfo;
+    for (i = 0; i < 8 && LinuxDvbReadVideoEvent(&progressive, &values); i++)
+    {
+    }
+    now = videoInfo;
+    event = memcmp(&known, &now, sizeof(known)) != 0;
+    report = LinuxDvbUpdateVideoInfo(event, &pts);
+    pthread_mutex_unlock(&videoInfoMutex);
+
+    if (report)
+    {
+        context->manager->video->Command(context, MANAGER_UPDATED_TRACK_INFO, NULL);
+    }
+    if (values)
+    {
+        LinuxDvbSendVideoEvent(&now);
+    }
+}
+
 static int Write(void  *_context, void *_out)
 {
     Context_t          *context  = (Context_t  *) _context;
@@ -952,63 +1281,33 @@ static int Write(void  *_context, void *_out)
         } 
         else
         {
-            struct pollfd pfd[1];
-            pfd[0].fd = videofd;
-            pfd[0].events = POLLPRI;
-            int pollret = poll(pfd, 1, 0);
-            if (pollret > 0 && pfd[0].revents & POLLPRI)
+            /* FFmpeg has no picture size: the decoder's values complete the track */
+            bool complete = out->width == 0 || out->height == 0;
+            bool progressive = false, values = false, report = false;
+            struct DVBApiVideoInfo_s known, now;
+
+            pthread_mutex_lock(&videoInfoMutex);
+            known = videoInfo;
+            LinuxDvbReadVideoEvent(&progressive, &values);
+            now = videoInfo;
+            videoInfoWanted = complete;
+            if (complete)
             {
-                struct video_event evt;
-                if (ioctl(videofd, VIDEO_GET_EVENT, &evt) == -1)
-                {
-                    linuxdvb_err("ioctl failed with errno %d\n", errno);
-                    linuxdvb_err("VIDEO_GET_EVENT: %s\n", strerror(errno));
-                }
-                else
-                {
-                    bool changed = false;
-                    if (evt.type == VIDEO_EVENT_SIZE_CHANGED)
-                    {
-                        linuxdvb_printf(10, "VIDEO_EVENT_SIZE_CHANGED type: 0x%x\n", evt.type);
-                        linuxdvb_printf(10, "width  : %d\n", evt.u.size.w);
-                        linuxdvb_printf(10, "height : %d\n", evt.u.size.h);
-                        linuxdvb_printf(10, "aspect : %d\n", evt.u.size.aspect_ratio);
-                        videoInfo.width = evt.u.size.w;
-                        videoInfo.height = evt.u.size.h;
-                        videoInfo.aspect_ratio = evt.u.size.aspect_ratio;
-                        changed = true;
-                    }
-                    else if (evt.type == VIDEO_EVENT_FRAME_RATE_CHANGED)
-                    {
-                        linuxdvb_printf(10, "VIDEO_EVENT_FRAME_RATE_CHANGED type: 0x%x\n", evt.type);
-                        linuxdvb_printf(10, "framerate : %d\n", evt.u.frame_rate);
-                        videoInfo.frame_rate = evt.u.frame_rate;
-                        changed = true;
-                    }
-                    else if (evt.type == 16 /*VIDEO_EVENT_PROGRESSIVE_CHANGED*/)
-                    {
-                        linuxdvb_printf(10, "VIDEO_EVENT_PROGRESSIVE_CHANGED type: 0x%x\n", evt.type);
-                        linuxdvb_printf(10, "progressive : %d\n", evt.u.frame_rate);
-                        videoInfo.progressive = evt.u.frame_rate;
-                        context->manager->video->Command(context, MANAGER_UPDATED_TRACK_INFO, NULL);
-                        changed = true;
-                    }
-                    else
-                    {
-                        linuxdvb_err("unhandled DVBAPI Video Event %d\n", evt.type);
-                    }
-                    
-                    if (changed && 
-                        videoInfo.width != -1 &&
-                        videoInfo.height != -1 &&
-                        videoInfo.aspect_ratio != -1 &&
-                        videoInfo.frame_rate != -1 &&
-                        videoInfo.progressive != -1)
-                    {
-                        E2iSendMsg("{\"v_e\":{\"w\":%d,\"h\":%d,\"a\":%d,\"f\":%d,\"p\":%d}}\n", 
-                            videoInfo.width, videoInfo.height, videoInfo.aspect_ratio, videoInfo.frame_rate, videoInfo.progressive);
-                    }
-                }
+                report = LinuxDvbUpdateVideoInfo(memcmp(&known, &now, sizeof(known)) != 0, NULL);
+            }
+            pthread_mutex_unlock(&videoInfoMutex);
+
+            /*
+             * A track without a picture size is reported once, after the
+             * last event, also for a progressive event.
+             */
+            if ((progressive && !complete) || report)
+            {
+                context->manager->video->Command(context, MANAGER_UPDATED_TRACK_INFO, NULL);
+            }
+            if (values)
+            {
+                LinuxDvbSendVideoEvent(&now);
             }
 
             call.fd           = videofd;
@@ -1214,6 +1513,33 @@ static int Command(void  *_context, OutputCmd_t command, void * argument) {
     case OUTPUT_GET_PROGRESSIVE: {
         ret = cERR_LINUXDVB_NO_ERROR;
         *((int*)argument) = videoInfo.progressive;
+        break;
+    }
+    case OUTPUT_GET_VIDEO_INFO: {
+        TrackDescription_t *track = (TrackDescription_t*)argument;
+        ret = cERR_LINUXDVB_NO_ERROR;
+        pthread_mutex_lock(&videoInfoMutex);
+        if ((track->width <= 0 || track->height <= 0) && videoInfoReported)
+        {
+            /* FFmpeg did not see a picture: its frame rate is a guess too */
+            if (videoInfo.width > 0 && videoInfo.height > 0)
+            {
+                track->width  = videoInfo.width;
+                track->height = videoInfo.height;
+            }
+            else if (videoInfoAsked.width > 0 && videoInfoAsked.height > 0)
+            {
+                track->width  = videoInfoAsked.width;
+                track->height = videoInfoAsked.height;
+            }
+            if (videoInfo.frame_rate > 0)
+                track->frame_rate = videoInfo.frame_rate;
+            else if (videoInfoAsked.frame_rate > 0)
+                track->frame_rate = videoInfoAsked.frame_rate;
+            if (track->progressive == -1)
+                track->progressive = videoInfoAsked.progressive;
+        }
+        pthread_mutex_unlock(&videoInfoMutex);
         break;
     }
     case OUTPUT_SET_BUFFER_SIZE: {
