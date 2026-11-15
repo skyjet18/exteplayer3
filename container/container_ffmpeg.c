@@ -3819,6 +3819,16 @@ int32_t container_ffmpeg_update_tracks(Context_t *context, char *filename, int32
                 if (selTrackIdx == -1)
                     selTrackIdx = i;
                     
+                /* The HLS demuxer adds the streams of renditions with a URI
+                 * before those of the variant, so a DEFAULT=YES rendition
+                 * muxed into the variant is never the first track. */
+                if (!currAudioTrack && is_hls_input(avContextTab[Tracks[i].AVIdx]) &&
+                    (((AVStream *)Tracks[i].stream)->disposition & AV_DISPOSITION_DEFAULT))
+                {
+                    selTrackIdx = i;
+                    break;
+                }
+                
                 if (currAudioTrack && currAudioTrack->Id == Tracks[i].Id)
                 {
                     selTrackIdx = i;

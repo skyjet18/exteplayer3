@@ -183,7 +183,8 @@ The player requests `hls_quality_mode`, `hls_audio_default_only` and
 `dash_subtitle_default_discard` through AVOptions. These option defaults remain
 unchanged for other callers. Automatic HLS preselection is bypassed for an
 explicit program or active resolution limit so the player can inspect all
-eligible programs after probing.
+eligible programs after probing. Without `-t`, HLS starts with the audio
+rendition marked `DEFAULT=YES` (the first track when none is marked).
 
 Live DASH media-fragment opens now retry transient failures globally, with at
 most two retries separated by interruptible 400 ms delays. VOD, initialization
