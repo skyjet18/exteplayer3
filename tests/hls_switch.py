@@ -282,6 +282,31 @@ def other_origin(args, sink, video_sink):
     print("PASS audio and video from different origins: both start together")
 
 
+def default_rendition(args, base):
+    """Without -t the DEFAULT=YES rendition plays, here the one without URI
+    whose audio is muxed into the variant; FFmpeg lists it last."""
+    fifo = Path(args.pcm_fifo)
+    os.mkfifo(fifo, 0o600)
+    reader = os.open(fifo, os.O_RDONLY | os.O_NONBLOCK)
+    player = None
+    try:
+        player = Player(args.player, "-C", "-K", base + "/master.m3u8")
+        assert player.wait("PLAYBACK_PLAY")["sts"] == 0
+        tracks = player.wait("a_l")
+        assert [track["n"] for track in tracks] == ["en", "de", "sk"], tracks
+        current = player.wait("a_c")
+        assert current["n"] == "sk", (current, tracks)
+        observe(reader, bytearray(), 400)
+    finally:
+        try:
+            if player:
+                player.stop()
+        finally:
+            os.close(reader)
+            fifo.unlink()
+    print("PASS HLS DEFAULT=YES rendition without URI selected at the start")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--player", required=True)
@@ -331,6 +356,8 @@ def main():
         server, thread = serve(root, realtime=bool(args.timing_driver), initial_window=3)
         base = f"http://127.0.0.1:{server.server_port}"
         try:
+            if args.mode == "export" and not args.multiple:
+                default_rendition(args, base)
             for live in (False, True):
                 if args.case and live != (args.case == "live"):
                     continue
