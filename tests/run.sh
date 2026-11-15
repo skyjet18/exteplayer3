@@ -227,3 +227,24 @@ $cc -g -fsanitize=undefined -ffunction-sections -fdata-sections \
     "$FFMPEG_BUILD/libavcodec/libavcodec.a" "$FFMPEG_BUILD/libswresample/libswresample.a" \
     "$FFMPEG_BUILD/libavutil/libavutil.a" -lm ${FFMPEG_EXTRA_LIBS:-} -o "$tmp/audio_pts"
 timeout 20 "$tmp/audio_pts"
+# DreamNextGen (Dreambox One/Two): nothing of it runs on the host, the player
+# with HAVE_DREAMNEXTGEN and its receiver outputs is only compiled and linked.
+$cc -g -Werror=implicit-function-declaration -Werror=int-conversion \
+    -Werror=incompatible-pointer-types -DHAVE_DREAMNEXTGEN "-DAUDIO_GET_PTS=_IOR('o', 19, __u64)" \
+    -D_FILE_OFFSET_BITS=64 -D_LARGEFILE64_SOURCE -D_LARGEFILE_SOURCE -DHAVE_FLV2MPEG4_CONVERTER \
+    -Dff_mpeg4audio_channels=exteplayer3_mpeg4audio_channels \
+    -Wno-deprecated-declarations -Iinclude -Iexternal -Iexternal/flv2mpeg4 \
+    -I"$FFMPEG_SOURCE" -I"$FFMPEG_BUILD" \
+    main/exteplayer.c tools/debug.c tools/strbuffer.c tools/pcm_export.c tools/hevc_hdr.c \
+    container/container.c container/container_ffmpeg.c \
+    manager/manager.c manager/audio.c manager/video.c manager/subtitle.c \
+    playback/playback.c output/output.c output/output_subtitle.c output/graphic_subtitle.c \
+    output/linuxdvb_mipsel.c output/dream_video.c output/linuxdvb_buffering.c \
+    output/writer/common/pes.c output/writer/common/misc.c output/writer/common/writer.c \
+    output/writer/mipsel/*.c external/ffmpeg/src/bitstream.c \
+    external/ffmpeg/src/latmenc.c external/ffmpeg/src/mpeg4audio.c \
+    external/flv2mpeg4/src/*.c external/plugins/src/png.c \
+    "$FFMPEG_BUILD/libavformat/libavformat.a" "$FFMPEG_BUILD/libavcodec/libavcodec.a" \
+    "$FFMPEG_BUILD/libswresample/libswresample.a" "$FFMPEG_BUILD/libswscale/libswscale.a" \
+    "$FFMPEG_BUILD/libavutil/libavutil.a" \
+    ${FFMPEG_EXTRA_LIBS:-} -pthread -lm -ldl -o "$tmp/dreamnextgen"
