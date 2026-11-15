@@ -531,6 +531,165 @@ def main():
                 player.stop()
             print("PASS track names: a Latin-1 byte escaped, the line stays UTF-8")
 
+            # Track messages: channel count "c", codec name "d" and title "t".
+            # Every case runs on its own; the failed ones are listed at the end.
+            failed = []
+
+            def track_case(description, check):
+                try:
+                    check()
+                except Exception as error:
+                    failed.append(description)
+                    print(f"FAIL {description}: {error!r}"[:4000])
+                else:
+                    print("PASS " + description)
+
+            # Encoder, channels, "d"; titles with quotes, a backslash, UTF-8,
+            # Latin-1 (with a Latin-1 language), cut ones, a control byte, none.
+            latin = b"Fran\xe7ais \xc3\xa9t\xc3\xa9"
+            audio_tracks = (
+                ("ac3", 6, "Dolby Digital", 'Kommentar "Regie"', 'Kommentar "Regie"'),
+                ("eac3", 2, "Dolby Digital +", "Back\\slash \\\\", "Back\\slash \\\\"),
+                ("aac", 6, "AAC-LC", "Größe Übersicht", "Größe Übersicht"),
+                ("mp2", 1, "MP2", latin, "Français été"),
+                ("opus", 2, "Opus", "x" * 1500, "x" * 255),
+                ("vorbis", 2, "Vorbis", "ä" * 200, "ä" * 127),
+                ("flac", 1, "FLAC", "Ctrl\x01", "Ctrl\x01"),
+                ("pcm_s16le", 6, "PCM", None, ""))
+            described = root / "described.mkv"
+            command = [args.ffmpeg, "-y", "-i", str(media), "-f", "s16le", "-ar", "48000",
+                       "-ac", "2", "-i", str(audio), "-map", "0:v", "-c:v", "copy"]
+            for index, (codec, channels, _, title, _) in enumerate(audio_tracks):
+                command += ["-map", "1:a", f"-c:a:{index}", codec, f"-ac:a:{index}", str(channels)]
+                if title is not None:
+                    tag = title if isinstance(title, bytes) else title.encode()
+                    command += [f"-metadata:s:a:{index}", b"title=" + tag]
+            command += ["-metadata:s:a:3", b"language=d" + b"\xe9u", "-strict", "-2", "-t", "12",
+                        str(described)]
+            run(*command)
+
+            def described_list():
+                player = Player(args.player, str(described))
+                try:
+                    tracks = player.wait("a_l")
+                    current = player.wait("a_c")
+                finally:
+                    player.stop()
+                assert len(tracks) == len(audio_tracks), tracks
+                return tracks, current
+
+            def codec_names():
+                tracks, current = described_list()
+                assert [(track["c"], track["d"]) for track in tracks] == [
+                    (channels, name) for _, channels, name, _, _ in audio_tracks], tracks
+                assert current == tracks[0], (current, tracks)
+
+            track_case("a_l/a_c: channel count and codec name of AC-3, E-AC-3, AAC, MP2, "
+                       "Opus, Vorbis, FLAC and PCM in mono, stereo and 5.1", codec_names)
+
+            def titles():
+                tracks, current = described_list()
+                assert [track["t"] for track in tracks] == [
+                    expected for *_, expected in audio_tracks], tracks
+                assert tracks[3]["n"] == "déu", tracks[3]
+                assert current["t"] == tracks[0]["t"], current
+
+            track_case("a_l/a_c: titles with quotes, backslashes, UTF-8, Latin-1, a control "
+                       "byte and none as JSON, long ones cut between characters", titles)
+
+            def switched():
+                player = Player(args.player, str(described))
+                try:
+                    tracks = player.wait("a_l")
+                    player.wait("a_c")
+                    for index in (1, 4, 6, 7):
+                        player.command(f"ai{index}")
+                        assert player.wait("a_s")["id"] == tracks[index]["id"]
+                        player.command("ac")
+                        current = player.wait("a_c")
+                        assert current == tracks[index], (index, current, tracks[index])
+                        assert "c" in current and "t" in current, current
+                finally:
+                    player.stop()
+
+            track_case("a_c after a switch: the keys of the selected track", switched)
+
+            titled = root / "titled-subtitles.mkv"
+            subtitle_titles = ('Signs "only"', "SDH \\ Größe")
+            run(args.ffmpeg, "-y", "-i", str(media), "-f", "srt", "-i", str(subtitles),
+                "-f", "srt", "-i", str(subtitles), "-map", "0:v", "-map", "0:a",
+                "-map", "1", "-map", "2", "-c", "copy", "-c:s:0", "copy", "-c:s:1", "ass",
+                "-metadata:s:s:0", "title=" + subtitle_titles[0],
+                "-metadata:s:s:1", "title=" + subtitle_titles[1], str(titled))
+
+            def subtitle_titles_case():
+                player = Player(args.player, str(titled))
+                try:
+                    tracks = player.wait("s_l")
+                    assert [track["t"] for track in tracks] == list(subtitle_titles), tracks
+                    assert [track["e"] for track in tracks] == ["S_TEXT/SUBRIP", "S_TEXT/ASS"], tracks
+                    player.command("si1\nsc")
+                    assert player.wait("s_s")["sts"] == 0
+                    current = player.wait("s_c")
+                    assert current == tracks[1], (current, tracks)
+                finally:
+                    player.stop()
+
+            track_case("s_l/s_c: titles of SubRip and ASS tracks", subtitle_titles_case)
+
+            picture = root / "picture.ts"
+            run(args.ffmpeg, "-y", "-i", str(media), "-map", "0:v", "-c", "copy", str(picture))
+            rendition_audio = root / "rendition.ts"
+            run(args.ffmpeg, "-y", "-i", str(media), "-map", "0:a", "-c", "copy",
+                str(rendition_audio))
+            resources["/picture.ts"] = picture.read_bytes()
+            resources["/rendition.ts"] = rendition_audio.read_bytes()
+            for playlist, segment in (("picture", "picture"), ("main", "rendition"),
+                                      ("described", "rendition")):
+                resources[f"/{playlist}.m3u8"] = (
+                    f"#EXTM3U\n#EXT-X-TARGETDURATION:12\n#EXTINF:12,\n"
+                    f"{segment}.ts\n#EXT-X-ENDLIST\n").encode()
+            renditions = {"en": "Main mix", "de": "Hörfilm für Blinde"}
+            resources["/renditions.m3u8"] = (
+                '#EXTM3U\n'
+                f'#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="aud",NAME="{renditions["en"]}",'
+                'LANGUAGE="en",DEFAULT=YES,AUTOSELECT=YES,URI="main.m3u8"\n'
+                f'#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="aud",NAME="{renditions["de"]}",'
+                'LANGUAGE="de",URI="described.m3u8"\n'
+                '#EXT-X-STREAM-INF:BANDWIDTH=900000,AUDIO="aud"\npicture.m3u8\n').encode()
+
+            def rendition_names():
+                player = Player(args.player, base + "/renditions.m3u8")
+                try:
+                    assert player.wait("PLAYBACK_PLAY")["sts"] == 0
+                    tracks = player.wait("a_l")
+                    current = player.wait("a_c")
+                finally:
+                    player.stop()
+                assert {track["n"]: track["t"] for track in tracks} == renditions, tracks
+                assert all((track["c"], track["d"]) == (2, "AAC-LC") for track in tracks), tracks
+                assert current == next(track for track in tracks if track["id"] == current["id"])
+
+            track_case("HLS: NAME of the EXT-X-MEDIA audio renditions as title", rendition_names)
+
+            silent = root / "silent.mkv"
+            run(args.ffmpeg, "-y", "-i", str(media), "-map", "0:v", "-c", "copy", str(silent))
+
+            def no_track():
+                player = Player(args.player, str(silent))
+                try:
+                    assert player.wait("a_l") == []
+                    for _ in range(2):  # sent at the start, then asked for
+                        assert player.wait("a_c") == {
+                            "id": -1, "e": "", "n": "", "c": 0, "d": "", "t": ""}
+                        assert player.wait("s_c") == {"id": -1, "e": "", "n": "", "f": 0, "t": ""}
+                        player.command("ac\nsc")
+                finally:
+                    player.stop()
+
+            track_case("a_c/s_c without audio and subtitle tracks: every key present", no_track)
+            assert not failed, failed
+
             sound = root / "sound.ts"
             run(args.ffmpeg, "-y", "-i", str(media), "-vn", "-c", "copy", str(sound))
             resources["/sound.ts"] = sound.read_bytes()
