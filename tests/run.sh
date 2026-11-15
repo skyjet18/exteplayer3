@@ -35,6 +35,22 @@ done
 # The subtitle and writer programs link no command table, so ASan checks them too.
 trap 'rm -rf "$tmp"' EXIT HUP INT TERM
 export ASAN_OPTIONS=detect_leaks=0
+# Output follow-up: the writers with allocations that fail (malloc() of these
+# sources is the one of the test), and a leak check of the buffering queue.
+sources="tests/writers_alloc_test.c tools/debug.c output/writer/common/pes.c output/writer/common/misc.c"
+sources="$sources output/writer/common/writer.c"
+sources="$sources output/writer/mipsel/h264.c output/writer/mipsel/h265.c output/writer/mipsel/aac.c"
+sources="$sources external/ffmpeg/src/latmenc.c external/ffmpeg/src/mpeg4audio.c external/ffmpeg/src/bitstream.c"
+$cc -g -fsanitize=address,undefined -ffunction-sections -fdata-sections -Dmalloc=test_malloc \
+    -Wno-deprecated-declarations -Dff_mpeg4audio_channels=exteplayer3_mpeg4audio_channels \
+    -Iinclude -Iexternal -I"$FFMPEG_BUILD" -I"$FFMPEG_SOURCE" $sources -Wl,--gc-sections -pthread \
+    "$FFMPEG_BUILD/libavcodec/libavcodec.a" "$FFMPEG_BUILD/libavutil/libavutil.a" -lm \
+    ${FFMPEG_EXTRA_LIBS:-} -o "$tmp/writers_alloc"
+timeout 20 "$tmp/writers_alloc"
+$cc -g -fsanitize=address,undefined -ffunction-sections -fdata-sections -Iinclude -Iexternal \
+    -I"$FFMPEG_BUILD" -I"$FFMPEG_SOURCE" tests/buffering_leak_test.c tools/debug.c \
+    -Wl,--gc-sections -pthread -o "$tmp/buffering_leak"
+ASAN_OPTIONS=detect_leaks=1 timeout 20 "$tmp/buffering_leak"
 for test in subtitle writers buffering_chunk progressive; do
     sources="tests/${test}_test.c tools/debug.c"
     sanitizers=undefined

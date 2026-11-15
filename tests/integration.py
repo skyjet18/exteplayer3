@@ -150,6 +150,18 @@ def main():
                 "-metadata:s:s:0", "language=eng", "-metadata:s:s:1", "language=deu",
                 "-disposition:s:0", "forced", "-disposition:s:1", "0", str(target))
             embedded.append(target)
+        # mov_text samples carry a length, the text and the style of the cue.
+        words = ["Hello", "Hi there", "one\ntwo"]
+        word_cues = root / "words.srt"
+        word_cues.write_text("".join(
+            f"{i + 1}\n00:00:{i // 2:02},{i % 2 * 500:03} --> "
+            f"00:00:{i // 2:02},{i % 2 * 500 + 400:03}\n"
+            f"{words[i % 3].replace('Hi', '<i>Hi</i>')}\n\n"
+            for i in range(24)), encoding="utf-8")
+        worded = root / "words.mp4"
+        run(args.ffmpeg, "-y", "-i", str(media), "-f", "srt", "-i", str(word_cues),
+            "-map", "0:v", "-map", "0:a", "-map", "1", "-c", "copy", "-c:s", "mov_text",
+            str(worded))
         named = []
         for name, language in (('na"me.mkv', 'a"b\\c\x01'), ("long.mkv", "x" * 1500)):
             target = root / name
@@ -297,6 +309,21 @@ def main():
                 finally:
                     player.stop()
             print("PASS MP4/MKV subtitles: long mov_text, SubRip and ASS cues with quotes as JSON")
+
+            player = Player(args.player, str(worded))
+            try:
+                assert len(player.wait("s_l")) == 1
+                player.command("si0")
+                assert player.wait("s_s")["sts"] == 0
+                seen = set()
+                while len(seen) < len(words):
+                    text = player.wait("s_a")["t"]
+                    assert text in words + [""], text
+                    seen.add(text)
+                    seen.discard("")
+            finally:
+                player.stop()
+            print("PASS MP4 subtitles: mov_text cues arrive with their whole text and nothing else")
 
             player = Player(args.player, str(radio))
             try:

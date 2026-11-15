@@ -3,6 +3,7 @@
 #include <string.h>
 #include <libavcodec/avcodec.h>
 #include "common.h"
+#include "debug.h"
 #include "aac.h"
 #include "misc.h"
 #include "pcm.h"
@@ -304,6 +305,103 @@ static void aac_main_keeps_the_sample_rate(void)
     assert(WriterAudioAAC.writeData(&call) == 14 + 11 && frame[2] == 0x60);
 }
 
+/* Output follow-up: reset() during a write, codec data built from the stream. */
+
+static Writer_t *resetting;
+
+/* The command thread resets the writer while the demuxer thread is in the write. */
+static ssize_t reset_then_capture(int fd, const struct iovec *iov, int count)
+{
+    resetting->reset();
+    return capture(fd, iov, count);
+}
+
+static void h264_reset_during_a_write(void)
+{
+    static const uint8_t sets[] = {0, 0, 0, 1, 103, 100, 0, 42, 0, 0, 0, 1, 104, 1};
+    uint8_t avcc[] = {1, 100, 0, 42, 255, 225, 0, 4, 103, 100, 0, 42, 1, 0, 2, 104, 1};
+    uint8_t frame[] = {0, 0, 0, 2, 101, 136};
+    WriterAVCallData_t call = packet(frame, sizeof(frame), avcc, sizeof(avcc), reset_then_capture);
+    resetting = &WriterVideoH264;
+    WriterVideoH264.reset();
+    /* The parameter sets in the iovec are still there when the write goes on. */
+    assert(WriterVideoH264.writeData(&call) == 14 + 14 + 4 + 2 && part_count == 4);
+    assert(!memcmp(written + 14, sets, sizeof(sets)));
+    /* The reset is not lost: the next frame carries the parameter sets again. */
+    call = packet(frame, sizeof(frame), avcc, sizeof(avcc), capture);
+    assert(WriterVideoH264.writeData(&call) == 14 + 14 + 4 + 2 && part_count == 4);
+    assert(!memcmp(written + 14, sets, sizeof(sets)));
+    call = packet(frame, sizeof(frame), avcc, sizeof(avcc), capture);
+    assert(WriterVideoH264.writeData(&call) == 14 + 4 + 2 && part_count == 3);
+    WriterVideoH264.reset();
+}
+
+static void aac_latm_reset_during_a_write(void)
+{
+    /* AAC LC, 44.1 kHz, stereo, and a frame of six bytes; padded as the demuxer delivers them. */
+    uint8_t config[2 + AV_INPUT_BUFFER_PADDING_SIZE] = {0x12, 0x10};
+    uint8_t frame[6 + AV_INPUT_BUFFER_PADDING_SIZE] = {0x21, 0x10, 0x04, 0x60, 0x8c, 0x1c};
+    WriterAVCallData_t call = packet(frame, 6, config, 2, reset_then_capture);
+    size_t size;
+    int result;
+    resetting = &WriterAudioAACLATM;
+    WriterAudioAACLATM.reset();
+    /* PES header, LOAS header with the length, the frame from the LATM context. */
+    result = WriterAudioAACLATM.writeData(&call);
+    assert(part_count == 3 && parts[1].iov_len == 3);
+    size = parts[2].iov_len;
+    assert(result == (int)(14 + 3 + size) && written_size == 14 + 3 + size && size > 6);
+    assert(written[14] == 0x56 && written[15] == (0xe0 | size >> 8) && written[16] == (size & 255));
+    assert(!(written[17] & 0x80)); /* The stream configuration is in the frame. */
+    /* The reset is not lost: the next frame carries the configuration again. */
+    call = packet(frame, 6, config, 2, capture);
+    assert(WriterAudioAACLATM.writeData(&call) == (int)(14 + 3 + size) && !(written[17] & 0x80));
+    call = packet(frame, 6, config, 2, capture);
+    assert(WriterAudioAACLATM.writeData(&call) < (int)(14 + 3 + size) && (written[17] & 0x80));
+    WriterAudioAACLATM.reset();
+}
+
+/* The writer names the fields of the call in its error message. */
+static void vorbis_without_call_data(void)
+{
+    BCMA_SILENT = 0;
+    assert(!WriterAudioVORBIS.writeData(NULL));
+    BCMA_SILENT = 1;
+}
+
+/* The avcC of the container has no parameter sets, the key frame has them. */
+static void h264_sets_from_the_stream(int length_size, uint8_t *key, unsigned int size, int nals)
+{
+    uint8_t avcc[] = {1, 100, 0, 42, 0xfc | (length_size - 1), 224, 0};
+    WriterAVCallData_t call = packet(key, size, avcc, sizeof(avcc), record);
+    WriterVideoH264.reset();
+    assert(WriterVideoH264.writeData(&call) == (int)(14 + nals * 4 + size - nals * length_size));
+    assert(part_count == 1 + 2 * nals);
+    assert_nals(key, size, 1);
+    WriterVideoH264.reset();
+}
+
+static void h264_two_byte_nal_lengths(void)
+{
+    uint8_t key[] = {0, 4, 103, 100, 0, 42, 0, 2, 104, 1, 0, 2, 101, 136};
+    h264_sets_from_the_stream(2, key, sizeof(key), 3);
+}
+
+static void h264_long_parameter_sets(void)
+{
+    static const uint8_t rest[] = {0, 0, 0, 2, 104, 1, 0, 0, 0, 2, 101, 136};
+    uint8_t key[4 + 300 + sizeof(rest)] = {0, 0, 1, 44, 103, 100, 0, 42};
+    /* A SPS of 252 bytes fills the old buffer up to its last two bytes. */
+    uint8_t two[4 + 252 + 4 + 8 + sizeof(rest)] = {0, 0, 0, 252, 103, 100, 0, 42};
+    memset(key + 8, 0x55, 296);
+    memcpy(key + 304, rest, sizeof(rest));
+    h264_sets_from_the_stream(4, key, sizeof(key), 3);
+    memset(two + 8, 0x55, 248);
+    memcpy(two + 256, (uint8_t[]){0, 0, 0, 8, 103, 100, 0, 42, 1, 2, 3, 4}, 12);
+    memcpy(two + 268, rest, sizeof(rest));
+    h264_sets_from_the_stream(4, two, sizeof(two), 4);
+}
+
 int main(void)
 {
     h264_nal_lengths();
@@ -320,5 +418,10 @@ int main(void)
     pcm_block_duration();
     adts_frame_with_crc();
     aac_main_keeps_the_sample_rate();
+    h264_reset_during_a_write();
+    aac_latm_reset_during_a_write();
+    vorbis_without_call_data();
+    h264_two_byte_nal_lengths();
+    h264_long_parameter_sets();
     return 0;
 }

@@ -74,6 +74,7 @@ static int                     avc3 = 0;
 static int                     sps_pps_in_stream = 0;
 static uint8_t                 *last_private_data;
 static unsigned int            last_private_size;
+static int                     resetPending = 0;
 /* ***************************** */
 /* Prototypes                    */
 /* ***************************** */
@@ -81,6 +82,10 @@ static unsigned int            last_private_size;
 /* ***************************** */
 /* MISC Functions                */
 /* ***************************** */
+
+/* Room for all SPS and PPS of a stream as Annex B NAL units (start code +
+ * data each); PreparCodecData() converts the avcC into a buffer of this size. */
+#define AVCC_TMP_SIZE 2048
 
 // Please see: https://bugzilla.mozilla.org/show_bug.cgi?id=1105771
 static int32_t UpdateExtraData(uint8_t **ppExtraData, uint32_t *pExtraDataSize, uint8_t *pData, uint32_t dataSize)
@@ -94,46 +99,54 @@ static int32_t UpdateExtraData(uint8_t **ppExtraData, uint32_t *pExtraDataSize, 
     
     int32_t nalsize = (aExtraData[4] & 3) + 1;
     
-    uint8_t sps[256];
-    uint8_t spsIdx = 0;
+    uint8_t sps[AVCC_TMP_SIZE];
+    uint32_t spsIdx = 0;
     
-    uint8_t numSps = 0;
+    uint32_t numSps = 0;
     
-    uint8_t pps[256];
-    uint8_t ppsIdx = 0;
+    uint8_t pps[AVCC_TMP_SIZE];
+    uint32_t ppsIdx = 0;
     
     uint8_t numPps = 0;
 
-    if(nalsize != 4)
-    {
-        return -1;
-    }
-    
+    /* what the collected sets need in PreparCodecData(), where each one
+     * gets a 4 byte start code instead of the 2 byte length it has here */
+    uint32_t annexbLen = 0;
+
     // Find SPS and PPS NALUs in AVCC data
     uint8_t *d = pData;
-    while (d + 4 < pData + dataSize)
+    while (d + nalsize < pData + dataSize)
     {
-        uint32_t nalLen = ReadUint32(d);
-        if (nalLen > (uint32_t)(pData + dataSize - d - 4))
+        /* the NAL length has 1 to 4 bytes, as told by the avcC */
+        uint32_t nalLen = 0;
+        int32_t k;
+        for (k = 0; k < nalsize; k++)
+        {
+            nalLen = (nalLen << 8) | d[k];
+        }
+        if (nalLen > (uint32_t)(pData + dataSize - d - nalsize))
         {
             h264_err("NAL length %u beyond the packet\n", nalLen);
             return -1;
         }
         
-        uint8_t nalType = d[4] & 0x1f;
+        /* an empty NAL has no type, the byte belongs to the next length */
+        uint8_t nalType = nalLen ? d[nalsize] & 0x1f : 0;
         if (nalType == 7) 
         { /* SPS */
         
-            // 16 bits size
-            sps[spsIdx++] = (uint8_t)(0xFF & (nalLen >> 8));
-            sps[spsIdx++] = (uint8_t)(0xFF & nalLen);
-            
-            if (spsIdx + nalLen >= sizeof(sps))
+            if (annexbLen + 4 + nalLen > AVCC_TMP_SIZE)
             {
                 h264_err("SPS no free space to copy...\n");
                 return -1;
             }
-            memcpy(&(sps[spsIdx]), d + 4, nalLen);
+            annexbLen += 4 + nalLen;
+
+            // 16 bits size
+            sps[spsIdx++] = (uint8_t)(0xFF & (nalLen >> 8));
+            sps[spsIdx++] = (uint8_t)(0xFF & nalLen);
+
+            memcpy(&(sps[spsIdx]), d + nalsize, nalLen);
             spsIdx += nalLen;
             
             numSps += 1;
@@ -143,32 +156,52 @@ static int32_t UpdateExtraData(uint8_t **ppExtraData, uint32_t *pExtraDataSize, 
         else if (nalType == 8)
         { /* PPS */
 
-            // 16 bits size
-            pps[ppsIdx++] = (uint8_t)(0xFF & (nalLen >> 8));
-            pps[ppsIdx++] = (uint8_t)(0xFF & nalLen);
-            
-            if (ppsIdx + nalLen >= sizeof(sps))
+            /* the avcC count of the PPS has 8 bits */
+            if (numPps == 255)
+            {
+                h264_err("too many PPS...\n");
+                return -1;
+            }
+
+            if (annexbLen + 4 + nalLen > AVCC_TMP_SIZE)
             {
                 h264_err("PPS not free space to copy...\n");
                 return -1;
             }
-            memcpy(&(pps[ppsIdx]), d + 4, nalLen);
+            annexbLen += 4 + nalLen;
+
+            // 16 bits size
+            pps[ppsIdx++] = (uint8_t)(0xFF & (nalLen >> 8));
+            pps[ppsIdx++] = (uint8_t)(0xFF & nalLen);
+
+            memcpy(&(pps[ppsIdx]), d + nalsize, nalLen);
             ppsIdx += nalLen;
             
             numPps += 1;
             
             h264_printf(10, "PPS len[%u]...\n", nalLen);
         }
-        d += 4 + nalLen;
+        d += nalsize + nalLen;
     }
+    /* profile and level are taken from the first SPS, the SPS count has 5 bits */
+    if (numSps == 0 || numSps > 31 || spsIdx < 6)
+    {
+        return -1;
+    }
+
     uint32_t idx = 0;
-    *ppExtraData = malloc(7 + spsIdx + ppsIdx);
-    aExtraData = *ppExtraData;
+    aExtraData = malloc(7 + spsIdx + ppsIdx);
+    if (!aExtraData)
+    {
+        h264_err("allocating codec data failed\n");
+        return -1;
+    }
+    *ppExtraData = aExtraData;
     aExtraData[idx++] = 0x1;            // version
     aExtraData[idx++] = sps[3];         // profile
     aExtraData[idx++] = sps[4];         // profile compat
     aExtraData[idx++] = sps[5];         // level
-    aExtraData[idx++] = 0xff;           // nal size - 1
+    aExtraData[idx++] = 0xfc | (nalsize - 1); // nal size - 1
     
     aExtraData[idx++] = 0xe0 | numSps;
     if (numSps)
@@ -188,8 +221,6 @@ static int32_t UpdateExtraData(uint8_t **ppExtraData, uint32_t *pExtraDataSize, 
     *pExtraDataSize = idx;
     return 0;
 }
-
-#define AVCC_TMP_SIZE 2048
 
 /* Limit the level of a SPS to 4.1, as done before for the first SPS. */
 static void LimitSpsLevel(unsigned char *sps, unsigned int len)
@@ -307,6 +338,11 @@ static int32_t PreparCodecData(unsigned char *data, unsigned int cd_len, unsigne
     if (ret == 0)
     {
         CodecData = malloc(tmp_len);
+        if (!CodecData)
+        {
+            h264_err("allocating codec data failed\n");
+            return -1;
+        }
         memcpy(CodecData, tmp, tmp_len);
         CodecDataLen = tmp_len;
         *NalLength = (data[4] & 0x03) + 1;
@@ -315,17 +351,13 @@ static int32_t PreparCodecData(unsigned char *data, unsigned int cd_len, unsigne
     return ret;
 }
 
+/* reset() is called from the command thread while the demuxer thread can be
+ * inside writeData(), blocked in the write with CodecData in its iovec. The
+ * state and the buffers therefore belong to writeData() alone: reset() only
+ * leaves a request and the next writeData() starts over. */
 static int reset()
 {
-    free(last_private_data);
-    last_private_data = NULL;
-    last_private_size = 0;
-    free(CodecData);
-    CodecData = NULL;
-    CodecDataLen = 0;
-    initialHeader = 1;
-    avc3 = 0;
-    sps_pps_in_stream = 0;
+    __atomic_store_n(&resetPending, 1, __ATOMIC_RELEASE);
     return 0;
 }
 
@@ -364,6 +396,14 @@ static int writeData(void* _call)
     {
         h264_err("file pointer < 0. ignoring ...\n");
         return 0;
+    }
+
+    if (__atomic_exchange_n(&resetPending, 0, __ATOMIC_ACQ_REL))
+    {
+        /* CodecData is rebuilt below, last_private_data stays valid */
+        initialHeader = 1;
+        avc3 = 0;
+        sps_pps_in_stream = 0;
     }
 
     if (call->private_data && call->private_size &&

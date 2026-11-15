@@ -709,7 +709,7 @@ int LinuxDvbPts(Context_t  *context __attribute__((unused)), unsigned long long 
     {
         ret = cERR_LINUXDVB_NO_ERROR;
     }
-    else
+    else if (videofd > -1)
     {
         linuxdvb_err("VIDEO_GET_PTS: ERROR %d, %s\n", errno, strerror(errno));
     }
@@ -720,7 +720,7 @@ int LinuxDvbPts(Context_t  *context __attribute__((unused)), unsigned long long 
         {
             ret = cERR_LINUXDVB_NO_ERROR;
         }
-        else
+        else if (audiofd > -1)
         {
             linuxdvb_err("AUDIO_GET_PTS: ERROR %d, %s\n", errno, strerror(errno));
         }
@@ -815,6 +815,8 @@ int LinuxDvbSwitch(Context_t  *context, char *type)
                         linuxdvb_err("AUDIO_SET_BYPASS_MODE: ERROR %d, %s\n", errno, strerror(errno));
                         if (context->playback->isDash)
                             goto audio_switch_done;
+                        /* only logged, the track is switched all the same */
+                        ret = 0;
                     }
                 }
 
@@ -832,6 +834,12 @@ int LinuxDvbSwitch(Context_t  *context, char *type)
                     linuxdvb_err("AUDIO_PLAY: ERROR %d, %s\n", errno, strerror(errno));
                     if (context->playback->isDash)
                         ret = cERR_LINUXDVB_ERROR;
+                }
+                /* AUDIO_PLAY starts the decoder: hold it again while the
+                 * playback is paused, the continue command releases it */
+                else if (context->playback->isPaused && ioctl(audiofd, AUDIO_PAUSE, NULL) == -1)
+                {
+                    linuxdvb_err("AUDIO_PAUSE: ERROR %d, %s\n", errno, strerror(errno));
                 }
 audio_switch_done:
                 free(Encoding);
@@ -871,6 +879,8 @@ audio_switch_done:
                     if (ret < 0)
                     {
                         linuxdvb_err("VIDEO_SET_STREAMTYPE: ERROR %d, %s\n", errno, strerror(errno));
+                        /* only logged, the decoder is restarted all the same */
+                        ret = 0;
                     }
                 }
 
@@ -1090,38 +1100,30 @@ static int Write(void  *_context, void *_out)
     return ret;
 }
 
-static int reset(Context_t  *context)
+/* Every command arrives once per type ("video", "audio"): reset the writer
+ * of that type only. */
+static int reset(Context_t  *context, char *type)
 {
     int ret = cERR_LINUXDVB_NO_ERROR;
     Writer_t*   writer;
     char * Encoding = NULL;
+    uint8_t video = !strcmp("video", type);
 
-    context->manager->video->Command(context, MANAGER_GETENCODING, &Encoding);
-
-    writer = getWriter(Encoding);
-
-    if (writer == NULL)
-    {
-        linuxdvb_err("unknown video codec %s\n",Encoding);
-        ret = cERR_LINUXDVB_ERROR;
-    } else
-    {
-        writer->reset();
-    }
-
-    free(Encoding);
-
-    context->manager->audio->Command(context, MANAGER_GETENCODING, &Encoding);
+    if (video)
+        context->manager->video->Command(context, MANAGER_GETENCODING, &Encoding);
+    else
+        context->manager->audio->Command(context, MANAGER_GETENCODING, &Encoding);
 
     writer = getWriter(Encoding);
 
     if (writer == NULL)
     {
-        linuxdvb_err("unknown video codec %s\n",Encoding);
+        linuxdvb_err("unknown %s codec %s\n", video ? "video" : "audio", Encoding);
         ret = cERR_LINUXDVB_ERROR;
     } else
     {
-        writer->reset();
+        if (writer->reset)
+            writer->reset();
     }
 
     free(Encoding);
@@ -1145,7 +1147,7 @@ static int Command(void  *_context, OutputCmd_t command, void * argument) {
     }
     case OUTPUT_CLOSE: {
         ret = LinuxDvbClose(context, (char*)argument);
-        reset(context);
+        reset(context, (char*)argument);
         sCURRENT_PTS = 0;
         break;
     }
@@ -1155,14 +1157,14 @@ static int Command(void  *_context, OutputCmd_t command, void * argument) {
         break;
     }
     case OUTPUT_STOP: {
-        reset(context);
+        reset(context, (char*)argument);
         ret = LinuxDvbStop(context, (char*)argument);
         sCURRENT_PTS = 0;
         break;
     }
     case OUTPUT_FLUSH: {
         ret = LinuxDvbFlush(context, (char*)argument);
-        reset(context);
+        reset(context, (char*)argument);
         sCURRENT_PTS = 0;
         break;
     }
@@ -1179,9 +1181,9 @@ static int Command(void  *_context, OutputCmd_t command, void * argument) {
         break;
     }
     case OUTPUT_CLEAR: {
-        reset(context);
+        reset(context, (char*)argument);
         ret = LinuxDvbClear(context, (char*)argument);
-        reset(context);
+        reset(context, (char*)argument);
         sCURRENT_PTS = 0;
         break;
     }

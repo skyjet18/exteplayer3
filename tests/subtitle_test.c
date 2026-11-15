@@ -125,7 +125,7 @@ static void packet_of_previous_graphic_track(void)
     assert(graphic_packets == 1 && !closed);
     current_track = 2; /* Switched away, one packet of track 1 is still queued. */
     deliver("S_GRAPHIC/PGS", "p", 1);
-    assert(closed == 1 && graphic_packets == 2);
+    assert(closed == 1 && graphic_packets == 1); /* Dropped with the flush. */
     assert(!strcmp(message, "{\"s_f\":{\"r\":0}}\n"));
     current_track = 1;
 }
@@ -143,6 +143,70 @@ static void strbuffer_exact_fit(void)
     strbuffer_free2(&buffer);
 }
 
+/* Output follow-up: text of a mov_text sample, control characters, track switch. */
+
+static void deliver_mov_text(const char *text, const char *boxes, size_t boxes_size)
+{
+    char sample[64];
+    size_t size = strlen(text);
+    assert(2 + size + boxes_size <= sizeof(sample));
+    sample[0] = size >> 8;
+    sample[1] = size & 255;
+    memcpy(sample + 2, text, size);
+    memcpy(sample + 2 + size, boxes, boxes_size);
+    deliver("S_TEXT/MOV", sample, 2 + size + boxes_size);
+}
+
+static void mov_text_by_its_length_field(void)
+{
+    /* One style record for the two characters: bold, size 18, white. */
+    static const char style[] = {0, 0, 0, 22, 's', 't', 'y', 'l', 0, 1,
+                                 0, 0, 0, 2, 0, 1, 1, 18, -1, -1, -1, -1};
+    deliver_mov_text("Hello", "", 0);
+    expect("Hello");
+    deliver_mov_text("Hi there", "", 0);
+    expect("Hi there");
+    deliver_mov_text("Hi", style, sizeof(style));
+    expect("Hi");
+}
+
+static void mov_text_line_break(void)
+{
+    deliver_mov_text("line1\\Nline2", "", 0);
+    expect("line1\\nline2");
+}
+
+static void control_characters_are_escaped(void)
+{
+    deliver_mov_text("a\vb\x1f", "", 0);
+    expect("a\\u000bb\\u001f");
+    deliver("S_TEXT/SUBRIP", "a\vb\x1f", 4);
+    expect("a\\u000bb\\u001f");
+}
+
+/* No length field in front and nothing behind the packet. */
+static void mov_text_ends_with_the_packet(void)
+{
+    static const char sample[] = {'a', 'b', ' ', 'c', 'd'};
+    SubtitleOut_t out = {.trackId = 1, .len = sizeof(sample), .pts = 90000, .durationMS = 2000};
+    out.data = malloc(sizeof(sample));
+    assert(out.data);
+    memcpy(out.data, sample, sizeof(sample));
+    encoding = "S_TEXT/MOV";
+    message[0] = 0;
+    assert(!SubtitleOutput.Write(&context, &out));
+    free(out.data);
+    expect(" cd");
+}
+
+static void packet_of_previous_text_track(void)
+{
+    current_track = 2; /* Switched away, one packet of track 1 is still queued. */
+    deliver("S_TEXT/SUBRIP", "text", 4);
+    assert(!strcmp(message, "{\"s_f\":{\"r\":0}}\n"));
+    current_track = 1;
+}
+
 int main(void)
 {
     subrip_long_cue();
@@ -151,5 +215,10 @@ int main(void)
     encoding_is_freed();
     packet_of_previous_graphic_track();
     strbuffer_exact_fit();
+    mov_text_by_its_length_field();
+    mov_text_line_break();
+    control_characters_are_escaped();
+    mov_text_ends_with_the_packet();
+    packet_of_previous_text_track();
     return 0;
 }

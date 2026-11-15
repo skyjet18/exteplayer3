@@ -69,6 +69,7 @@ static int                     initialHeader = 1;
 static unsigned int            NalLengthBytes = 1;
 static unsigned char           *CodecData     = NULL; 
 static unsigned int            CodecDataLen   = 0;
+static int                     resetPending = 0;
 /* ***************************** */
 /* Prototypes                    */
 /* ***************************** */
@@ -144,6 +145,11 @@ static int32_t PreparCodecData(unsigned char *data, unsigned int cd_len, unsigne
                 }
                 
                 CodecData = malloc(tmp_len);
+                if (!CodecData)
+                {
+                    h264_err("allocating codec data failed\n");
+                    return ret;
+                }
                 memcpy(CodecData, tmp, tmp_len);
                 CodecDataLen = tmp_len;
             }
@@ -157,9 +163,11 @@ static int32_t PreparCodecData(unsigned char *data, unsigned int cd_len, unsigne
     return ret;
 }
 
+/* reset() is called from the command thread while the demuxer thread can be
+ * inside writeData(): it only leaves a request, the next writeData() takes it. */
 static int reset()
 {
-    initialHeader = 1;
+    __atomic_store_n(&resetPending, 1, __ATOMIC_RELEASE);
     return 0;
 }
 
@@ -198,6 +206,11 @@ static int writeData(void* _call)
     {
         h264_err("file pointer < 0. ignoring ...\n");
         return 0;
+    }
+
+    if (__atomic_exchange_n(&resetPending, 0, __ATOMIC_ACQ_REL))
+    {
+        initialHeader = 1;
     }
     
     h265_printf(10, "H265 private_size: %u\n", call->private_size);

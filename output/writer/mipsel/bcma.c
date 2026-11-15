@@ -83,7 +83,12 @@ static int writeData(void *_call)
 {
     WriterAVCallData_t *call = (WriterAVCallData_t*) _call;
 
-    if (call == NULL || call->data == NULL || call->len <= 0 || call->fd < 0 || \
+    if (call == NULL) {
+        bcma_err("call data is NULL...\n");
+        return 0;
+    }
+
+    if (call->data == NULL || call->len <= 0 || call->fd < 0 || \
         !call->private_data || call->private_size != sizeof(pcmPrivateData_t)) {
         bcma_err("Wrong input call: %p, data: %p, len: %d, fd: %d\n", call, call->data, call->len, call->fd);
         return 0;

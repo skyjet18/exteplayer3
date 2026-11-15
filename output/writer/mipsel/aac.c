@@ -115,6 +115,7 @@ static unsigned char DefaultAACHeader[]    =  {
 };
 
 LATMContext *pLATMCtx = NULL;
+static int latmResetPending = 0;
 
 /* ***************************** */
 /* Prototypes                    */
@@ -124,13 +125,13 @@ LATMContext *pLATMCtx = NULL;
 /* MISC Functions                */
 /* ***************************** */
 
+/* reset() is called from the command thread while the demuxer thread can be
+ * inside writeData(), blocked in the write with the buffers of pLATMCtx in
+ * its iovec. The context therefore belongs to writeData() alone: reset() only
+ * leaves a request and the next writeData() starts it over. */
 static int reset()
 {
-    if (pLATMCtx)
-    {
-        free(pLATMCtx);
-        pLATMCtx = NULL;
-    }
+    __atomic_store_n(&latmResetPending, 1, __ATOMIC_RELEASE);
     needInitHeader = true;
     return 0;
 }
@@ -278,12 +279,22 @@ static int writeDataLATM(void *_call)
 
     aac_printf(10, "AudioPts %lld\n", call->Pts);
     
-    if (!pLATMCtx)
+    if (__atomic_exchange_n(&latmResetPending, 0, __ATOMIC_ACQ_REL) && pLATMCtx)
     {
-        pLATMCtx = malloc(sizeof(LATMContext));
         memset(pLATMCtx, 0x00, sizeof(LATMContext));
         pLATMCtx->mod = 14;
         pLATMCtx->counter = 0;
+    }
+
+    if (!pLATMCtx)
+    {
+        pLATMCtx = malloc(sizeof(LATMContext));
+        if (pLATMCtx)
+        {
+            memset(pLATMCtx, 0x00, sizeof(LATMContext));
+            pLATMCtx->mod = 14;
+            pLATMCtx->counter = 0;
+        }
     }
     
     if (!pLATMCtx)

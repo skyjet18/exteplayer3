@@ -135,18 +135,31 @@ static char *mov_get_text(const char *str, int len)
     const char *p_str = str;
     const char *end = str + len;
 
-    while (p_str < end && !((unsigned char)*p_str & 0x80) && *p_str != ' ')
+    /* a tx3g sample starts with the 16 bit length of its text, style boxes
+     * can follow the text */
+    if (len >= 2 && (((unsigned char)str[0] << 8) | (unsigned char)str[1]) <= len - 2)
     {
-        p_str++;
+        p_str = str + 2;
+        len = ((unsigned char)str[0] << 8) | (unsigned char)str[1];
+    }
+    else
+    {
+        while (p_str < end && !((unsigned char)*p_str & 0x80) && *p_str != ' ')
+        {
+            p_str++;
+        }
+
+        /* what is left of the packet after the skipped bytes */
+        len = (int)(end - p_str);
     }
 
-    if (p_str >= end)
+    if (len <= 0)
     {
         return strdup("");
     }
 
-    /* an escaped character takes two bytes */
-    char *result = malloc(2 * (size_t)len + 1);
+    /* an escaped character takes up to six bytes (\u00XX) */
+    char *result = malloc(6 * (size_t)len + 1);
 
     if (!result)
     {
@@ -160,7 +173,9 @@ static char *mov_get_text(const char *str, int len)
     {
         if (p_str[i] == '\\' && i + 1 < len && p_str[i + 1] == 'N')
         {
-            *out_ptr++ = '\n';
+            /* a line break, escaped for the JSON string like a line feed */
+            *out_ptr++ = '\\';
+            *out_ptr++ = 'n';
             i += 2;
         }
         else if ((unsigned char)p_str[i] < 0x80 || p_str[i] == ' ')
@@ -174,7 +189,16 @@ static char *mov_get_text(const char *str, int len)
                 case '\n': *out_ptr++ = '\\'; *out_ptr++ = 'n'; break;
                 case '\r': *out_ptr++ = '\\'; *out_ptr++ = 'r'; break;
                 case '\t': *out_ptr++ = '\\'; *out_ptr++ = 't'; break;
-                default:   *out_ptr++ = p_str[i];
+                default:
+                    if ((unsigned char)p_str[i] < 0x20)
+                    {
+                        /* any other control character is not allowed raw in a JSON string */
+                        out_ptr += sprintf(out_ptr, "\\u%04x", (unsigned char)p_str[i]);
+                    }
+                    else
+                    {
+                        *out_ptr++ = p_str[i];
+                    }
             }
             i++;
         }
@@ -244,10 +268,10 @@ static char *mov_get_text(const char *str, int len)
 
 static char * json_string_escape(char *str)
 {
-    /* an escaped character takes two bytes */
+    /* an escaped character takes up to six bytes (\u00XX) */
     static char *tmp = NULL;
     static size_t tmpSize = 0;
-    size_t need = 2 * strlen(str) + 1;
+    size_t need = 6 * strlen(str) + 1;
     if (need > tmpSize)
     {
         char *n = realloc(tmp, need);
@@ -293,7 +317,15 @@ static char * json_string_escape(char *str)
             *ptr1++ = 't';
         break;
         default:
-            *ptr1++ = *ptr2;
+            if ((unsigned char)*ptr2 < 0x20)
+            {
+                /* any other control character is not allowed raw in a JSON string */
+                ptr1 += sprintf(ptr1, "\\u%04x", (unsigned char)*ptr2);
+            }
+            else
+            {
+                *ptr1++ = *ptr2;
+            }
             break;
         }
         
@@ -418,6 +450,8 @@ static int Write(void *_context, void *data)
         }
 
         Flush();
+        /* the packet belongs to the track selected before, not to this encoding */
+        return cERR_SUBTITLE_NO_ERROR;
     }
     context->manager->subtitle->Command(context, MANAGER_GETENCODING, &Encoding);
 

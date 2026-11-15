@@ -87,6 +87,8 @@ static pthread_mutex_t *g_pDVBMtx = NULL;
 static bool g_bDuringWrite = false;
 static bool g_bWritingAudio = false;
 static bool g_bSignalWriteFinish = false;
+/* LinuxDvbBuffClose() asks the thread to end, guarded by bufferingMtx */
+static bool g_bClosing = false;
 
 static void *g_pWriteStamp = NULL;
 
@@ -154,6 +156,12 @@ static void LinuxDvbBuffThread(Context_t *context)
             /* signal that we free some space in queue */
             pthread_cond_signal(&bufferingDataConsumedCond);
         }
+
+        if (g_bClosing)
+        {
+            pthread_mutex_unlock(&bufferingMtx);
+            break;
+        }
         
         if (!bufferingQueueHead)
         {
@@ -212,16 +220,25 @@ static void LinuxDvbBuffThread(Context_t *context)
     }
     
     pthread_mutex_lock(&bufferingMtx);
-    pthread_cond_signal(&bufferingExitCond);
-    pthread_mutex_unlock(&bufferingMtx);
-    
-    buff_printf(20, "EXIT\n");
-    hasBufferingThreadStarted = false;
-    
+    /* the node written last is freed by the next turn of the loop only */
+    free(nodePtr);
+    nodePtr = NULL;
+    /* no write is running any more: release a flush that waits for its end */
+    g_bDuringWrite = false;
+    g_bWritingAudio = false;
+    g_bSignalWriteFinish = false;
+    pthread_cond_broadcast(&bufferingWriteFinishedCond);
+    /* the close looks at the flag as soon as it is woken, and the thread
+     * of the next open makes a pipe of its own: both before the signal */
     close(g_pfd[0]);
     close(g_pfd[1]);
     g_pfd[0] = -1;
     g_pfd[1] = -1;
+    hasBufferingThreadStarted = false;
+    pthread_cond_signal(&bufferingExitCond);
+    pthread_mutex_unlock(&bufferingMtx);
+    
+    buff_printf(20, "EXIT\n");
 }
 
 int32_t LinuxDvbBuffSetSize(const uint32_t bufferSize)
@@ -249,6 +266,7 @@ int32_t LinuxDvbBuffOpen(Context_t *context, char *type, int outfd, void *mtx)
         pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
 
         g_pDVBMtx = mtx;
+        g_bClosing = false;
 
         /* init synchronization prymitives, the thread uses them at once */
         pthread_mutex_init(&bufferingMtx, NULL);
@@ -258,6 +276,8 @@ int32_t LinuxDvbBuffOpen(Context_t *context, char *type, int outfd, void *mtx)
         pthread_cond_init(&bufferingWriteFinishedCond, NULL);
         pthread_cond_init(&bufferingdDataAddedCond, NULL);
 
+        /* set before the thread runs: it clears the flag when it ends */
+        hasBufferingThreadStarted = true;
         if((error = pthread_create(&bufferingThread, &attr, (void *)&LinuxDvbBuffThread, context)) != 0) 
         {
             buff_printf(10, "Creating thread, error:%d:%s\n", error, strerror(error));
@@ -268,7 +288,6 @@ int32_t LinuxDvbBuffOpen(Context_t *context, char *type, int outfd, void *mtx)
         else 
         {
             buff_printf(10, "Created thread\n");
-            hasBufferingThreadStarted = true;
         }
     }
     
@@ -308,6 +327,8 @@ int32_t LinuxDvbBuffClose(Context_t *context)
         WriteWakeUp();
         
         pthread_mutex_lock(&bufferingMtx);
+        /* the thread leaves its loop also when PlaybackDieNow is not set */
+        g_bClosing = true;
         /* wake up if thread is waiting for data */ 
         pthread_cond_signal(&bufferingdDataAddedCond);
         
@@ -319,7 +340,9 @@ int32_t LinuxDvbBuffClose(Context_t *context)
 #else
         max_wait.tv_sec = time(NULL) + 2;
 #endif
-        pthread_cond_timedwait(&bufferingExitCond, &bufferingMtx, &max_wait);
+        /* the thread clears the flag under the lock before it signals */
+        while (hasBufferingThreadStarted &&
+               0 == pthread_cond_timedwait(&bufferingExitCond, &bufferingMtx, &max_wait));
         pthread_mutex_unlock(&bufferingMtx);
 
         if (!hasBufferingThreadStarted)
@@ -433,6 +456,7 @@ ssize_t BufferingWriteV(int fd, const struct iovec *iov, int ic)
     uint8_t *dataPtr = NULL;
     uint32_t chunkSize = 0;
     uint32_t i = 0;
+    bool queued = false;
     
     buff_printf(60, "ENTER\n");
     if (fd == videofd)
@@ -505,10 +529,17 @@ ssize_t BufferingWriteV(int fd, const struct iovec *iov, int ic)
             
             /* signal that we added some data to queue */
             pthread_cond_signal(&bufferingdDataAddedCond);
+            queued = true;
             break;
         }
     }
     pthread_mutex_unlock(&bufferingMtx);
+    if (!queued)
+    {
+        /* the playback is terminated: the chunk is dropped */
+        free(nodePtr);
+        chunkSize -= sizeof(BufferingNode_t);
+    }
     buff_printf(60, "EXIT\n");
     return chunkSize;
 }

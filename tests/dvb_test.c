@@ -12,7 +12,10 @@
 #define usleep test_usleep
 #define ioctl test_ioctl
 int test_ioctl(int fd, unsigned long request, ...);
+#define printf test_printf
+int test_printf(const char *format, ...);
 #include "../output/linuxdvb_mipsel.c"
+#undef printf
 #undef open
 #undef usleep
 #undef ioctl
@@ -93,6 +96,98 @@ static int audio_command(void *ctx, ManagerCmd_t command, void *argument)
     assert(command == MANAGER_GETENCODING);
     *(char **)argument = strdup(encoding);
     return 0;
+}
+
+/* Output follow-up: results of a switch, pause over a switch, reset per type. */
+
+/* Command() refers to the whole buffering interface. */
+int32_t LinuxDvbBuffOpen(Context_t *context, char *type, int outfd, void *mtx)
+{
+    (void)context;
+    (void)type;
+    (void)outfd;
+    (void)mtx;
+    return 0;
+}
+
+int32_t LinuxDvbBuffClose(Context_t *context) { (void)context; return 0; }
+int32_t LinuxDvbBuffFlush(Context_t *context) { (void)context; return 0; }
+int32_t LinuxDvbBuffResume(Context_t *context) { (void)context; return 0; }
+int32_t LinuxDvbBuffSetSize(const uint32_t size) { (void)size; return 0; }
+uint32_t LinuxDvbBuffGetSize(void) { return 0; }
+
+static void switch_results_and_reset(Context_t *context, PlaybackHandler_t *playback,
+                                     ManagerHandler_t *managers)
+{
+    playback->isDash = 0;
+    failing_request = AUDIO_SET_BYPASS_MODE;
+    request_count = 0;
+    /* Only logged outside DASH: the track is switched, so the switch has not failed. */
+    assert(!LinuxDvbSwitch(context, "audio"));
+    assert(request_count == 5 && requests[2] == AUDIO_SET_BYPASS_MODE);
+    assert(requests[3] == AUDIO_SET_BYPASS_MODE && requests[4] == AUDIO_PLAY);
+    failing_request = 0;
+    playback->isPaused = 1;
+    request_count = 0;
+    assert(!LinuxDvbSwitch(context, "audio"));
+    assert(request_count == 5 && requests[3] == AUDIO_PLAY && requests[4] == AUDIO_PAUSE);
+    playback->isPaused = 0;
+    /* The writer stub stands for the video writer as well. */
+    managers->video = managers->audio;
+    failing_request = VIDEO_SET_STREAMTYPE;
+    request_count = 0;
+    assert(!LinuxDvbSwitch(context, "video"));
+    assert(request_count == 5 && requests[0] == VIDEO_STOP && requests[1] == VIDEO_CLEAR_BUFFER);
+    assert(requests[3] == VIDEO_SET_STREAMTYPE && requests[4] == VIDEO_PLAY);
+    failing_request = 0;
+    resets = 0;
+    assert(!Command(context, OUTPUT_FLUSH, "audio") && resets == 1);
+    assert(!Command(context, OUTPUT_FLUSH, "video") && resets == 2);
+    managers->video = NULL;
+    playback->isDash = 1;
+}
+
+/* Output follow-up: messages of the position query, a writer without reset(). */
+
+static const char *counted;
+static int messages;
+
+/* The messages of linuxdvb_mipsel.c. */
+int test_printf(const char *format, ...)
+{
+    va_list arguments;
+    int result;
+    if (counted && strstr(format, counted))
+        messages++;
+    va_start(arguments, format);
+    result = vprintf(format, arguments);
+    va_end(arguments);
+    return result;
+}
+
+/* Audio only: the video device is not asked, so no error is reported for it. */
+static void no_message_for_the_closed_video_device(Context_t *context)
+{
+    unsigned long long position = 1;
+    int video = videofd;
+    videofd = -1;
+    LINUXDVB_SILENT = 0;
+    counted = "VIDEO_GET_PTS";
+    request_count = 0;
+    assert(LinuxDvbPts(context, &position) < 0 && !position);
+    assert(request_count == 1 && requests[0] == AUDIO_GET_PTS && !messages);
+    counted = NULL;
+    LINUXDVB_SILENT = 1;
+    videofd = video;
+}
+
+static void writer_without_reset(Context_t *context, ManagerHandler_t *managers)
+{
+    managers->video = managers->audio;
+    pcm_writer.reset = NULL;
+    assert(!Command(context, OUTPUT_FLUSH, "audio"));
+    pcm_writer.reset = reset_pcm;
+    managers->video = NULL;
 }
 
 int main(void)
@@ -179,6 +274,9 @@ int main(void)
     request_count = 0;
     LinuxDvbTiming("test-unavailable");
     assert(request_count == 2 && requests[0] == VIDEO_GET_PTS && requests[1] == AUDIO_GET_PTS);
+    switch_results_and_reset(&context, &playback, &managers);
+    no_message_for_the_closed_video_device(&context);
+    writer_without_reset(&context, &managers);
     pthread_mutex_destroy(&LinuxDVBmutex);
     return 0;
 }
