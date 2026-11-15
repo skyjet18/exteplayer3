@@ -486,6 +486,25 @@ they differ by more than 200 ms. A failed setup or encoder is logged once
 or a seek; playback continues. Stereo downmix (`-s`) is not applied to
 transcoded tracks.
 
+## DreamNextGen build (Dreambox One/Two)
+
+The Amlogic Dreambox One and Two backend of the
+[OE-Alliance tree](https://github.com/oe-alliance/exteplayer3) is ported unchanged
+where possible. It exists only in builds with `-DHAVE_DREAMNEXTGEN` and
+`output/dream_video.c` added to the source list; without the define every
+source preprocesses to the same code as before.
+
+| Part | Behavior |
+| --- | --- |
+| `output/dream_video.c` | Video through the private `VIDEO_SET_FRAME` API of `/dev/dvb/adapter0/video0`: MPEG-1/2, H.264, HEVC, MPEG-4 Part 2, DivX 3, VP9, AVS and AVS2 frames, paused output, position of the picture on screen. |
+| `output/linuxdvb_mipsel.c` | Audio through `/dev/dvb/adapter0/dreamaudio0` with kernel A/V sync for every stream. |
+| Writers | H.264 without PES header; AVS and AVS2 in plain PES with the sequence header ahead of I pictures. |
+| `main/exteplayer.c` | WMA, Vorbis, Opus and AMR always software decoded; `EPLAYER3_EXTENDED` reports `"trick":1`. |
+| Container/playback | `f<speed>`/`b<speed>` wind forwards and backwards on keyframes; audio after a seek starts with the first video keyframe. |
+
+In this tree the build is only compiled and linked: `tests/run.sh` builds it
+on the host, the receiver behavior was tested in the OE-Alliance tree only.
+
 ## Native validation
 
 Set `FFMPEG_SOURCE` to the companion source tree and `FFMPEG_BUILD` to its

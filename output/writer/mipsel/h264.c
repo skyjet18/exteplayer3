@@ -497,7 +497,12 @@ static int writeData(void* _call)
         iov[ic++].iov_len = call->len;
         PacketLength     += call->len;
         
+#ifdef HAVE_DREAMNEXTGEN
+        /* The AML DVB-API video device takes raw Annex-B ES, without PES. */
+        iov[0].iov_len = 0;
+#else
         iov[0].iov_len = InsertPesHeaderWithDts(PesHeader, -1, MPEG_VIDEO_PES_START_CODE, VideoPts, call->Dts, FakeStartCode);
+#endif
         
         return call->WriteV(call->fd, iov, ic);
     }
@@ -608,7 +613,12 @@ static int writeData(void* _call)
         } while ((pos + NalLengthBytes) < call->len);
         
         h264_printf (10, "<<<< PacketLength [%d]\n", PacketLength);
+#ifdef HAVE_DREAMNEXTGEN
+        /* The AML DVB-API video device takes raw Annex-B ES, without PES. */
+        iov[0].iov_len = 0;
+#else
         iov[0].iov_len = InsertPesHeaderWithDts(PesHeader, -1, MPEG_VIDEO_PES_START_CODE, VideoPts, call->Dts, 0);
+#endif
         
         len = call->WriteV(call->fd, iov, ic);
         PacketLength += iov[0].iov_len;

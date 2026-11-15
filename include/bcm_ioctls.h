@@ -56,6 +56,9 @@ typedef enum {
 	STREAMTYPE_MJPEG = 30,
 	STREAMTYPE_RV30 = 31,  /* rv30: RealVideo 8, suspected to based largely on an early draft of H.264 (included with RealPlayer 8)*/
 	STREAMTYPE_RV40 = 32, /* RealVideo 9, RealVideo 10*/
+#ifdef HAVE_DREAMNEXTGEN
+	STREAMTYPE_AVS = 16,
+#endif
 	STREAMTYPE_AVS2 = 40,
 } video_stream_type_t;
 

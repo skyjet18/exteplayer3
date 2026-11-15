@@ -174,8 +174,49 @@ static int writeData(void *_call)
         return writeDataSimple(_call);
     }
 
-    return writeDataBCMV(call); 
+    return writeDataBCMV(call);
 }
+
+#ifdef HAVE_DREAMNEXTGEN
+/* AVS and AVS2 in plain PES; the sequence header of a container goes ahead
+ * of the first picture and of every I picture */
+static bool avs_header_sent = false;
+
+static int resetAVS()
+{
+    avs_header_sent = false;
+    return 0;
+}
+
+static int writeDataAVS(void *_call)
+{
+    WriterAVCallData_t *call = (WriterAVCallData_t *)_call;
+    if (call == NULL || call->data == NULL || call->len <= 0)
+        return 0;
+
+    bool intra = call->len > 3 && call->data[0] == 0 && call->data[1] == 0 && call->data[2] == 1 && call->data[3] == 0xb3;
+    bool header = call->private_data && call->private_size && (!avs_header_sent || intra);
+    uint32_t header_size = header ? call->private_size : 0;
+
+    uint8_t PesHeader[PES_MAX_HEADER_SIZE];
+    struct iovec iov[3];
+    int ic = 0;
+    iov[ic].iov_base = PesHeader;
+    iov[ic++].iov_len = InsertPesHeader(PesHeader, call->len + header_size, MPEG_VIDEO_PES_START_CODE, call->Pts, 0);
+    if (header) {
+        iov[ic].iov_base = call->private_data;
+        iov[ic++].iov_len = header_size;
+    }
+    iov[ic].iov_base = call->data;
+    iov[ic++].iov_len = call->len;
+    avs_header_sent = true;
+
+    return call->WriteV(call->fd, iov, ic);
+}
+#else
+#define resetAVS reset
+#define writeDataAVS writeData
+#endif
 
 /* ***************************** */
 /* Writer  Definition            */
@@ -228,6 +269,24 @@ struct Writer_s WriterVideoRV40 = {
     &capsRV40
 };
 
+#ifdef HAVE_DREAMNEXTGEN
+static WriterCaps_t capsAVS = {
+    "avs",
+    eVideo,
+    "V_AVS",
+    VIDEO_ENCODING_AUTO,
+    STREAMTYPE_AVS,
+    -1
+};
+
+struct Writer_s WriterVideoAVS = {
+    &resetAVS,
+    &writeDataAVS,
+    NULL,
+    &capsAVS
+};
+#endif
+
 static WriterCaps_t capsAVS2 = {
     "avs2",
     eVideo,
@@ -238,8 +297,8 @@ static WriterCaps_t capsAVS2 = {
 };
 
 struct Writer_s WriterVideoAVS2 = {
-    &reset,
-    &writeData,
+    &resetAVS,
+    &writeDataAVS,
     NULL,
     &capsAVS2
 };

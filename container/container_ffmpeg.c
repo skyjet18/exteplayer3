@@ -123,6 +123,31 @@ static int32_t restart_audio_resampling = 0;
 
 static int64_t g_seek_target_seconds = 0;
 static bool g_do_seek_target_seconds = false;
+
+#ifdef HAVE_DREAMNEXTGEN
+/* After a seek audio starts with the first video keyframe: the kernel syncs
+ * the audio to the clock the video sets, audio from before the keyframe stays
+ * late by up to a GOP. Packets before the keyframe, and the count to give up
+ * on streams that mark no keyframes. */
+static bool seekWaitVideoKey = false;
+static int64_t seekVideoKeyPts = INVALID_PTS_VALUE;
+static int32_t seekVideoSkipped = 0;
+
+/* Trick play: the decoder plays at its normal pace, it gets keyframes only.
+ * Each one is a seek from the last one by speed times TRICK_STEP_90K, its PTS
+ * are scaled by the speed from the start; backwards they are mirrored and
+ * keep rising. Audio and subtitles are not fed. */
+#define TRICK_STEP_90K 27000
+static int32_t trickSpeed = 0;              /* >1 forwards, <0 backwards, 0 off */
+static bool trickStep = false;              /* the seek to the next keyframe is due */
+static int64_t trickAnchorPts = INVALID_PTS_VALUE;  /* stream PTS at the start */
+static int64_t trickBasePts = INVALID_PTS_VALUE;    /* output PTS at the start */
+static int64_t trickOutPts = INVALID_PTS_VALUE;     /* output PTS of the last keyframe */
+static int64_t trickKeyPts = INVALID_PTS_VALUE;     /* stream PTS of the last keyframe */
+static int64_t trickDueNs = 0;              /* the last keyframe is on screen then */
+static int64_t trickStartNs = 0;
+static int32_t trickMiss = 0;               /* seeks that found no keyframe beyond the last one */
+#endif
 static bool g_zero_seek = false;
 /* relative seek: the decoder position it counts from (90 kHz) and its offset */
 static int64_t g_seek_from_pts = INVALID_PTS_VALUE;
@@ -728,9 +753,15 @@ static char* VideoCodec2Encoding(int32_t codec_id, int32_t *version)
 #if LIBAVCODEC_VERSION_MAJOR < 53
     case AV_CODEC_ID_XVID:
 #endif
+#ifdef HAVE_DREAMNEXTGEN
+    case AV_CODEC_ID_MSMPEG4V3:
+        return "V_DIVX3";
+#endif
     case AV_CODEC_ID_MSMPEG4V1:
     case AV_CODEC_ID_MSMPEG4V2:
+#ifndef HAVE_DREAMNEXTGEN
     case AV_CODEC_ID_MSMPEG4V3:
+#endif
         return "V_MPEG4"; //"V_DIVX3";
     case AV_CODEC_ID_WMV1:
         *version = 1;
@@ -753,7 +784,13 @@ static char* VideoCodec2Encoding(int32_t codec_id, int32_t *version)
     // case AV_CODEC_ID_H265:
         return "V_HEVC";
 #endif
+#ifdef HAVE_DREAMNEXTGEN
+    /* AVS video from libav is AV_CODEC_ID_CAVS, AV_CODEC_ID_AVS is an
+     * unrelated game codec */
+    case AV_CODEC_ID_CAVS:
+#else
     case AV_CODEC_ID_AVS:
+#endif
         return "V_AVS";
     }
     return NULL;
@@ -2798,6 +2835,11 @@ static void FFMPEGThread(Context_t *context)
             currentVideoPts = -1;
             currentAudioPts = -1;
             latestPts = 0;
+#ifdef HAVE_DREAMNEXTGEN
+            seekWaitVideoKey = true;
+            seekVideoKeyPts = INVALID_PTS_VALUE;
+            seekVideoSkipped = 0;
+#endif
             aac_pts_dejitter_reset(&aacPtsDejitter);
 
             // flush streams
@@ -2823,6 +2865,47 @@ static void FFMPEGThread(Context_t *context)
             flv2mpeg4_context_reset(&flv2mpeg4_context);
 #endif
         }
+
+#ifdef HAVE_DREAMNEXTGEN
+        if (trickSpeed && trickStep && avContextTab[0])
+        {
+            struct timespec ts;
+            clock_gettime(CLOCK_MONOTONIC, &ts);
+            if ((int64_t)ts.tv_sec * 1000000000LL + ts.tv_nsec < trickDueNs)
+            {
+                releaseMutex(__FILE__, __FUNCTION__,__LINE__);
+                usleep(10000);
+                continue;
+            }
+            int64_t key = av_rescale(trickKeyPts, AV_TIME_BASE, 90000);
+            /* a GOP longer than the step lands on the same keyframe: the step
+             * doubles until the next one is in reach */
+            int64_t target = key + av_rescale((int64_t)trickSpeed * TRICK_STEP_90K * (1LL << trickMiss), AV_TIME_BASE, 90000);
+            if (avContextTab[0]->start_time != AV_NOPTS_VALUE)
+            {
+                key += avContextTab[0]->start_time;
+                target += avContextTab[0]->start_time;
+            }
+            /* the next keyframe in the direction, not the last one again */
+            int ret = trickSpeed > 0 ?
+                avformat_seek_file(avContextTab[0], -1, key + 1, target, INT64_MAX, 0) :
+                avformat_seek_file(avContextTab[0], -1, INT64_MIN, target, key - 1, 0);
+            if (ret < 0)
+            {
+                /* the end or the start: the last picture stays */
+                ffmpeg_printf(10, "trick: no keyframe beyond %"PRId64"\n", trickKeyPts);
+                trickDueNs = INT64_MAX;
+                E2iSendMsg("{\"PLAYBACK_TRICK_END\":{\"dir\":%d}}\n", trickSpeed > 0 ? 1 : -1);
+                releaseMutex(__FILE__, __FUNCTION__,__LINE__);
+                continue;
+            }
+            trickStep = false;
+            seekWaitVideoKey = true;
+            seekVideoKeyPts = INVALID_PTS_VALUE;
+            seekVideoSkipped = 0;
+            isWaitingForFinish = 0;
+        }
+#endif
 
         int ffmpegStatus = 0;
         if(!isWaitingForFinish)
@@ -2857,6 +2940,13 @@ static void FFMPEGThread(Context_t *context)
             {
                 cAVIdx = 0;
             }
+#ifdef HAVE_DREAMNEXTGEN
+            /* the keyframes come from the video context */
+            if (trickSpeed)
+            {
+                cAVIdx = 0;
+            }
+#endif
         }
 
         if (bufferSize > 0)
@@ -2922,6 +3012,15 @@ static void FFMPEGThread(Context_t *context)
             
             ffmpeg_printf(200, "packet.size %d - index %d\n", packet.size, pid);
 
+#ifdef HAVE_DREAMNEXTGEN
+            if (trickSpeed && !packet_matches_track(videoTrack, cAVIdx, avContextTab[cAVIdx]->streams[packet.stream_index]))
+            {
+                wrapped_packet_unref(&packet);
+                releaseMutex(__FILE__, __FUNCTION__,__LINE__);
+                continue;
+            }
+#endif
+
             if (packet_matches_track(videoTrack, cAVIdx,
                                      avContextTab[cAVIdx]->streams[packet.stream_index]))
             {
@@ -2930,6 +3029,11 @@ static void FFMPEGThread(Context_t *context)
                 AVCodecContext *codec_context = videoTrack->avCodecCtx;
                 if (codec_context && codec_context->codec_id == AV_CODEC_ID_MPEG4 && NULL != mpeg4p2_context)
                 {
+#ifdef HAVE_DREAMNEXTGEN
+                    /* the converter writes whole frames on its own, audio does not wait */
+                    seekWaitVideoKey = false;
+                    seekVideoKeyPts = INVALID_PTS_VALUE;
+#endif
                     mpeg4p2_write_packet(context, mpeg4p2_context, videoTrack, cAVIdx, &currentVideoPts, &latestPts, &packet);
                     update_max_injected_pts(latestPts);
                 }
@@ -2939,6 +3043,10 @@ static void FFMPEGThread(Context_t *context)
                 if (get_codecpar(avContextTab[cAVIdx]->streams[packet.stream_index])->codec_id == AV_CODEC_ID_FLV1 &&
                     0 == memcmp(videoTrack->Encoding, "V_MPEG4", 7) )
                 {
+#ifdef HAVE_DREAMNEXTGEN
+                    seekWaitVideoKey = false;
+                    seekVideoKeyPts = INVALID_PTS_VALUE;
+#endif
                     flv2mpeg4_write_packet(context, &flv2mpeg4_context, videoTrack, cAVIdx, &currentVideoPts, &latestPts, &packet);
                     update_max_injected_pts(latestPts);
                 }
@@ -2982,6 +3090,24 @@ static void FFMPEGThread(Context_t *context)
                         latestPts = currentVideoPts;
                         update_max_injected_pts(latestPts);
                     }
+
+#ifdef HAVE_DREAMNEXTGEN
+                    if (seekWaitVideoKey)
+                    {
+                        if (!(packet.flags & AV_PKT_FLAG_KEY))
+                            seekVideoSkipped++;
+                        if ((packet.flags & AV_PKT_FLAG_KEY) || seekVideoSkipped > 250)
+                        {
+                            seekWaitVideoKey = false;
+                            seekVideoKeyPts = pts;
+                            ffmpeg_printf(10, "first video %s after the seek, pts %"PRId64"\n", seekVideoSkipped > 250 ? "packet" : "keyframe", pts);
+                        }
+                        else
+                        {
+                            skipPacket = true;
+                        }
+                    }
+#endif
                     
                     if (context->playback->isTSLiveMode)
                     {
@@ -3014,6 +3140,44 @@ static void FFMPEGThread(Context_t *context)
                     }
                     
                     ffmpeg_printf(200, "VideoTrack index = %d %"PRId64"\n",pid, currentVideoPts);
+
+#ifdef HAVE_DREAMNEXTGEN
+                    if (trickSpeed && pts != INVALID_PTS_VALUE &&
+                        (trickSpeed > 0 ? pts <= trickKeyPts : pts >= trickKeyPts) && trickKeyPts != trickAnchorPts)
+                    {
+                        /* not beyond the last keyframe: the next seek goes further,
+                         * at the start or the end the last picture stays */
+                        trickStep = true;
+                        if (++trickMiss > 8)
+                        {
+                            ffmpeg_printf(10, "trick: no keyframe beyond %"PRId64"\n", trickKeyPts);
+                            trickDueNs = INT64_MAX;
+                            E2iSendMsg("{\"PLAYBACK_TRICK_END\":{\"dir\":%d}}\n", trickSpeed > 0 ? 1 : -1);
+                        }
+                        wrapped_packet_unref(&packet);
+                        releaseMutex(__FILE__, __FUNCTION__,__LINE__);
+                        continue;
+                    }
+                    if (trickSpeed)
+                    {
+                        trickMiss = 0;
+                        /* the distance in the stream, scaled by the speed */
+                        int64_t dist = (pts == INVALID_PTS_VALUE) ? 0 : (pts - trickAnchorPts) * (trickSpeed > 0 ? 1 : -1);
+                        if (dist < 0)
+                        {
+                            dist = 0;
+                        }
+                        dist /= abs(trickSpeed);
+                        if (pts != INVALID_PTS_VALUE)
+                        {
+                            trickKeyPts = pts;
+                        }
+                        trickOutPts = pts = dts = (trickBasePts + dist) & 0x1FFFFFFFFLL;
+                        trickDueNs = trickStartNs + av_rescale(dist, 1000000000LL, 90000);
+                        trickStep = true;
+                        ffmpeg_printf(10, "trick: keyframe %"PRId64" as %"PRId64"\n", trickKeyPts, pts);
+                    }
+#endif
 
                     avOut.data       = packet.data;
                     avOut.len        = packet.size;
@@ -3061,6 +3225,20 @@ static void FFMPEGThread(Context_t *context)
                     latestPts = currentAudioPts;
                     update_max_injected_pts(latestPts);
                 }
+
+#ifdef HAVE_DREAMNEXTGEN
+                if (videoTrack && seekWaitVideoKey)
+                {
+                    skipPacket = 1;
+                }
+                else if (seekVideoKeyPts != INVALID_PTS_VALUE)
+                {
+                    if (pts != INVALID_PTS_VALUE && pts < seekVideoKeyPts)
+                        skipPacket = 1;
+                    else
+                        seekVideoKeyPts = INVALID_PTS_VALUE;
+                }
+#endif
                 
                 if (context->playback->isTSLiveMode)
                 {
@@ -5516,6 +5694,88 @@ static int32_t container_ffmpeg_seek_bytes(off_t pos)
     return cERR_CONTAINER_FFMPEG_NO_ERROR;
 }
 
+#ifdef HAVE_DREAMNEXTGEN
+/* Start, change or end the trick play: *arg is the speed, 0 ends it and
+ * returns the stream PTS of the last keyframe to go on from. */
+static int32_t container_ffmpeg_trick(Context_t *context, int64_t *arg)
+{
+    int32_t speed = (int32_t)*arg;
+    unsigned long long screen = 0;
+    Track_t *videoTrack = NULL;
+    struct timespec ts;
+
+    if (speed)
+    {
+        context->manager->video->Command(context, MANAGER_GET_TRACK, &videoTrack);
+        /* the MPEG-4 part 2 and FLV converters write frames of their own */
+        if (!videoTrack || videoTrack->AVIdx != 0 || !videoTrack->stream ||
+            get_codecpar(videoTrack->stream)->codec_id == AV_CODEC_ID_MPEG4 ||
+            get_codecpar(videoTrack->stream)->codec_id == AV_CODEC_ID_FLV1)
+        {
+            ffmpeg_err("trick: no video track it can wind\n");
+            return cERR_CONTAINER_FFMPEG_ERR;
+        }
+        if (!trickSpeed && (context->output->Command(context, OUTPUT_PTS, &screen) < 0 || !screen))
+        {
+            ffmpeg_err("trick: no picture on screen yet\n");
+            return cERR_CONTAINER_FFMPEG_ERR;
+        }
+    }
+
+    getMutex_wr(__FILE__, __FUNCTION__,__LINE__);
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    if (speed)
+    {
+        if (trickSpeed)
+        {
+            /* a new speed goes on from the last keyframe */
+            trickAnchorPts = trickKeyPts;
+            trickBasePts = trickOutPts;
+        }
+        else
+        {
+            trickAnchorPts = trickKeyPts = trickBasePts = trickOutPts = (int64_t)(screen & 0x1FFFFFFFFULL);
+            /* what is queued plays in real time */
+            context->output->Command(context, OUTPUT_CLEAR, NULL);
+        }
+        trickSpeed = speed;
+        trickStartNs = (int64_t)ts.tv_sec * 1000000000LL + ts.tv_nsec;
+        trickDueNs = 0;
+        trickMiss = 0;
+        trickStep = true;
+    }
+    else
+    {
+        *arg = trickSpeed ? trickKeyPts : INVALID_PTS_VALUE;
+        trickSpeed = 0;
+        trickStep = false;
+    }
+    releaseMutex(__FILE__, __FUNCTION__,__LINE__);
+    ffmpeg_printf(10, "trick: speed %d from %"PRId64"\n", speed, trickAnchorPts);
+    return cERR_CONTAINER_FFMPEG_NO_ERROR;
+}
+
+/* The stream PTS of a picture of the trick play. */
+static int32_t container_ffmpeg_trick_pts(int64_t *pts)
+{
+    int32_t speed = trickSpeed;
+
+    if (!speed)
+    {
+        return cERR_CONTAINER_FFMPEG_ERR;
+    }
+    int64_t dist = (*pts - trickBasePts) & 0x1FFFFFFFFLL;
+    /* a picture from before the last change of the speed */
+    if (dist >= (1LL << 32))
+    {
+        dist = 0;
+    }
+    int64_t pts_stream = trickAnchorPts + dist * speed;
+    *pts = pts_stream < 0 ? 0 : pts_stream & 0x1FFFFFFFFLL;
+    return cERR_CONTAINER_FFMPEG_NO_ERROR;
+}
+#endif
+
 static int32_t container_ffmpeg_seek(Context_t *context, int64_t sec, uint8_t absolute)
 {
     int zero_seek = !absolute && sec == 0;
@@ -6006,6 +6266,18 @@ static int32_t Command(void  *_context, ContainerCmd_t command, void *argument)
         *((int32_t*)argument) = size;
         break;
     }   
+#ifdef HAVE_DREAMNEXTGEN
+    case CONTAINER_TRICK:
+    {
+        ret = container_ffmpeg_trick(context, (int64_t *)argument);
+        break;
+    }
+    case CONTAINER_TRICK_PTS:
+    {
+        ret = container_ffmpeg_trick_pts((int64_t *)argument);
+        break;
+    }
+#endif
     case CONTAINER_UPDATE_DURATION:
     {
         ret = container_ffmpeg_update_duration(context);

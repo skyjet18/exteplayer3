@@ -292,6 +292,63 @@ static int PlaybackPlay(Context_t  *context)
     return ret;
 }
 
+#ifdef HAVE_DREAMNEXTGEN
+static int32_t PlaybackContinue(Context_t  *context);
+static int32_t PlaybackSeek(Context_t  *context, int64_t *pos, uint8_t absolute);
+
+/* the stream PTS to play on from after the trick play */
+static int64_t trickResumePts = INVALID_PTS_VALUE;
+
+static void PlaybackTrickEnd(Context_t *context)
+{
+    int64_t pts = 0;
+
+    if (context->container->selectedContainer->Command(context, CONTAINER_TRICK, &pts) == 0 && pts != INVALID_PTS_VALUE)
+    {
+        trickResumePts = pts;
+    }
+    context->playback->isForwarding = 0;
+    context->playback->BackWard     = 0;
+    context->playback->Speed        = 1;
+}
+
+/* Wind forwards (speed > 1) or backwards (speed < 0) on keyframes. */
+static int32_t PlaybackTrick(Context_t *context, int32_t speed)
+{
+    int32_t ret = cERR_PLAYBACK_NO_ERROR;
+    int64_t arg = speed;
+
+    playback_printf(10, "speed %d\n", speed);
+
+    if (speed == 0 || speed == 1)
+    {
+        return PlaybackContinue(context);
+    }
+    if (!context->playback->isPlaying || context->playback->isSeeking || context->playback->SlowMotion)
+    {
+        playback_err("trick play not possible\n");
+        return cERR_PLAYBACK_ERROR;
+    }
+    if (context->container->selectedContainer->Command(context, CONTAINER_TRICK, &arg) != 0)
+    {
+        return cERR_PLAYBACK_ERROR;
+    }
+    if (context->playback->isPaused)
+    {
+        set_pause_timeout(0);
+        context->output->Command(context, OUTPUT_CONTINUE, NULL);
+        context->playback->isPaused = 0;
+    }
+    trickResumePts = INVALID_PTS_VALUE;
+    context->playback->isForwarding = speed > 0;
+    context->playback->BackWard     = speed < 0;
+    context->playback->Speed        = speed;
+
+    playback_printf(10, "exiting with value %d\n", ret);
+    return ret;
+}
+#endif
+
 static int PlaybackPause(Context_t  *context) 
 {
     int ret = cERR_PLAYBACK_NO_ERROR;
@@ -300,6 +357,13 @@ static int PlaybackPause(Context_t  *context)
 
     if (context->playback->isPlaying && !context->playback->isPaused) 
     {
+#ifdef HAVE_DREAMNEXTGEN
+        /* the picture of the trick play stays, continue goes on from it */
+        if (context->playback->isForwarding || context->playback->BackWard)
+        {
+            PlaybackTrickEnd(context);
+        }
+#endif
         set_pause_timeout(1);
         
         context->playback->isPaused     = 1;
@@ -335,6 +399,13 @@ static int32_t PlaybackContinue(Context_t  *context)
 
         set_pause_timeout(0);
 
+#ifdef HAVE_DREAMNEXTGEN
+        if (context->playback->isForwarding || context->playback->BackWard)
+        {
+            PlaybackTrickEnd(context);
+        }
+#endif
+
         context->output->Command(context, OUTPUT_CONTINUE, NULL);
 
         context->playback->isPaused     = 0;
@@ -346,6 +417,16 @@ static int32_t PlaybackContinue(Context_t  *context)
         context->playback->BackWard     = 0;
         context->playback->SlowMotion   = 0;
         context->playback->Speed        = 1;
+
+#ifdef HAVE_DREAMNEXTGEN
+        /* play on from the last picture of the trick play */
+        if (trickResumePts != INVALID_PTS_VALUE)
+        {
+            int64_t sec = trickResumePts / 90000;
+            trickResumePts = INVALID_PTS_VALUE;
+            PlaybackSeek(context, &sec, 1);
+        }
+#endif
     }
     else
     {
@@ -492,6 +573,17 @@ static int32_t PlaybackPts(Context_t  *context, int64_t *pts)
     if (context->playback->isPlaying)
     {
         ret = context->output->Command(context, OUTPUT_PTS, pts);
+#ifdef HAVE_DREAMNEXTGEN
+        /* the position in the stream, not the scaled PTS of the trick play */
+        if (ret == 0 && (context->playback->isForwarding || context->playback->BackWard))
+        {
+            context->container->selectedContainer->Command(context, CONTAINER_TRICK_PTS, pts);
+        }
+        else if (ret == 0 && trickResumePts != INVALID_PTS_VALUE)
+        {
+            *pts = trickResumePts;
+        }
+#endif
     } 
     else
     {
@@ -768,6 +860,18 @@ static int32_t Command(void* _context, PlaybackCmd_t command, void *argument)
             ret = PlaybackInfo(context, (char**)argument);
             break;
         }
+#ifdef HAVE_DREAMNEXTGEN
+        case PLAYBACK_FASTFORWARD:
+        {
+            ret = PlaybackTrick(context, *(int32_t *)argument);
+            break;
+        }
+        case PLAYBACK_FASTBACKWARD:
+        {
+            ret = PlaybackTrick(context, -*(int32_t *)argument);
+            break;
+        }
+#endif
         case PLAYBACK_GET_FRAME_COUNT: 
         { 
             ret = PlaybackGetFrameCount(context, (uint64_t*)argument);
