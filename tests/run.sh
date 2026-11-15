@@ -53,6 +53,21 @@ for test in manager container output dvb pts pcm_export playback buffering; do
         -Wl,--gc-sections -pthread $libs ${FFMPEG_EXTRA_LIBS:-} -o "$tmp/$test"
     timeout 20 "$tmp/$test"
 done
+# The stall limit of http inputs: open, stream info and read, with the clock
+# of the container and those three calls taken over by the test. The play
+# thread needs what the player links with the container: all of tools/, the
+# box type of misc.c and the bundled mpeg4audio.c; section GC drops what is
+# not used.
+$cc -g -fsanitize=undefined -ffunction-sections -fdata-sections \
+    -Wno-deprecated-declarations -Iinclude -Iexternal \
+    -Dff_mpeg4audio_channels=exteplayer3_mpeg4audio_channels external/ffmpeg/src/mpeg4audio.c \
+    -I"$FFMPEG_BUILD" -I"$FFMPEG_SOURCE" \
+    tests/net_stall_test.c tools/*.c output/writer/common/misc.c \
+    -Wl,--gc-sections -pthread "$FFMPEG_BUILD/libavformat/libavformat.a" \
+    "$FFMPEG_BUILD/libavcodec/libavcodec.a" "$FFMPEG_BUILD/libswresample/libswresample.a" \
+    "$FFMPEG_BUILD/libavutil/libavutil.a" -lm ${FFMPEG_EXTRA_LIBS:-} -o "$tmp/net_stall"
+timeout 20 "$tmp/net_stall"
+rm -f "$tmp/net_stall"
 # The play thread of the container, started through the pthread_create() of
 # the test: the thread has ended when container_ffmpeg_play() goes on.
 $cc -g -fsanitize=undefined -ffunction-sections -fdata-sections \
