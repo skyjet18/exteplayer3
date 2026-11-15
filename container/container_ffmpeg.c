@@ -3053,7 +3053,7 @@ static void FFMPEGThread(Context_t *context)
 #endif
 #ifdef HAVE_FLV2MPEG4_CONVERTER
                 if (get_codecpar(avContextTab[cAVIdx]->streams[packet.stream_index])->codec_id == AV_CODEC_ID_FLV1 &&
-                    0 == memcmp(videoTrack->Encoding, "V_MPEG4", 7) )
+                    0 == strcmp(videoTrack->Encoding, "V_MPEG4") )
                 {
 #ifdef HAVE_DREAMNEXTGEN
                     seekWaitVideoKey = false;
