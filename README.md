@@ -373,6 +373,16 @@ Chrome 106; a libavformat without that change would otherwise send
 `Lavf/<version>`, which some servers refuse. `-u` or `-f user_agent=...` replaces it, and a
 `User-Agent:` line given with `-h` takes precedence over both.
 
+## Video track for enigma2
+
+Every `v_c` line of a video track (size, frame rate, progressive,
+aspect) also goes as one datagram to `/var/run/video.socket`, as in the
+OE-Alliance tree. Recent OpenATV-based enigma2 versions read it to follow
+the video of a player that a plugin started directly, e.g. for the automatic
+resolution. Without a listener the datagram is dropped; nothing waits for
+it. `-DEXTEPLAYER_VIDEO_SOCKET='"path"'` changes the path, an empty string
+turns it off.
+
 ## Optional decoded PCM export
 
 `-K` enables `/tmp/exteplayer3_pcm_audio.fifo`, otherwise export is disabled.
