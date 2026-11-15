@@ -122,6 +122,9 @@ int store_avcodec_context(AVCodecContext *avCodecCtx, uint32_t cAVIdx, int id)
     }
     
     memset(ptr, 0x00, sizeof(CodecCtxStoreItem_t));
+    ptr->cAVIdx = cAVIdx;
+    ptr->id = id;
+    ptr->avCodecCtx = avCodecCtx;
     ptr->next = g_codecCtxStoreListHead;
     g_codecCtxStoreListHead = ptr;
     
@@ -157,10 +160,15 @@ static AVCodecContext *wrapped_avcodec_get_context(uint32_t cAVIdx, AVStream *st
 #else
         avCodecCtx->pkt_timebase = stream->time_base;
 #endif
-        store_avcodec_context(avCodecCtx, cAVIdx, stream->id);
-
-        return avCodecCtx;
+        /* only a stored context is found again and flushed */
+        if (store_avcodec_context(avCodecCtx, cAVIdx, stream->id) < 0)
+        {
+            ffmpeg_err("storing the context for stream %d failed\n", (int)stream->id);
+            avcodec_free_context(&avCodecCtx);
+            return NULL;
+        }
     }
+    return avCodecCtx;
 #else
     return stream->codec;
 #endif
