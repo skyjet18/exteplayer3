@@ -87,9 +87,124 @@ static void thread_is_not_created(void)
     assert(threads_started == 3 && threads_ended == 3 && !hasPlayThreadStarted);
 }
 
+/* Seeks from the decoder position: a decoder that has shown no frame of this
+ * playback yet reports one of the playback before. A subtitle switch at the
+ * start seeks 0 s from there; it went to the end of the earlier playback. */
+
+static Context_t stale_context;
+static Track_t stale_track;
+static int64_t decoder_pts, stale_expected;
+static int stale_step, stale_writes;
+
+static int stale_playback(void *opaque, PlaybackCmd_t command, void *argument)
+{
+    (void)opaque;
+    if (command == PLAYBACK_LENGTH)
+        *(int64_t *)argument = 30;
+    else {
+        assert(command == PLAYBACK_PTS);
+        *(int64_t *)argument = decoder_pts;
+    }
+    return 0;
+}
+
+static int no_track(void *opaque, ManagerCmd_t command, void *argument)
+{
+    (void)opaque;
+    assert(command == MANAGER_GET_TRACK);
+    *(Track_t **)argument = NULL;
+    return 0;
+}
+
+static int stale_audio(void *opaque, ManagerCmd_t command, void *argument)
+{
+    (void)opaque;
+    assert(command == MANAGER_GET_TRACK);
+    *(Track_t **)argument = &stale_track;
+    return 0;
+}
+
+/* The seek of a track switch or of a key, from what the decoder reports. */
+static void seek_from(int64_t position, int64_t seconds)
+{
+    decoder_pts = position;
+    assert(!container_ffmpeg_seek(&stale_context, seconds, 0));
+}
+
+/* The audio output: the play thread writes here without the container lock. */
+static int32_t stale_write(void *opaque, void *data)
+{
+    const AudioVideoOut_t *out = data;
+    (void)opaque;
+    /* The first packet behind a seek shows where it went. */
+    if (++stale_writes == 1 && stale_step)
+        assert(llabs(out->pts - stale_expected) < 90000);
+    if (stale_writes < 4)
+        return 0;
+    stale_writes = 0;
+    switch (stale_step++) {
+    case 0:
+        /* Four packets are written; the decoder reports 24 s of the playback before. */
+        stale_expected = 0;
+        seek_from(24 * 90000, 0);
+        break;
+    case 1:
+        /* The decoder shows this packet: the seek stays where it is. */
+        stale_expected = out->pts;
+        seek_from(out->pts, 0);
+        break;
+    case 2:
+        /* 24 s again, shown before that seek: a key seeks 5 s forward. */
+        stale_expected += 5 * 90000;
+        seek_from(24 * 90000, 5);
+        break;
+    default:
+        stale_context.playback->isPlaying = 0;
+    }
+    return 0;
+}
+
+static void seek_from_an_earlier_playback(void)
+{
+    static const uint8_t header[44] = {
+        'R', 'I', 'F', 'F', 0x24, 0x53, 7, 0, 'W', 'A', 'V', 'E', 'f', 'm', 't', ' ', 16, 0, 0, 0,
+        1, 0, 1, 0, 0x40, 0x1f, 0, 0, 0x80, 0x3e, 0, 0, 2, 0, 16, 0,
+        'd', 'a', 't', 'a', 0, 0x53, 7, 0};
+    static uint8_t samples[480000]; /* 30 s of 8 kHz mono 16-bit silence */
+    char name[] = "/tmp/exteplayer3-stale-XXXXXX";
+    PlaybackHandler_t playing = {.Command = stale_playback, .isPlaying = 1};
+    Manager_t none = {.Command = no_track}, audio = {.Command = stale_audio};
+    ManagerHandler_t managers = {.audio = &audio, .video = &none, .subtitle = &none};
+    Output_t audio_output = {.Write = stale_write}, subtitle_output = {0};
+    OutputHandler_t outputs = {.Command = output_command, .audio = &audio_output,
+                               .subtitle = &subtitle_output};
+    int file = mkstemp(name);
+    assert(file >= 0 && write(file, header, sizeof(header)) == sizeof(header));
+    assert(write(file, samples, sizeof(samples)) == sizeof(samples) && !close(file));
+    stale_context = (Context_t){.playback = &playing, .manager = &managers, .output = &outputs};
+    assert(!container_ffmpeg_init_av_context(&stale_context, name, 0, NULL, 0, 0));
+    stale_track.stream = avContextTab[0]->streams[0];
+    stale_track.inject_raw_pcm = 1;
+    FFMPEGThread(&stale_context);
+    assert(stale_step == 4);
+    if (use_custom_io[0]) {
+        AVIOContext *pb = avContextTab[0]->pb;
+        avformat_close_input(&avContextTab[0]);
+        av_freep(&pb->buffer);
+        avio_context_free(&pb);
+        fclose(custom_io_tab[0]->pFile);
+        free(custom_io_tab[0]);
+        custom_io_tab[0] = NULL;
+        use_custom_io[0] = 0;
+    } else
+        avformat_close_input(&avContextTab[0]);
+    unlink(name);
+}
+
 int main(void)
 {
     thread_ends_at_once();
     thread_is_not_created();
+    seek_from_an_earlier_playback();
     return 0;
 }
