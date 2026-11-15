@@ -58,7 +58,12 @@
 #define cERR_LINUXDVB_ERROR        -1
 
 static const char VIDEODEV[] = "/dev/dvb/adapter0/video0";
+#ifdef HAVE_DREAMNEXTGEN
+/* the audio decoder of the dreamaudiod service */
+static const char AUDIODEV[] = "/dev/dvb/adapter0/dreamaudio0";
+#else
 static const char AUDIODEV[] = "/dev/dvb/adapter0/audio0";
+#endif
 
 static int videofd 	= -1;
 static int audiofd 	= -1;
@@ -182,6 +187,10 @@ static int LinuxDvbApplyAVSync(Context_t *context)
     int requested = context && context->playback ? context->playback->AVSync : 0;
     int dash = context && context->playback && context->playback->isDash;
     int enabled = dash ? requested : 0;
+#ifdef HAVE_DREAMNEXTGEN
+    /* The Dreambox kernel audio backend also needs sync for non-DASH streams. */
+    enabled = 1;
+#endif
     if (ioctl(audiofd, AUDIO_SET_AV_SYNC, enabled) == -1)
     {
         applied_avsync = -1;
@@ -497,6 +506,14 @@ int LinuxDvbOpen(Context_t  *context __attribute__((unused)), char *type)
         {
             linuxdvb_err("AUDIO_SELECT_SOURCE: ERROR %d, %s\n", errno, strerror(errno));
         }
+
+#ifdef HAVE_DREAMNEXTGEN
+        /* the kernel syncs the audio of the dreamaudio device to the video */
+        if (ioctl(audiofd, AUDIO_SET_AV_SYNC, 1) == -1)
+        {
+            linuxdvb_err("AUDIO_SET_AV_SYNC: ERROR %d, %s\n", errno, strerror(errno));
+        }
+#endif
         
         if (ioctl( audiofd, AUDIO_PAUSE) == -1)
         {

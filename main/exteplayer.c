@@ -1183,6 +1183,10 @@ int main(int argc, char* argv[])
     /* xcode: the audio transcoding this build can do, 1: to AC3 (-Z, -X), 2: to AAC-LC (-Y), 4: to E-AC-3 (-E) */
     E2iSendMsg("{\"EPLAYER3_EXTENDED\":{\"version\":%d"
                ",\"xcode\":%d"
+#ifdef HAVE_DREAMNEXTGEN
+               /* winds on keyframes with f<speed> and b<speed> */
+               ",\"trick\":1"
+#endif
                "}}\n", 186,
                audio_transcode_caps());
 
@@ -1249,6 +1253,17 @@ int main(int argc, char* argv[])
         exit(1);
     }
     
+#ifdef HAVE_DREAMNEXTGEN
+    /* The dreamaudiod service decodes or passes through what has a PES
+     * writer (AC-3, E-AC-3, DTS, AAC, MPEG audio); the rest goes to it as
+     * PCM. Must run after ParseParams, serviceapp's -a/-n would clear it.
+     * TrueHD has no PES writer in this tree, it is always decoded. */
+    wma_software_decoder_set(1);
+    vorbis_software_decoder_set(1);
+    opus_software_decoder_set(1);
+    amr_software_decoder_set(1);
+#endif
+
     ffmpeg_av_dict_set("fake_last_subtitle", "1", 0);
 
     process_suburi(&playbackFiles);

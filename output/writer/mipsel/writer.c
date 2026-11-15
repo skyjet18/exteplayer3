@@ -86,6 +86,9 @@ static Writer_t * AvailableWriter[] = {
     &WriterVideoMJPEG,
     &WriterVideoRV40,
     &WriterVideoRV30,
+#ifdef HAVE_DREAMNEXTGEN
+    &WriterVideoAVS,
+#endif
     &WriterVideoAVS2,
     NULL
 };

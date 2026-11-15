@@ -83,6 +83,9 @@ extern Writer_t WriterFramebuffer;
 extern Writer_t WriterPipe;
 extern Writer_t WriterVideoRV30;
 extern Writer_t WriterVideoRV40;
+#ifdef HAVE_DREAMNEXTGEN
+extern Writer_t WriterVideoAVS;
+#endif
 extern Writer_t WriterVideoAVS2;
 
 Writer_t* getWriter(char* encoding);
