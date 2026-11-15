@@ -316,8 +316,9 @@ The full host build uses fake DVB output directed to `/dev/null` and disables
 the production termination socket. It also builds an HTTP-seek helper.
 The host-only build namespaces an old bundled FFmpeg table symbol to avoid
 a collision with modern static libavcodec. It does not modify receiver builds.
-The BitBake source list includes the new `tools/pcm_export.c`; other external
-build recipes with explicit source lists must include it too.
+The BitBake recipe compiles the source directories with shell globs, so new
+source files there need no recipe change. Other external build recipes with
+explicit source lists must include new files such as `tools/pcm_export.c`.
 
 The integration fixture needs FFmpeg's `file/http/tcp` protocols, MPEG-TS/HLS,
 MOV/MP4, DASH, Matroska, rawvideo, S16LE and SRT demuxers, MPEG-TS/MP4/DASH/Matroska muxers,
