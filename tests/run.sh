@@ -6,6 +6,27 @@ cd "$(dirname "$0")/.."
 tmp=$(mktemp -d)
 trap 'rm -f "$tmp/manager" "$tmp/container" "$tmp/output" "$tmp/dvb" "$tmp/pts" "$tmp/pcm_export" "$tmp/playback" "$tmp/buffering"; rmdir "$tmp"' EXIT HUP INT TERM
 cc=${CC:-cc}
+# Decoder restarts of the DVB output: the audio restart behind a buffer clear
+# and the video writer on OUTPUT_SWITCH "video".
+$cc -g -fsanitize=undefined -ffunction-sections -fdata-sections \
+    -Wno-deprecated-declarations -Iinclude -Iexternal -I"$FFMPEG_BUILD" -I"$FFMPEG_SOURCE" \
+    tests/dvb_restart_test.c tools/debug.c -Wl,--gc-sections -pthread -o "$tmp/dvb_restart"
+timeout 20 "$tmp/dvb_restart"
+rm -f "$tmp/dvb_restart"
+# The live start hold: the default of the box taken by the play thread, and
+# EP3_LIVE_SYNC, at the first video packet of a stream without a duration.
+# The play thread needs what the player links with the container: all of
+# tools/ and the bundled mpeg4audio.c; section GC drops what is not used.
+$cc -g -fsanitize=undefined -ffunction-sections -fdata-sections \
+    -Wno-deprecated-declarations -Iinclude -Iexternal \
+    -Dff_mpeg4audio_channels=exteplayer3_mpeg4audio_channels external/ffmpeg/src/mpeg4audio.c \
+    -I"$FFMPEG_BUILD" -I"$FFMPEG_SOURCE" \
+    tests/live_sync_test.c tools/*.c \
+    -Wl,--gc-sections -pthread "$FFMPEG_BUILD/libavformat/libavformat.a" \
+    "$FFMPEG_BUILD/libavcodec/libavcodec.a" "$FFMPEG_BUILD/libswresample/libswresample.a" \
+    "$FFMPEG_BUILD/libavutil/libavutil.a" -lm ${FFMPEG_EXTRA_LIBS:-} -o "$tmp/live_sync"
+timeout 20 "$tmp/live_sync"
+rm -f "$tmp/live_sync"
 for test in manager container output dvb pts pcm_export playback buffering; do
     sources="tests/${test}_test.c tools/debug.c"
     if [ "$test" = manager ]; then
