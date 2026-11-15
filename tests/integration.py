@@ -8,6 +8,7 @@ import math
 import os
 from pathlib import Path
 import queue
+import socket
 import struct
 import subprocess
 import tempfile
@@ -234,6 +235,8 @@ def main():
     parser.add_argument("--player", required=True)
     parser.add_argument("--ffmpeg", required=True)
     parser.add_argument("--pcm-fifo", help="Isolated path compiled into the host player")
+    parser.add_argument("--video-socket", default="/tmp/exteplayer3-host-video.socket",
+                        help="Video socket path compiled into the host player")
     args = parser.parse_args()
     with tempfile.TemporaryDirectory(prefix="exteplayer3-integration-") as directory:
         root = Path(directory)
@@ -1052,6 +1055,27 @@ def main():
                     player.process.wait()
                 player.stop()
             print("PASS closed command pipe: playback stops and the player exits")
+
+            # The video track also goes to the video socket of enigma2.
+            listener = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
+            try:
+                if os.path.exists(args.video_socket):
+                    os.unlink(args.video_socket)
+                listener.bind(args.video_socket)
+                listener.settimeout(10)
+                player = Player(args.player, str(media))
+                try:
+                    video = player.wait("v_c")
+                    datagram = listener.recv(4096)
+                finally:
+                    player.stop()
+            finally:
+                listener.close()
+                if os.path.exists(args.video_socket):
+                    os.unlink(args.video_socket)
+            assert datagram.endswith(b"\n") and json.loads(datagram) == {"v_c": video}, datagram
+            assert video["w"] == 64 and video["h"] == 64, video
+            print("PASS video socket: the v_c line as one datagram")
         finally:
             server.shutdown()
             server.server_close()

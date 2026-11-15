@@ -15,6 +15,7 @@ ${CC:-cc} ${CFLAGS:-} -g -D_FILE_OFFSET_BITS=64 -D_LARGEFILE64_SOURCE \
     -DEXTEPLAYER_FAKE_VIDEO="\"${HOST_VIDEO_OUTPUT:-/dev/null}\"" \
     -DEXTEPLAYER_FAKE_AUDIO="\"${HOST_AUDIO_OUTPUT:-/dev/null}\"" \
     -DEXTEPLAYER_TERM_SOCKET='""' \
+    -DEXTEPLAYER_VIDEO_SOCKET="\"${HOST_VIDEO_SOCKET:-/tmp/exteplayer3-host-video.socket}\"" \
     -Wno-deprecated-declarations -Iinclude -Iexternal -Iexternal/flv2mpeg4 \
     -I"$FFMPEG_SOURCE" -I"$FFMPEG_BUILD" \
     main/exteplayer.c tools/debug.c tools/strbuffer.c tools/pcm_export.c $alias_flags \
