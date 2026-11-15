@@ -32,6 +32,19 @@ for test in manager container output dvb pts pcm_export playback buffering; do
         -Wl,--gc-sections -pthread $libs ${FFMPEG_EXTRA_LIBS:-} -o "$tmp/$test"
     timeout 20 "$tmp/$test"
 done
+# The play thread of the container, started through the pthread_create() of
+# the test: the thread has ended when container_ffmpeg_play() goes on.
+$cc -g -fsanitize=undefined -ffunction-sections -fdata-sections \
+    -Wno-deprecated-declarations -Iinclude -Iexternal \
+    -I"$FFMPEG_BUILD" -I"$FFMPEG_SOURCE" \
+    tests/play_thread_test.c tools/debug.c tools/pcm_export.c \
+    -Wl,--gc-sections -pthread "$FFMPEG_BUILD/libavformat/libavformat.a" \
+    "$FFMPEG_BUILD/libavcodec/libavcodec.a" "$FFMPEG_BUILD/libswresample/libswresample.a" \
+    "$FFMPEG_BUILD/libavutil/libavutil.a" -lm ${FFMPEG_EXTRA_LIBS:-} -o "$tmp/play_thread"
+status=0
+timeout 20 "$tmp/play_thread" || status=$?
+rm -f "$tmp/play_thread"
+[ "$status" = 0 ] || exit "$status"
 # The subtitle and writer programs link no command table, so ASan checks them too.
 trap 'rm -rf "$tmp"' EXIT HUP INT TERM
 export ASAN_OPTIONS=detect_leaks=0
