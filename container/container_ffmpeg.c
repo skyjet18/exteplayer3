@@ -1995,16 +1995,10 @@ static void ls_on_video(Context_t *context, int64_t pts)
  * count of the samples before the count starts again from the stream */
 #define AUDIO_XCODE_MAX_DRIFT (60 * 90)
 
+/* per codec of the stream: 0 off, 1 to AC3, 2 to E-AC-3 */
 static int32_t dts_ac3_transcode = 0;
 static int32_t truehd_ac3_transcode = 0;
 static int32_t aac_he_transcode = 0;
-/* DTS and TrueHD go to E-AC-3 instead of AC3 */
-static int32_t eac3_transcode = 0;
-
-void eac3_transcoder_set(const int32_t val)
-{
-    eac3_transcode = val;
-}
 
 void aac_he_transcoder_set(const int32_t val)
 {
@@ -2085,15 +2079,20 @@ static int AudioTranscoderTarget(AVStream *stream, const char *encoding)
 {
     enum AVCodecID id = get_codecpar(stream)->codec_id;
     int target = 0;
+    int32_t dolby = 0;
 
     /* the PCM export needs the decoded samples of every track */
     if (pcm_audio_export_enabled)
         return 0;
 
-    if ((id == AV_CODEC_ID_DTS && dts_ac3_transcode) ||
-        ((id == AV_CODEC_ID_TRUEHD || id == AV_CODEC_ID_MLP) && truehd_ac3_transcode))
+    if (id == AV_CODEC_ID_DTS)
+        dolby = dts_ac3_transcode;
+    else if (id == AV_CODEC_ID_TRUEHD || id == AV_CODEC_ID_MLP)
+        dolby = truehd_ac3_transcode;
+
+    if (dolby)
         /* AC3 also when E-AC-3 is asked for and its encoder is missing */
-        target = (eac3_transcode && (audio_transcode_caps() & AUDIO_XCODE_EAC3)) ? AUDIO_XCODE_EAC3 : AUDIO_XCODE_AC3;
+        target = (dolby == 2 && (audio_transcode_caps() & AUDIO_XCODE_EAC3)) ? AUDIO_XCODE_EAC3 : AUDIO_XCODE_AC3;
     /* only AAC that would go to the decoder of the box: not what is decoded
      * in software by an option or because no ADTS header can describe it */
     else if (aac_he_transcode && (!strcmp(encoding, "A_AAC") || !strcmp(encoding, "A_AAC_LATM")) &&
