@@ -111,6 +111,11 @@ $cc -g -fsanitize=address,undefined -ffunction-sections -fdata-sections -Dmalloc
     "$FFMPEG_BUILD/libavcodec/libavcodec.a" "$FFMPEG_BUILD/libavutil/libavutil.a" -lm \
     ${FFMPEG_EXTRA_LIBS:-} -o "$tmp/writers_alloc"
 timeout 20 "$tmp/writers_alloc"
+# The DTS-HD bypass mode: the ioctls of the DVB output before the first DTS frame.
+$cc -g -fsanitize=undefined -ffunction-sections -fdata-sections \
+    -Wno-deprecated-declarations -Iinclude -Iexternal -I"$FFMPEG_BUILD" -I"$FFMPEG_SOURCE" \
+    tests/dts_hd_test.c tools/debug.c -Wl,--gc-sections -pthread -o "$tmp/dts_hd"
+timeout 20 "$tmp/dts_hd"
 $cc -g -fsanitize=address,undefined -ffunction-sections -fdata-sections -Iinclude -Iexternal \
     -I"$FFMPEG_BUILD" -I"$FFMPEG_SOURCE" tests/buffering_leak_test.c tools/debug.c \
     -Wl,--gc-sections -pthread -o "$tmp/buffering_leak"
