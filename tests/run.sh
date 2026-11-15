@@ -93,6 +93,13 @@ for test in subtitle writers buffering_chunk progressive; do
         -Wl,--gc-sections -pthread $libs ${FFMPEG_EXTRA_LIBS:-} -o "$tmp/$test"
     timeout 20 "$tmp/$test"
 done
+# The SPS level limit of the H.264 writer with the default of a MIPS build.
+sources="tests/h264_level_test.c tools/debug.c output/writer/common/pes.c output/writer/common/misc.c"
+sources="$sources output/writer/mipsel/h264.c output/writer/mipsel/writer.c"
+$cc -g -fsanitize=undefined -ffunction-sections -fdata-sections -DH264_LEVEL41_DEFAULT=1 \
+    -Iinclude -Iexternal -I"$FFMPEG_BUILD" -I"$FFMPEG_SOURCE" $sources \
+    -Wl,--gc-sections -pthread -o "$tmp/h264_level"
+timeout 20 "$tmp/h264_level"
 # The open program asks LeakSanitizer itself after single cases. Without ASan
 # it registers no globals, so section GC still drops the command table.
 $cc -g -fsanitize=leak,undefined -ffunction-sections -fdata-sections \
