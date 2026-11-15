@@ -205,3 +205,14 @@ $cc -g -fsanitize=undefined -ffunction-sections -fdata-sections \
     tests/video_info_test.c tools/debug.c manager/manager.c manager/audio.c manager/video.c manager/subtitle.c \
     -Wl,--gc-sections -pthread ${FFMPEG_EXTRA_LIBS:-} -o "$tmp/video_info"
 timeout 20 "$tmp/video_info"
+# Software decoded audio of the play thread, from a demuxer and a decoder of
+# the test: the timestamps the PCM goes out with.
+$cc -g -fsanitize=undefined -ffunction-sections -fdata-sections \
+    -Wno-deprecated-declarations -Iinclude -Iexternal \
+    -Dff_mpeg4audio_channels=exteplayer3_mpeg4audio_channels external/ffmpeg/src/mpeg4audio.c \
+    -I"$FFMPEG_BUILD" -I"$FFMPEG_SOURCE" \
+    tests/audio_pts_test.c tools/debug.c tools/pcm_export.c tools/hevc_hdr.c \
+    -Wl,--gc-sections -pthread "$FFMPEG_BUILD/libavformat/libavformat.a" \
+    "$FFMPEG_BUILD/libavcodec/libavcodec.a" "$FFMPEG_BUILD/libswresample/libswresample.a" \
+    "$FFMPEG_BUILD/libavutil/libavutil.a" -lm ${FFMPEG_EXTRA_LIBS:-} -o "$tmp/audio_pts"
+timeout 20 "$tmp/audio_pts"
