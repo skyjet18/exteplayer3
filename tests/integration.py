@@ -879,6 +879,65 @@ def main():
             finally:
                 player.stop()
             print("PASS progressive local file with an http audio file: played and read after a seek")
+
+            # Long transcoding options. Without a file the player reports what
+            # the options select and ends with the usage text.
+            def selected(*options):
+                result = subprocess.run([args.player, *options], capture_output=True, timeout=5)
+                assert result.returncode == 1, (options, result.returncode)
+                lines = result.stdout.decode(errors="replace").splitlines()
+                assert not any("getopt returned" in line for line in lines), (options, lines)
+                return [line for line in lines
+                        if "will be transcoded" in line or "transcoding (" in line
+                        or line.startswith("No ")]
+
+            caps = json.loads(subprocess.run(
+                [args.player], capture_output=True, timeout=5).stderr.splitlines()[0])
+            if caps["EPLAYER3_EXTENDED"]["xcode"] == 7:
+                dts_ac3, dts_eac3 = (f"DTS will be transcoded to {codec} 5.1"
+                                     for codec in ("AC3", "E-AC-3"))
+                truehd_ac3, truehd_eac3 = (f"TrueHD will be transcoded to {codec} 5.1"
+                                           for codec in ("AC3", "E-AC-3"))
+                both_ac3, both_eac3 = (f"DTS and TrueHD will be transcoded to {codec} 5.1"
+                                       for codec in ("AC3", "E-AC-3"))
+                aac = "HE-AAC will be transcoded to AAC-LC"
+                for options, expected in (
+                        (["-Z"], [dts_ac3]), (["--dts-ac3"], [dts_ac3]),
+                        (["-X"], [truehd_ac3]), (["--truehd-ac3"], [truehd_ac3]),
+                        (["-Y"], [aac]), (["--heaac-aaclc"], [aac]),
+                        (["-Z", "-X"], [both_ac3]),
+                        (["--dts-ac3", "--truehd-ac3"], [both_ac3]),
+                        (["-Z", "-X", "-E"], [both_eac3]),
+                        (["--dts-ac3", "--truehd-ac3", "-E"], [both_eac3]),
+                        (["--dts-eac3"], [dts_eac3]), (["--truehd-eac3"], [truehd_eac3]),
+                        (["--dts-eac3", "--truehd-eac3"], [both_eac3]),
+                        (["--dts-eac3", "-X"], [dts_eac3, truehd_ac3]),
+                        (["-Z", "--truehd-eac3"], [dts_ac3, truehd_eac3]),
+                        (["-E", "--dts-eac3"], [dts_eac3]),
+                        (["--dts-ac3", "--dts-eac3"], [dts_eac3]),
+                        (["--dts-eac3", "--dts-ac3", "--truehd-ac3"], [dts_eac3, truehd_ac3]),
+                        (["--truehd-eac3", "-X", "-Z", "-Y"], [dts_ac3, truehd_eac3, aac]),
+                        (["--dts-e"], [dts_eac3]),
+                        (["-E"], [])):
+                    assert selected(*options) == expected, (options, selected(*options))
+                off = selected("-K", "--dts-eac3", "--truehd-ac3", "--heaac-aaclc")
+                assert len(off) == 1 and "is off" in off[0], off
+                print("PASS long transcoding options: aliases, E-AC-3 per source codec, precedence, -K")
+            else:
+                print("SKIP long transcoding options: no AC3, AAC and E-AC-3 encoder in this FFmpeg")
+
+            for option in (["--dts-dts"], ["--dts"], ["--dts-eac3=1"], ["--Z"]):
+                invalid = subprocess.run([args.player, *option, str(media)],
+                                         capture_output=True, timeout=5)
+                assert invalid.returncode != 0, option
+                assert b"getopt returned" in invalid.stdout, option
+            player = Player(args.player, "--dts-eac3", "--truehd-ac3", "--heaac-aaclc", str(media))
+            try:
+                assert player.wait("PLAYBACK_OPEN")["sts"] == 0
+                assert player.wait("PLAYBACK_PLAY")["sts"] == 0
+            finally:
+                player.stop()
+            print("PASS long options: unknown, ambiguous and with a value rejected; playback starts with them")
         finally:
             server.shutdown()
             server.server_close()
