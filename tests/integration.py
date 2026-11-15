@@ -1035,6 +1035,23 @@ def main():
                 player.stop()
             assert agents and all(agent == browser for _, agent in agents), agents
             print("PASS HTTP User-Agent: browser string without -u (also HLS and -x), -u and -h win")
+
+            # The front end goes away without "q": its end of the command pipe closes.
+            long_media = root / "long.ts"
+            run(args.ffmpeg, "-y", "-stream_loop", "-1", "-i", str(media), "-c", "copy",
+                "-t", "60", str(long_media))
+            player = Player(args.player, str(long_media))
+            try:
+                assert player.wait("PLAYBACK_PLAY")["sts"] == 0
+                player.process.stdin.close()
+                assert player.wait("PLAYBACK_STOP")["sts"] == 0
+                player.process.wait(timeout=10)
+            finally:
+                if player.process.poll() is None:
+                    player.process.kill()
+                    player.process.wait()
+                player.stop()
+            print("PASS closed command pipe: playback stops and the player exits")
         finally:
             server.shutdown()
             server.server_close()
