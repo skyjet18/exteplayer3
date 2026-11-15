@@ -64,3 +64,13 @@ for test in subtitle writers buffering_chunk progressive; do
         -Wl,--gc-sections -pthread $libs ${FFMPEG_EXTRA_LIBS:-} -o "$tmp/$test"
     timeout 20 "$tmp/$test"
 done
+# The open program asks LeakSanitizer itself after single cases. Without ASan
+# it registers no globals, so section GC still drops the command table.
+$cc -g -fsanitize=leak,undefined -ffunction-sections -fdata-sections \
+    -Wno-deprecated-declarations -Iinclude -Iexternal \
+    -I"$FFMPEG_BUILD" -I"$FFMPEG_SOURCE" \
+    tests/container_open_test.c tools/debug.c tools/pcm_export.c \
+    -Wl,--gc-sections -pthread "$FFMPEG_BUILD/libavformat/libavformat.a" \
+    "$FFMPEG_BUILD/libavcodec/libavcodec.a" "$FFMPEG_BUILD/libswresample/libswresample.a" \
+    "$FFMPEG_BUILD/libavutil/libavutil.a" -lm ${FFMPEG_EXTRA_LIBS:-} -o "$tmp/container_open"
+timeout 20 "$tmp/container_open"

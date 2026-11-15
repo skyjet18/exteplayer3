@@ -663,7 +663,7 @@ static void ffmpeg_buf_free()
     ffmpeg_seek_org = NULL;
     ffmpeg_buf_read = NULL;
     ffmpeg_buf_write = NULL;
-    free(ffmpeg_buf);
+    av_free(ffmpeg_buf);
     ffmpeg_buf = NULL;
     ffmpeg_buf_valid_size = 0;
     ffmpeg_do_seek_ret = 0;

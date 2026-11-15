@@ -382,6 +382,55 @@ def main():
             finally:
                 player.stop()
             print("PASS -U 0: Opus passed through, Vorbis still software decoded")
+
+            # Follow-up fixes of main and of the container.
+            for option in ("-x", "-F"):
+                unreadable = subprocess.run(
+                    [args.player, option, "iptv://" + str(root / "missing"), str(media)],
+                    input=b"q\n", capture_output=True, timeout=10)
+                assert unreadable.returncode == 1 and b"cannot be read" in unreadable.stdout, (
+                    option, unreadable)
+            print("PASS unreadable iptv:// file for -x and -F: parameter error, not played without it")
+
+            # A pipe has no size: ftell() fails on it.
+            sizeless = subprocess.run([args.player, "iptv:///dev/stdin"], input=b"/missing\n",
+                                      capture_output=True, timeout=10)
+            assert sizeless.returncode == 1 and b"cannot be read" in sizeless.stdout, sizeless
+            print("PASS iptv:// file without a size: parameter error, nothing read into one byte")
+
+            latin = root / "latin1.mkv"
+            language = b"Fran\xe7ais \xc3\xa9t\xc3\xa9"  # 0xE7 is Latin-1, the rest UTF-8
+            run(args.ffmpeg, "-y", "-i", str(media), "-c", "copy",
+                "-metadata:s:a:0", b"language=" + language, str(latin))
+            player = Player(args.player, str(latin))
+            try:
+                tracks = player.wait("a_l")
+                expected = language.replace(b"\xe7", b"\xc3\xa7").decode()
+                assert [track["n"] for track in tracks] == [expected], tracks
+            finally:
+                player.stop()
+            print("PASS track names: a Latin-1 byte escaped, the line stays UTF-8")
+
+            sound = root / "sound.ts"
+            run(args.ffmpeg, "-y", "-i", str(media), "-vn", "-c", "copy", str(sound))
+            resources["/sound.ts"] = sound.read_bytes()
+            player = Player(args.player, "-o", "1", "-x", base + "/sound.ts", str(media))
+            try:
+                assert player.wait("PLAYBACK_PLAY")["sts"] == 0
+                deadline = time.monotonic() + 20
+                for back in (False, True):
+                    if back:
+                        player.command("gf 0")
+                        assert player.wait("PLAYBACK_SEEK_ABS")["sts"] == 0
+                    while True:  # the position is that of the video in the local file
+                        player.command("j")
+                        if (player.wait("J")["ms"] < 3000) == back:
+                            break
+                        assert time.monotonic() < deadline, ("local file not read", back)
+                        time.sleep(0.05)
+            finally:
+                player.stop()
+            print("PASS progressive local file with an http audio file: played and read after a seek")
         finally:
             server.shutdown()
             server.server_close()
