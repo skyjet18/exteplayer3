@@ -612,6 +612,17 @@ static void hevc_hdr_update(Context_t *context, AVStream *stream, const AVPacket
     }
 }
 
+/* The track ID of a stream. AVStream.id belongs to the demuxer, which may
+ * find the stream of a packet by it (FLV: the track number, 0 for every
+ * stream of a file without multitrack), so it is read here, never changed.
+ * HLS IDs identify playlists, so embedded audio and video share one. */
+static int stream_track_id(const AVFormatContext *av, const AVStream *stream)
+{
+    if (!stream->id || is_hls_input(av))
+        return stream->index;
+    return stream->id;
+}
+
 static void select_subtitle_stream(AVFormatContext *av, int id)
 {
     unsigned int i;
@@ -620,7 +631,7 @@ static void select_subtitle_stream(AVFormatContext *av, int id)
         return;
     for (i = 0; i < av->nb_streams; i++)
         if (get_codecpar(av->streams[i])->codec_type == AVMEDIA_TYPE_SUBTITLE)
-            av->streams[i]->discard = av->streams[i]->id == id ?
+            av->streams[i]->discard = stream_track_id(av, av->streams[i]) == id ?
                 AVDISCARD_DEFAULT : AVDISCARD_ALL;
 }
 
@@ -2202,7 +2213,7 @@ static int AudioTranscoderSetupTrack(Track_t *track, uint32_t avIdx, AVStream *s
     c = codec ? wrapped_avcodec_get_context(avIdx, stream) : NULL;
     if (!c || (!avcodec_is_open(c) && avcodec_open2(c, codec, NULL) < 0))
     {
-        ffmpeg_err("no decoder to transcode audio stream %d, it is played as it is\n", stream->id);
+        ffmpeg_err("no decoder to transcode audio stream %d, it is played as it is\n", track->Id);
         return 0;
     }
 
@@ -2981,7 +2992,8 @@ static void FFMPEGThread(Context_t *context)
             Track_t *audioTrack = NULL;
             Track_t *subtitleTrack = NULL;
 
-            int32_t pid = avContextTab[cAVIdx]->streams[packet.stream_index]->id;
+            int32_t pid = stream_track_id(avContextTab[cAVIdx],
+                                          avContextTab[cAVIdx]->streams[packet.stream_index]);
             
             multiContextLastPts[cAVIdx] = doCalcPts(avContextTab[cAVIdx]->start_time,
                 avContextTab[cAVIdx]->streams[packet.stream_index]->time_base, packet.pts);
@@ -5004,14 +5016,10 @@ int32_t container_ffmpeg_update_tracks(Context_t *context, char *filename, int32
                ffmpeg_printf(1, "%d. encoding = %s - version %d\n", n, encoding, version);
             }
 
-            /* HLS IDs identify playlists, so embedded audio and video share one. */
-            if (!stream->id || is_hls_input(avContext))
-            {
-                stream->id = n;
-            }
             ffmpeg_printf(10, "track identity: context=%u format=%s index=%d previous_id=%d id=%d type=%d\n",
                           cAVIdx, avContext->iformat ? avContext->iformat->name : "unknown",
-                          stream->index, previous_id, stream->id, get_codecpar(stream)->codec_type);
+                          stream->index, previous_id, stream_track_id(avContext, stream),
+                          get_codecpar(stream)->codec_type);
 
             /* some values in track are unset and therefor copyTrack segfaults.
              * so set it by default to NULL!
@@ -5083,7 +5091,7 @@ int32_t container_ffmpeg_update_tracks(Context_t *context, char *filename, int32
                     track.Name      = "und";
                     track.Encoding  = encoding;
                     track.stream    = stream;
-                    track.Id        = ((AVStream *) (track.stream))->id;
+                    track.Id        = stream_track_id(avContext, stream);
 
                     track.duration = (int64_t)av_rescale(stream->duration, (int64_t)stream->time_base.num * 1000, stream->time_base.den); 
                     if(stream->duration == AV_NOPTS_VALUE || 0 == strncmp(avContext->iformat->name, "dash", 4)) 
@@ -5143,7 +5151,7 @@ int32_t container_ffmpeg_update_tracks(Context_t *context, char *filename, int32
                     track.channels       = get_codecpar(stream)->channels;
 #endif
                     track.stream         = stream;
-                    track.Id             = ((AVStream *) (track.stream))->id;
+                    track.Id             = stream_track_id(avContext, stream);
                     track.aacbuf         = 0;
                     track.have_aacheader = -1;
 
@@ -5468,7 +5476,7 @@ int32_t container_ffmpeg_update_tracks(Context_t *context, char *filename, int32
 
                     track.Encoding       = encoding;
                     track.stream         = stream;
-                    track.Id             = ((AVStream *) (track.stream))->id;
+                    track.Id             = stream_track_id(avContext, stream);
                     track.duration       = (int64_t)av_rescale(stream->duration, (int64_t)stream->time_base.num * 1000, stream->time_base.den);
                     
                     if(stream->duration == AV_NOPTS_VALUE) 
