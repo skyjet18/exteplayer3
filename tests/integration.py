@@ -1144,6 +1144,29 @@ def main():
             assert datagram.endswith(b"\n") and json.loads(datagram) == {"v_c": video}, datagram
             assert video["w"] == 64 and video["h"] == 64, video
             print("PASS video socket: the v_c line as one datagram")
+
+            # FFmpeg 8 and later find the stream of an FLV tag by AVStream.id;
+            # with the audio first, the video must keep the ID the demuxer gave.
+            spark = root / "spark.flv"
+            run(args.ffmpeg, "-y", "-f", "rawvideo", "-pixel_format", "yuv420p",
+                "-video_size", "64x64", "-framerate", "25", "-i", str(root / "video.yuv"),
+                "-f", "s16le", "-ar", "48000", "-ac", "2", "-i", str(audio),
+                "-map", "1:a", "-map", "0:v", "-c:a", "aac", "-c:v", "flv", "-t", "12", str(spark))
+            for option in ([], ["-4", "0"]):
+                player = Player(args.player, *option, str(spark))
+                try:
+                    assert player.wait("v_c")["e"] == ("V_FLV" if option else "V_MPEG4")
+                    deadline = time.monotonic() + 15
+                    position = 0
+                    while position < 6000:  # past the packets read while the streams were probed
+                        assert player.process.poll() is None, ("ended", option, position)
+                        assert time.monotonic() < deadline, (option, position)
+                        player.command("j")
+                        position = player.wait("J")["ms"]
+                        time.sleep(0.2)
+                finally:
+                    player.stop()
+            print("PASS FLV Sorenson Spark after the audio: played on, with and without flv2mpeg4")
         finally:
             server.shutdown()
             server.server_close()
