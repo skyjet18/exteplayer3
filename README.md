@@ -73,6 +73,17 @@ seeks; the earlier `79390c5c6d` fix alone does not cover real reopening.
 If the receiver rejects the DASH sync ioctl, startup/switch reports an error
 rather than silently running with hardware sync disabled.
 
+Audio and video share one timestamp origin, and the distance between their
+first timestamps is kept as the source has it. A track whose first timestamp
+is more than 60 seconds (modulo the 33-bit PTS range) away from where the
+other track is does not count from the same origin: no receiver can play such
+a distance as an A/V offset, and libavformat itself takes a timestamp more
+than 60 seconds before the first one of its program for one of the next 33-bit
+round, so that track arrives about 26.5 hours away. It then starts where the
+other track started. Distances up to 60 seconds, further streams of a track
+(audio renditions) and DASH are not affected. Nothing in such a source relates
+the two origins, so its lip sync is only as good as its interleaving.
+
 Add `-L LINUXDVB_DEBUG_LEVEL:10 -L LINUXDVB_SILENT:0` for hardware diagnostics.
 `hardware sync` reports the requested/applied policy. `hardware timing` samples
 both decoder PTS at startup, before a switch, and on first selected-audio
@@ -432,6 +443,8 @@ provider/SSAI behavior. Before deployment, check on representative receivers:
   short live windows, EVENT playlists and discontinuity/ad transitions.
 - Natural AV offsets, 33-bit PTS wrap, reordered video, audio/video clock
   resets, long stalls, pause/resume, repeated seeks and stream switches.
+- A source whose audio and video count from different origins (first
+  timestamps more than 60 seconds apart): audible audio and its lip sync.
 - AAC dejitter and passthrough versus software PCM; DTS/PES B-frame output,
   initial/changed H.264 SPS/PPS, busy decoder devices and stop latency.
 - MP4/MKV/adaptive subtitle selection and disabling, forced flags, ICY and
