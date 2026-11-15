@@ -51,6 +51,21 @@ def pgs_cues(path, cues):
     path.write_bytes(data)
 
 
+def tone_correlation(chunks):
+    """How much pieces of a left channel are the 500 Hz tone of the source (1 = it is).
+
+    The tone repeats after 96 samples. Each piece is compared with itself 96
+    samples later, so a gap between pieces (frames the PCM FIFO dropped) does
+    not matter; 0 for fewer than 4000 compared samples.
+    """
+    pairs = [pair for chunk in chunks for pair in zip(chunk, chunk[96:])]
+    if len(pairs) < 4000:
+        return 0
+    product = sum(a * b for a, b in pairs)
+    energy = math.sqrt(sum(a * a for a, _ in pairs) * sum(b * b for _, b in pairs))
+    return product / energy if energy else 0
+
+
 class Player:
     def __init__(self, executable, *args, env=None):
         self.events = queue.Queue()
@@ -1052,6 +1067,83 @@ def main():
                     player.process.wait()
                 player.stop()
             print("PASS closed command pipe: playback stops and the player exits")
+
+            # Options in an .mpd URL: taken out of the URL, the key decrypts the stream.
+            # A plain (not fragmented) MP4: FFmpeg writes the CENC sample
+            # information (senc) only into the sample table, a fragmented file
+            # would carry it for none of its fragments.
+            key, kid = "00112233445566778899aabbccddeeff", "0123456789abcdef0123456789abcdef"
+            run(args.ffmpeg, "-y", "-f", "s16le", "-ar", "48000", "-ac", "2", "-i", str(audio),
+                "-t", "8", "-c:a", "aac", "-b:a", "96k", "-movflags", "+faststart",
+                "-encryption_scheme", "cenc-aes-ctr", "-encryption_key", key, "-encryption_kid", kid,
+                str(root / "encrypted.mp4"))
+            encrypted = (root / "encrypted.mp4").read_bytes()
+            assert b"tenc" in encrypted and b"senc" in encrypted, "not encrypted"
+            # The media itself: FFmpeg gives the tone with the key, not without it.
+            for decryption in (["-decryption_key", key], []):
+                decoded = subprocess.run(
+                    [args.ffmpeg, *decryption, "-i", str(root / "encrypted.mp4"),
+                     "-f", "s16le", "-ac", "2", "-ar", "48000", "-"],
+                    stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=30).stdout
+                left = struct.unpack(f"<{len(decoded) // 4 * 2}h", decoded[:len(decoded) // 4 * 4])[::2]
+                correlation = tone_correlation([left[4800:]])
+                assert (correlation > 0.95) == bool(decryption), (decryption, len(decoded), correlation)
+            resources["/encrypted.mp4"] = encrypted
+            resources["/encrypted.mpd"] = (
+                '<?xml version="1.0"?>\n'
+                f'<MPD xmlns="{ns["d"]}" type="static" mediaPresentationDuration="PT8S" '
+                'minBufferTime="PT2S" profiles="urn:mpeg:dash:profile:isoff-on-demand:2011">'
+                '<Period><AdaptationSet contentType="audio" mimeType="audio/mp4">'
+                '<Representation id="0" codecs="mp4a.40.2" bandwidth="96000" audioSamplingRate="48000">'
+                '<BaseURL>encrypted.mp4</BaseURL></Representation></AdaptationSet></Period></MPD>\n'
+            ).encode()
+            requests.clear()
+            pcm = bytearray()
+            fifo = Path(args.pcm_fifo) if args.pcm_fifo else None
+            if fifo:
+                assert not fifo.exists(), "Use a new isolated FIFO path, never a production endpoint"
+                os.mkfifo(fifo, 0o600)
+                reader = os.open(fifo, os.O_RDONLY | os.O_NONBLOCK)
+            player = Player(args.player, *(["-K"] if fifo else []),
+                            base + f"/encrypted.mpd&1=0&5={key}")
+            try:
+                opened = player.wait("PLAYBACK_OPEN")
+                assert opened["file"] == base + "/encrypted.mpd" and opened["sts"] == 0, opened
+                assert player.wait("PLAYBACK_PLAY")["sts"] == 0
+                deadline = time.monotonic() + 10
+                while fifo and len(pcm) < 4 * 48000 and time.monotonic() < deadline:
+                    pcm.extend(read_fifo(reader))
+                    if player.process.poll() is not None:
+                        pcm.extend(read_fifo(reader))
+                        break
+                    time.sleep(0.005)
+            finally:
+                player.stop()
+                if fifo:
+                    os.close(reader)
+                    fifo.unlink()
+            assert ("/encrypted.mpd", 0) in requests, requests
+            assert not any("&" in path for path, _ in requests), requests
+            if fifo:
+                frames, offset = [], 0
+                while offset + 16 <= len(pcm):
+                    magic, rate, channels, bits, size = struct.unpack_from("<IIHHI", pcm, offset)
+                    assert magic == 0x504D4341 and channels == 2 and bits == 16
+                    if offset + 16 + size > len(pcm):
+                        break  # read only up to here
+                    frames.append(struct.unpack_from(f"<{size // 2}h", pcm, offset + 16)[::2])
+                    offset += 16 + size
+                # the first frame may still be the encoder delay
+                correlation = tone_correlation(frames[1:])
+                assert correlation > 0.95, (len(frames), sum(map(len, frames)), correlation)
+            resources["/media.ts&0=1"] = payload
+            player = Player(args.player, base + "/media.ts&0=1")
+            try:
+                assert player.wait("PLAYBACK_OPEN")["file"] == base + "/media.ts&0=1"
+                assert player.wait("PLAYBACK_PLAY")["sts"] == 0
+            finally:
+                player.stop()
+            print("PASS .mpd URL options: removed from the URL, the key decrypts; other URLs unchanged")
         finally:
             server.shutdown()
             server.server_close()
