@@ -425,6 +425,44 @@ def main():
             assert sizeless.returncode == 1 and b"cannot be read" in sizeless.stdout, sizeless
             print("PASS iptv:// file without a size: parameter error, nothing read into one byte")
 
+            # Variant selection: the top variant has Dirac video, for which there
+            # is no writer; the lower one has MPEG-2 video.
+            dirac = root / "dirac.ts"
+            run(args.ffmpeg, "-y", "-i", str(media), "-map", "0:v", "-map", "0:a",
+                "-vf", "scale=128:128", "-c:v", "vc2", "-strict", "-1", "-c:a", "copy",
+                str(dirac))
+            resources["/dirac.ts"] = dirac.read_bytes()
+            resources["/dirac.m3u8"] = (b"#EXTM3U\n#EXT-X-TARGETDURATION:12\n#EXTINF:12,\n"
+                                        b"dirac.ts\n#EXT-X-ENDLIST\n")
+            resources["/mixed.m3u8"] = (b"#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=100000\nlow.m3u8\n"
+                                        b"#EXT-X-STREAM-INF:BANDWIDTH=900000\ndirac.m3u8\n")
+            run(args.ffmpeg, "-y", "-i", str(media), "-map", "0:v", "-map", "0:v", "-map", "0:a",
+                "-filter:v:1", "scale=128:128", "-c:v:0", "mpeg2video", "-b:v:0", "100k",
+                "-c:v:1", "vc2", "-b:v:1", "2M", "-strict", "-1", "-c:a", "aac", "-t", "6",
+                "-single_file", "1", "-seg_duration", "1", "-f", "dash", str(root / "mixed.mpd"))
+            mpd = ET.parse(root / "mixed.mpd").getroot()
+            for representation in mpd.findall(".//d:Representation", ns):
+                segments = representation.find("d:SegmentList", ns)
+                segment_base = ET.Element(f"{{{ns['d']}}}SegmentBase")
+                segment_base.append(segments.find("d:Initialization", ns))
+                representation.remove(segments)
+                representation.append(segment_base)
+            resources["/mixed.mpd"] = ET.tostring(mpd)
+            for single_file in root.glob("mixed-stream*.mp4"):
+                resources["/" + single_file.name] = single_file.read_bytes()
+            for options, uri in (([], "/mixed.m3u8"), (["-M", "1920x1080"], "/mixed.m3u8"),
+                                 ([], "/mixed.mpd")):
+                player = Player(args.player, *options, base + uri)
+                try:
+                    assert player.wait("PLAYBACK_PLAY")["sts"] == 0
+                    player.wait("a_l")  # a video track is reported before the audio tracks
+                    video = [message["v_c"] for message in player.messages if "v_c" in message]
+                    assert video and video[0]["e"] == "V_MPEG2" and video[0]["w"] == 64, (
+                        "no MPEG-2 video track", options, uri, video)
+                finally:
+                    player.stop()
+            print("PASS HLS/DASH: a variant whose video has no writer is passed over")
+
             latin = root / "latin1.mkv"
             language = b"Fran\xe7ais \xc3\xa9t\xc3\xa9"  # 0xE7 is Latin-1, the rest UTF-8
             run(args.ffmpeg, "-y", "-i", str(media), "-c", "copy",

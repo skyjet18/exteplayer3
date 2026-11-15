@@ -47,6 +47,14 @@ rm -f "$tmp/play_thread"
 [ "$status" = 0 ] || exit "$status"
 # The subtitle and writer programs link no command table, so ASan checks them too.
 trap 'rm -rf "$tmp"' EXIT HUP INT TERM
+# DTS core frames padded to a multiple of four bytes: the writer with the box
+# type and EP3_DTS_PAD of the case, then the frame helpers on their own.
+$cc -g -fsanitize=address,undefined -ffunction-sections -fdata-sections -Iinclude -Iexternal \
+    -I"$FFMPEG_BUILD" -I"$FFMPEG_SOURCE" tests/dts_pad_test.c tools/debug.c \
+    output/writer/common/pes.c -Wl,--gc-sections -pthread -o "$tmp/dts_pad"
+ASAN_OPTIONS=detect_leaks=0 timeout 20 "$tmp/dts_pad"
+$cc -g -fsanitize=address,undefined -Iinclude tests/dts_frame_test.c -o "$tmp/dts_frame"
+ASAN_OPTIONS=detect_leaks=0 timeout 20 "$tmp/dts_frame"
 export ASAN_OPTIONS=detect_leaks=0
 # Output follow-up: the writers with allocations that fail (malloc() of these
 # sources is the one of the test), and a leak check of the buffering queue.
