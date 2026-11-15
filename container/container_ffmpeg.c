@@ -121,6 +121,9 @@ static int32_t restart_audio_resampling = 0;
 static int64_t g_seek_target_seconds = 0;
 static bool g_do_seek_target_seconds = false;
 static bool g_zero_seek = false;
+/* relative seek: the decoder position it counts from (90 kHz) and its offset */
+static int64_t g_seek_from_pts = INVALID_PTS_VALUE;
+static int64_t g_seek_offset_us = 0;
 static void *g_stamp;
 static PtsClock ptsClock;
 static int dashAudioResetPending;
@@ -1299,6 +1302,10 @@ static void FFMPEGThread(Context_t *context)
     int64_t seek_target_seconds = 0;
     bool do_seek_target_seconds = false;
     bool zero_seek = false;
+    int64_t seek_from_pts = INVALID_PTS_VALUE;
+    int64_t seek_offset_us = 0;
+    /* where reading has started: 0 or the last seek target, -1 unknown */
+    int64_t read_origin_us = 0;
 
     int64_t seek_target_bytes = 0;
     bool do_seek_target_bytes = false;
@@ -1376,6 +1383,8 @@ static void FFMPEGThread(Context_t *context)
             do_seek_target_seconds = g_do_seek_target_seconds;
             seek_target_seconds = g_seek_target_seconds;
             zero_seek = g_zero_seek;
+            seek_from_pts = g_seek_from_pts;
+            seek_offset_us = g_seek_offset_us;
             stamp = g_stamp;
             g_do_seek_target_seconds = false;
         }
@@ -1396,6 +1405,22 @@ static void FFMPEGThread(Context_t *context)
             isWaitingForFinish = 0;
             if (do_seek_target_seconds)
             {
+                /* A decoder that has not shown a frame of this playback yet can
+                 * report the PTS of the frame it showed before: of the previous
+                 * playback or of the position before the last seek. Such a
+                 * position lies after all that has been written since: count
+                 * from where the reading has started instead. */
+                if (seek_from_pts != INVALID_PTS_VALUE && read_origin_us >= 0 &&
+                    seek_from_pts > latestPts + 2 * 90000)
+                {
+                    ffmpeg_printf(10, "decoder position %"PRId64" not written yet (%"PRId64"), seek from %"PRId64" us\n",
+                                  seek_from_pts, latestPts, read_origin_us);
+                    seek_target_seconds = av_sat_add64(read_origin_us, seek_offset_us);
+                    if (seek_target_seconds < 0)
+                        seek_target_seconds = 0;
+                }
+                seek_from_pts = INVALID_PTS_VALUE;
+                read_origin_us = seek_target_seconds;
                 ffmpeg_printf(10, "seek_target_seconds[%"PRId64"]\n", seek_target_seconds);
                 int64_t relative_us = seek_target_seconds;
                 uint32_t i = 0;
@@ -1439,6 +1464,7 @@ static void FFMPEGThread(Context_t *context)
             else
             {
                 container_ffmpeg_seek_bytes(seek_target_bytes);
+                read_origin_us = -1;
             }
             do_seek_target_seconds = false;
             do_seek_target_bytes = false;
@@ -3948,6 +3974,7 @@ static int32_t container_ffmpeg_seek(Context_t *context, int64_t sec, uint8_t ab
     Track_t *videoTrack = NULL;
     Track_t *audioTrack = NULL;
     Track_t *current = NULL;
+    int64_t from_pts = INVALID_PTS_VALUE;
 
     if (sec > INT64_MAX / AV_TIME_BASE || sec < INT64_MIN / AV_TIME_BASE)
     {
@@ -3993,6 +4020,7 @@ static int32_t container_ffmpeg_seek(Context_t *context, int64_t sec, uint8_t ab
 
         target_us = av_sat_add64(target_us,
             av_rescale_q(currPts, (AVRational){1, 90000}, AV_TIME_BASE_Q));
+        from_pts = currPts;
     }
     
     ffmpeg_printf(10, "goto %"PRId64" us\n", target_us);
@@ -4024,6 +4052,8 @@ static int32_t container_ffmpeg_seek(Context_t *context, int64_t sec, uint8_t ab
     getSeekMutex();
     g_zero_seek = zero_seek;
     g_seek_target_seconds = target_us;
+    g_seek_from_pts = from_pts;
+    g_seek_offset_us = sec * AV_TIME_BASE;
     g_do_seek_target_seconds = true;
     g_stamp = context->playback->stamp;
     releaseSeekMutex();
