@@ -436,6 +436,35 @@ Native FATE, actual HTTP fixtures, all six player UBSan harnesses and the comple
 ASan/UBSan player integration suite pass with the updated libraries. Receiver
 and cross-toolchain limitations below still apply.
 
+## HiSilicon receivers
+
+A receiver counts as HiSilicon (`STB_HISILICON`) when, after the Dreambox and
+VU+ tests, the device-tree node `soc/hisilicon_clock` exists, or one of the
+vendor SDK paths `/proc/hisi`, `/dev/hi_mem`, `/dev/hi_dmx`,
+`/sys/module/hi_media` exists, or the first line of `/proc/stb/info/chipset`
+starts with `hi3` or contains `hisi` (case-insensitive, e.g. `hi3798mv200`).
+Before, only the device-tree node was tested and other HiSilicon receivers
+were treated as generic, without the HiSilicon handling of AAC, MJPEG, VP9
+and Vorbis/Opus. Dreambox and VU+ detection is unchanged.
+
+The DVB devices of these receivers are emulated on top of the vendor SDK and
+may never report that they are writable. With the RAM buffer (`-b`) the
+buffering thread therefore writes to them first and waits for the device or
+its wake-up pipe, at most 50 ms, only when the device takes nothing. Other
+receivers keep waiting for the device before writing.
+
+`EP3_OUTPUT_PACING_MS=<ms>` enables an optional software playback clock, for
+receivers whose devices accept everything so that picture and sound run too
+fast. Unset, empty, `0` or negative leaves it off (the default, on every
+receiver). A positive value holds each video and audio chunk before its write
+until its PTS is at most `<ms>` ahead of real time (audio 500 ms more);
+subtitles are not held. The clock is anchored at the first chunk, stands during a pause, and is
+anchored again after a seek, after a PTS jump of a stream (more than 2 s back
+or 10 s forward), and when a chunk is more than 2 s beyond the lead or 10 s
+late; trick play is not paced, and a stop or seek ends the wait. With `-b` it
+holds the filling of the RAM buffer. Values in the range of the decoder
+buffer (e.g. `1000`) are a starting point; the setting is read once.
+
 ## Receiver validation still required
 
 Host tests do **not** certify ARM/MIPS/SH4 cross-builds, DVB driver behavior,
@@ -446,6 +475,10 @@ provider/SSAI behavior. Before deployment, check on representative receivers:
   short live windows, EVENT playlists and discontinuity/ad transitions.
 - Natural AV offsets, 33-bit PTS wrap, reordered video, audio/video clock
   resets, long stalls, pause/resume, repeated seeks and stream switches.
+- The HiSilicon handling has not been validated on a receiver: detection on
+  HiSilicon receivers without the device-tree node (and none elsewhere),
+  `-b` playback that does not stall, and `EP3_OUTPUT_PACING_MS` on a receiver
+  that plays too fast: speed, lip sync, pause, seek and trick play.
 - A source whose audio and video count from different origins (first
   timestamps more than 60 seconds apart): audible audio and its lip sync.
 - AAC dejitter and passthrough versus software PCM; DTS/PES B-frame output,
