@@ -21,6 +21,7 @@
 #include <string.h>
 #include <fcntl.h>
 #include <unistd.h>
+#include <getopt.h>
 #include <sched.h>
 #include <signal.h>
 #include <inttypes.h>
@@ -64,7 +65,6 @@ extern void      opus_software_decoder_set(const int32_t val);
 extern void         dts_ac3_transcoder_set(const int32_t val);
 extern void      truehd_ac3_transcoder_set(const int32_t val);
 extern void          aac_he_transcoder_set(const int32_t val);
-extern void            eac3_transcoder_set(const int32_t val);
 extern int32_t        audio_transcode_caps(void);
 
 extern void            rtmp_proto_impl_set(const int32_t val);
@@ -688,12 +688,30 @@ static int ParseParams(int argc,char* argv[], PlayFiles_t *playbackFiles, int *p
     int ret = 0;
     int c;
     int quality = 0, default_audio = 0, export_pcm = 0;
-    int xcode = 0; /* 1: -Z, 2: -X, 4: -Y */
+    int xcode = 0; /* 1: -Z, 2: -X, 4: -Y, 8: --dts-eac3, 16: --truehd-eac3 */
     int xcode_eac3 = 0; /* -E */
     int digit_optind = 0;
     int aopt = 0, bopt = 0;
     char *copt = 0, *dopt = 0;
-    while ( (c = getopt(argc, argv, "EZXYKG:W:H:A:V:U:we3dlsrimvCa:j:n:x:u:c:h:o:p:P:t:9:0:1:4:5:6:7:f:b:F:S:O:T:L:Q:D:M:")) != -1)
+    /* the long names of the transcoding options, values above every character */
+    enum
+    {
+        OPT_DTS_AC3 = 0x100,
+        OPT_TRUEHD_AC3,
+        OPT_DTS_EAC3,
+        OPT_TRUEHD_EAC3,
+        OPT_HEAAC_AACLC
+    };
+    static const struct option long_options[] =
+    {
+        {"dts-ac3",     no_argument, NULL, OPT_DTS_AC3},
+        {"truehd-ac3",  no_argument, NULL, OPT_TRUEHD_AC3},
+        {"dts-eac3",    no_argument, NULL, OPT_DTS_EAC3},
+        {"truehd-eac3", no_argument, NULL, OPT_TRUEHD_EAC3},
+        {"heaac-aaclc", no_argument, NULL, OPT_HEAAC_AACLC},
+        {NULL, 0, NULL, 0}
+    };
+    while ( (c = getopt_long(argc, argv, "EZXYKG:W:H:A:V:U:we3dlsrimvCa:j:n:x:u:c:h:o:p:P:t:9:0:1:4:5:6:7:f:b:F:S:O:T:L:Q:D:M:", long_options, NULL)) != -1)
     {
         switch (c) 
         {
@@ -701,16 +719,25 @@ static int ParseParams(int argc,char* argv[], PlayFiles_t *playbackFiles, int *p
             export_pcm = 1;
             break;
         case 'Z':
+        case OPT_DTS_AC3:
             xcode |= 1;
             break;
         case 'X':
+        case OPT_TRUEHD_AC3:
             xcode |= 2;
             break;
         case 'Y':
+        case OPT_HEAAC_AACLC:
             xcode |= 4;
             break;
         case 'E':
             xcode_eac3 = 1;
+            break;
+        case OPT_DTS_EAC3:
+            xcode |= 8;
+            break;
+        case OPT_TRUEHD_EAC3:
+            xcode |= 16;
             break;
         case 'G':
             g_graphic_sub_path = optarg;
@@ -971,22 +998,51 @@ static int ParseParams(int argc,char* argv[], PlayFiles_t *playbackFiles, int *p
     {
         /* 1: AC3 encoder, 2: AAC encoder, 4: E-AC-3 encoder */
         const int32_t caps = audio_transcode_caps();
-        /* -E: E-AC-3 as the target of -Z and -X, AC3 when its encoder is missing */
-        const int eac3 = xcode_eac3 && (caps & 4);
-        const int dolby = eac3 || (caps & 1);
-        if ((xcode & 3) && xcode_eac3 && !eac3)
-            printf("No E-AC-3 encoder in this FFmpeg: -E is ignored%s\n", (caps & 1) ? ", AC3 is used" : "");
-        if ((xcode & 3) && !dolby)
+        /* What is asked for, [0] for DTS and [1] for TrueHD: 0 nothing, 1 AC3,
+         * 2 E-AC-3. E-AC-3 comes from the long option of the codec or from
+         * -E, which takes every codec that -Z or -X selects; for one codec
+         * E-AC-3 wins over AC3, in any order of the options. */
+        const int want[2] = {
+            ((xcode & 8) || ((xcode & 1) && xcode_eac3)) ? 2 : ((xcode & 1) ? 1 : 0),
+            ((xcode & 16) || ((xcode & 2) && xcode_eac3)) ? 2 : ((xcode & 2) ? 1 : 0)
+        };
+        /* what the encoders leave of it: AC3 when the E-AC-3 encoder is
+         * missing, nothing when the AC3 encoder is missing as well */
+        int to[2];
+        int i, no_eac3 = 0, no_ac3 = 0;
+        for (i = 0; i < 2; i++)
+        {
+            to[i] = want[i];
+            if (to[i] == 2 && !(caps & 4))
+            {
+                no_eac3 = 1;
+                to[i] = 1;
+            }
+            if (to[i] == 1 && !(caps & 1))
+            {
+                no_ac3 = 1;
+                to[i] = 0;
+            }
+        }
+        if (no_eac3)
+            printf("No E-AC-3 encoder in this FFmpeg: -E, --dts-eac3 and --truehd-eac3 are ignored%s\n", (caps & 1) ? ", AC3 is used" : "");
+        if (no_ac3)
             printf("No AC3 encoder in this FFmpeg: -Z and -X are ignored\n");
-        else if (xcode & 3)
-            printf("%s%s%s will be transcoded to %s 5.1\n", (xcode & 1) ? "DTS" : "", (xcode & 3) == 3 ? " and " : "", (xcode & 2) ? "TrueHD" : "", eac3 ? "E-AC-3" : "AC3");
+        if (to[0] && to[0] == to[1])
+            printf("DTS and TrueHD will be transcoded to %s 5.1\n", to[0] == 2 ? "E-AC-3" : "AC3");
+        else
+        {
+            if (to[0])
+                printf("DTS will be transcoded to %s 5.1\n", to[0] == 2 ? "E-AC-3" : "AC3");
+            if (to[1])
+                printf("TrueHD will be transcoded to %s 5.1\n", to[1] == 2 ? "E-AC-3" : "AC3");
+        }
         if ((xcode & 4) && !(caps & 2))
             printf("No AAC encoder in this FFmpeg: -Y is ignored\n");
         else if (xcode & 4)
             printf("HE-AAC will be transcoded to AAC-LC\n");
-        dts_ac3_transcoder_set((xcode & 1) && dolby);
-        truehd_ac3_transcoder_set((xcode & 2) && dolby);
-        eac3_transcoder_set(eac3);
+        dts_ac3_transcoder_set(to[0]);
+        truehd_ac3_transcoder_set(to[1]);
         aac_he_transcoder_set((xcode & 4) && (caps & 2));
     }
     if (0 == ret && optind < argc)
@@ -1078,11 +1134,13 @@ int main(int argc, char* argv[])
         printf("[-w] WMA2, WMA/PRO software decoding\n");
         printf("[-l] software decoder use LPCM for injection (otherwise wav PCM will be used)\n");
         printf("[-s] software decoding as stereo [downmix]\n");
-        printf("[-Z] DTS transcoding to AC3 5.1 (also with -d)\n");
-        printf("[-X] TrueHD/MLP transcoding to AC3 5.1\n");
+        printf("[-Z] [--dts-ac3] DTS transcoding to AC3 5.1 (also with -d)\n");
+        printf("[-X] [--truehd-ac3] TrueHD/MLP transcoding to AC3 5.1\n");
         printf("[-E] -Z and -X transcode to E-AC-3 5.1 instead of AC3 (AC3 when FFmpeg has no E-AC-3 encoder)\n");
-        printf("[-Y] HE-AAC transcoding to AAC-LC (not for AAC decoded in software, -a)\n");
-        printf("     -Z, -X and -Y need the encoder in FFmpeg (\"xcode\" in EPLAYER3_EXTENDED) and are off with -K\n");
+        printf("[--dts-eac3] DTS transcoding to E-AC-3 5.1, with or without -Z\n");
+        printf("[--truehd-eac3] TrueHD/MLP transcoding to E-AC-3 5.1, with or without -X\n");
+        printf("[-Y] [--heaac-aaclc] HE-AAC transcoding to AAC-LC (not for AAC decoded in software, -a)\n");
+        printf("     all of them need the encoder in FFmpeg (\"xcode\" in EPLAYER3_EXTENDED) and are off with -K\n");
 #ifdef HAVE_FLV2MPEG4_CONVERTER
         printf("[-4 0|1] - disable/enable flv2mpeg4 converter\n");
 #endif

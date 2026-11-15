@@ -197,23 +197,45 @@ descriptors on stop; never replace the FIFO while a session is active.
   decoded sample rate and channel count (64 kbit/s per channel; more than six
   channels are mixed down to 5.1).
 
-All four are flags without an argument and disabled by default. Transcoding
+Five long options name the source and the target codec, so that one front end
+can drive players that only know these names:
+
+| Long option | Meaning |
+|---|---|
+| `--dts-ac3` | same as `-Z` |
+| `--truehd-ac3` | same as `-X` |
+| `--heaac-aaclc` | same as `-Y` |
+| `--dts-eac3` | DTS to E-AC-3, TrueHD/MLP is not affected |
+| `--truehd-eac3` | TrueHD/MLP to E-AC-3, DTS is not affected |
+
+The E-AC-3 target is kept per source codec: `--dts-eac3 --truehd-ac3` encodes
+DTS to E-AC-3 and TrueHD to AC-3. `--dts-eac3` and `--truehd-eac3` select
+their codec by themselves, without `-Z` or `-X`. `-E` still means both: it
+turns every codec selected with `-Z`/`--dts-ac3` or `-X`/`--truehd-ac3` to
+E-AC-3. When the AC-3 and the E-AC-3 form are given for the same codec
+(`--dts-ac3 --dts-eac3`, `-Z --dts-eac3`, `-Z -E`), E-AC-3 wins, in any order
+of the options. Long options may be shortened as far as they stay unique
+(`getopt_long`); an unknown long option ends the player with the usage text,
+as an unknown short option does.
+
+All of them are flags without an argument and disabled by default. Transcoding
 decodes and re-encodes in software, increasing receiver CPU usage, and needs
 libavcodec 58 or newer with the corresponding decoders and encoders.
 
 The startup message reports the available encoders as a bit mask:
 `{"EPLAYER3_EXTENDED":{"version":186,"xcode":7}}`. `1` is AC-3 (`-Z`, `-X`),
-`2` AAC (`-Y`) and `4` E-AC-3 (`-E`); `xcode` is always present and `0` when
-none is available. Front ends should offer the options from this value, not
-from the version number. Unavailable requests are reduced, each with one line
-on stdout:
+`2` AAC (`-Y`) and `4` E-AC-3 (`-E`, `--dts-eac3`, `--truehd-eac3`); `xcode`
+is always present and `0` when none is available. Front ends should offer the
+options from this value, not from the version number. Unavailable requests
+are reduced, each with one line on stdout:
 
-- Without an E-AC-3 encoder, `-E` is ignored and AC-3 is used.
-- Without a usable AC-3 or E-AC-3 target, `-Z` and `-X` are ignored. With an
-  E-AC-3 encoder but no AC-3 encoder they work only together with `-E`.
+- Without an E-AC-3 encoder, `-E`, `--dts-eac3` and `--truehd-eac3` fall back
+  to AC-3 for the codec they select.
+- Without a usable AC-3 or E-AC-3 target, a codec is not transcoded. With an
+  E-AC-3 encoder but no AC-3 encoder only the E-AC-3 requests work.
 - Without an AAC encoder, `-Y` is ignored.
-- With `-K`, `-Z`, `-X` and `-Y` are all ignored: PCM export needs the decoded
-  samples of every track.
+- With `-K`, all transcoding options, short and long, are ignored: PCM export
+  needs the decoded samples of every track.
 
 An ignored option leaves the track on its normal path, as does a track whose
 decoder cannot be opened. Track JSON is unchanged: `e` in `a_l`/`a_c` keeps
