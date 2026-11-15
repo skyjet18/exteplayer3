@@ -357,6 +357,15 @@ errors enter the existing 10-second network read retry. Name resolution
 cannot be interrupted and is not covered, nor is a server that keeps sending
 a few bytes within every limit during stream probing.
 
+Without `-u`, the player opens `http://` and `https://` inputs (the playback
+uri and the `-x` file, with their HLS/DASH playlists and segments) with the
+User-Agent `Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36
+(KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36`, a current desktop
+Chrome. The companion tree's HTTP protocol defaults to the same string with
+Chrome 106; a libavformat without that change would otherwise send
+`Lavf/<version>`, which some servers refuse. `-u` or `-f user_agent=...` replaces it, and a
+`User-Agent:` line given with `-h` takes precedence over both.
+
 ## Optional decoded PCM export
 
 `-K` enables `/tmp/exteplayer3_pcm_audio.fifo`, otherwise export is disabled.
