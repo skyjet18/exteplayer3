@@ -297,6 +297,9 @@ After one second the latest emitted A/V PTS must also stay within 250 ms.
 Selected audio must recover within one second; video source frames must advance
 without a jump or reset. It starts within an already populated live window and
 holds the initial selection until inactive windows expire before switching.
+With both outputs it first plays a local TS whose audio PES timestamps are
+moved 108 seconds before the video (which counts from 21.6 hours); both
+captures must start together and advance without a jump.
 `--sync default` leaves `EP3_LIVE_SYNC` unset; `--sync 0|1` tests explicit modes,
 and omitting it tests both. `--initial 0|1` focuses embedded/external startup.
 `--backpressure` creates a bounded nonblocking audio FIFO instead of a regular

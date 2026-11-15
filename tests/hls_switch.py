@@ -208,6 +208,80 @@ def observe(reader, buffered, frequency, duration=2.4):
                          f"samples={total}, last_hz={measured}, rms={rms}")
 
 
+def shift_audio_timestamps(ts, ticks):
+    """Move PTS/DTS of the audio PES packets in an MPEG-TS, modulo 33 bits."""
+    data = bytearray(ts.read_bytes())
+    shifted = 0
+    assert data and len(data) % 188 == 0
+    for packet in range(0, len(data), 188):
+        assert data[packet] == 0x47
+        payload = packet + 4
+        if data[packet + 3] & 0x20:
+            payload += 1 + data[packet + 4]
+        if not (data[packet + 1] & 0x40 and data[packet + 3] & 0x10):
+            continue
+        if data[payload:payload + 3] != b"\x00\x00\x01" or not 0xc0 <= data[payload + 3] <= 0xdf:
+            continue
+        for flag, field in ((0x80, payload + 9), (0x40, payload + 14)):
+            if not data[payload + 7] & flag or (flag == 0x40 and not data[payload + 7] & 0x80):
+                continue
+            assert field + 5 <= packet + 188
+            p = data[field:field + 5]
+            value = ((p[0] & 14) << 29 | p[1] << 22 | (p[2] & 254) << 14 | p[3] << 7 | p[4] >> 1)
+            value = (value + ticks) % (1 << 33)
+            data[field:field + 5] = bytes((
+                (p[0] & 0xf0) | (value >> 29 & 14) | 1, value >> 22 & 255,
+                (value >> 14 & 254) | 1, value >> 7 & 255, (value << 1 & 254) | 1))
+            shifted += 1
+    assert shifted > 20, shifted
+    ts.write_bytes(data)
+
+
+def other_origin(args, sink, video_sink):
+    """A TS whose audio is stamped 108 s before its video, which counts from
+    21.6 h: the demuxer delivers that audio 26.48 h after the video."""
+    with tempfile.TemporaryDirectory(prefix="exteplayer3-origin-") as directory:
+        root = Path(directory)
+        video, audio, media = root / "video.yuv", root / "audio.pcm", root / "origin.ts"
+        with video.open("wb") as stream:
+            for frame in range(150):
+                stream.write(bytes(16 + (i * 17 + frame * 11) % 220 for i in range(4096)))
+                stream.write(bytes([128]) * 2048)
+        audio.write_bytes(b"".join(struct.pack("<hh", value, value) for value in (
+            int(8000 * math.sin(i * math.pi / 48)) for i in range(48000 * 6))))
+        subprocess.run([args.ffmpeg, "-y", "-f", "rawvideo", "-pixel_format", "yuv420p",
+                        "-video_size", "64x64", "-framerate", "25", "-i", str(video),
+                        "-f", "s16le", "-ar", "48000", "-ac", "2", "-i", str(audio),
+                        "-c:v", "mpeg2video", "-c:a", "aac", "-b:a", "96k", "-t", "6",
+                        "-output_ts_offset", "77760", str(media)],
+                       check=True, capture_output=True, timeout=30)
+        shift_audio_timestamps(media, -108 * 90000)
+        captures = {"audio": PesCapture(sink, 0xc0), "video": PesCapture(video_sink, 0xe0)}
+        written = {"audio": [], "video": []}
+        player = Player(args.player, "-a", "0", str(media))
+        try:
+            assert player.wait("PLAYBACK_PLAY")["sts"] == 0
+            deadline = time.monotonic() + 10
+            while time.monotonic() < deadline and min(map(len, written.values())) < 40:
+                for kind, capture in captures.items():
+                    written[kind] += [pts for pts, _ in capture.read() if pts is not None]
+                time.sleep(0.01)
+        finally:
+            try:
+                player.stop()
+            finally:
+                for path in (sink, video_sink):
+                    if path.exists():
+                        path.unlink()
+        for kind, stamps in written.items():
+            assert len(stamps) >= 40, (kind, written)
+            assert stamps[0] < 90000, (kind, stamps[:8])
+            assert all(0 <= b - a <= 9000 for a, b in zip(stamps, stamps[1:])), (kind, stamps)
+        gap = written["audio"][0] - written["video"][0]
+        assert abs(gap) <= 22500, ("A/V gap at the start", gap, written)
+    print("PASS audio and video from different origins: both start together")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--player", required=True)
@@ -245,6 +319,8 @@ def main():
     assert args.mode == "export" or sink, "Captured modes require --audio-output"
     if sink:
         assert not sink.exists(), "Use a new isolated output file"
+    if sink and video_sink:
+        other_origin(args, sink, video_sink)
     with tempfile.TemporaryDirectory(prefix="exteplayer3-hls-") as directory:
         root = Path(directory)
         generate(root, args.ffmpeg, multiple=args.multiple, video_first=args.video_first,
