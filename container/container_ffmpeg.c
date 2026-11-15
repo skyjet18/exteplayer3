@@ -799,10 +799,14 @@ static char* Codec2Encoding(int32_t codec_id, int32_t media_type, uint8_t *extra
         return (dts_software_decode) ? "A_IPCM" : "A_DTS";
     case AV_CODEC_ID_WMAV1:
         return "A_IPCM";
+    /* The Vu+ audio driver plays the WMA bypass values of the writers
+     * (0x20, 0x21) as MPEG without an error, and its own WMA modes do not
+     * take this data either; the Vu+ images build their GStreamer sink
+     * without WMA. Vorbis and Opus have no decoder there at all. */
     case AV_CODEC_ID_WMAV2:
-            return (wma_software_decode) ? "A_IPCM" : "A_WMA";
+        return (wma_software_decode || STB_VUPLUS == GetSTBType()) ? "A_IPCM" : "A_WMA";
     case AV_CODEC_ID_WMAPRO:
-        return (wma_software_decode) ? "A_IPCM" : "A_WMA/PRO";
+        return (wma_software_decode || STB_VUPLUS == GetSTBType()) ? "A_IPCM" : "A_WMA/PRO";
     case AV_CODEC_ID_WMALOSSLESS:
         return "A_IPCM";
     case AV_CODEC_ID_MLP:
@@ -832,9 +836,9 @@ static char* Codec2Encoding(int32_t codec_id, int32_t media_type, uint8_t *extra
     case AV_CODEC_ID_AMR_WB:
         return amr_software_decode ? "A_IPCM" : "A_AMR";
     case AV_CODEC_ID_VORBIS:
-        return vorbis_software_decode ? "A_IPCM" : "A_VORBIS";
+        return (vorbis_software_decode || STB_VUPLUS == GetSTBType()) ? "A_IPCM" : "A_VORBIS";
     case AV_CODEC_ID_OPUS :
-        return opus_software_decode ? "A_IPCM" : "A_OPUS";
+        return (opus_software_decode || STB_VUPLUS == GetSTBType()) ? "A_IPCM" : "A_OPUS";
 
 /* In exteplayer3 embedded text subtitle simple printed
  * to output like other data.  Maybe worth to consider is to use 
