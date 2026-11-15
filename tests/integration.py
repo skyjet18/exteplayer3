@@ -306,6 +306,7 @@ def main():
             "-c:v", "copy", "-c:a:0", "opus", "-c:a:1", "vorbis", "-strict", "-2", str(codecs))
 
         requests = []
+        agents = []  # (path, User-Agent) of every request
         # Accept-Encoding of every request; paths that fail n more times, that
         # carry a Content-Type, that are compressed when gzip is accepted.
         encodings, failures, content_types, compressed = [], {}, {}, set()
@@ -357,6 +358,7 @@ def main():
                 if header:
                     start = int(header.split("=")[1].split("-")[0])
                 requests.append((self.path, start))
+                agents.append((self.path, self.headers.get("User-Agent")))
                 if failures.get(self.path):
                     failures[self.path] -= 1
                     self.send_error(503)
@@ -997,6 +999,30 @@ def main():
             finally:
                 player.stop()
             print("PASS long options: unknown, ambiguous and with a value rejected; playback starts with them")
+
+            # Default User-Agent: a current desktop Chrome, also with a
+            # libavformat that would send "Lavf/<version>".
+            browser = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                       "(KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36")
+            for options, expected in (([], browser), (["-u", "Agent/1.0"], "Agent/1.0"),
+                                      (["-h", "User-Agent: Header/2.0\r\n"], "Header/2.0")):
+                for target in ("/media.ts", "/master.m3u8"):
+                    agents.clear()
+                    player = Player(args.player, *options, base + target)
+                    try:
+                        assert player.wait("PLAYBACK_PLAY")["sts"] == 0
+                    finally:
+                        player.stop()
+                    assert agents and all(agent == expected for _, agent in agents), (
+                        options, target, agents)
+            agents.clear()
+            player = Player(args.player, "-x", base + "/sound.ts", str(media))
+            try:
+                assert player.wait("PLAYBACK_PLAY")["sts"] == 0
+            finally:
+                player.stop()
+            assert agents and all(agent == browser for _, agent in agents), agents
+            print("PASS HTTP User-Agent: browser string without -u (also HLS and -x), -u and -h win")
         finally:
             server.shutdown()
             server.server_close()
