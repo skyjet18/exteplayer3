@@ -2566,6 +2566,8 @@ static void FFMPEGThread(Context_t *context)
     int32_t swr_in_format = -1;
     /* the resampler has got a timestamp to count on from */
     int32_t swr_has_pts = 0;
+    /* timestamp of the last packet the audio decoder has taken */
+    int64_t decoder_pkt_pts = AV_NOPTS_VALUE;
     /* the PCM writer has to renew its header with the next frame it gets */
     int32_t renew_pcm_header = 0;
     AudioTranscoder_t audioTranscoder;
@@ -3135,6 +3137,7 @@ static void FFMPEGThread(Context_t *context)
                     {
                         restart_audio_resampling = 0;
                         renew_pcm_header = 1;
+                        decoder_pkt_pts = AV_NOPTS_VALUE;
                         if (swr)
                         {
                             swr_free(&swr);
@@ -3190,6 +3193,7 @@ static void FFMPEGThread(Context_t *context)
                         if (ret >= 0)
                         {
                             packet.size = 0;
+                            decoder_pkt_pts = packet.pts;
                         }
                         
                         ret = avcodec_receive_frame(c, decoded_frame);
@@ -3358,6 +3362,13 @@ static void FFMPEGThread(Context_t *context)
                             continue;
                         }
                         int64_t best_effort_ts = wrapped_frame_get_best_effort_timestamp(decoded_frame);
+                        /* a decoder that makes several frames of one packet
+                         * (WMA Pro) can leave all of them without a timestamp:
+                         * a new resampler then starts from the packet's one */
+                        if (best_effort_ts == AV_NOPTS_VALUE && !swr_has_pts)
+                        {
+                            best_effort_ts = decoder_pkt_pts;
+                        }
                         int64_t next_in_pts = INT64_MIN;
                         int64_t next_out_pts = AV_NOPTS_VALUE;
                         if (best_effort_ts != AV_NOPTS_VALUE)
