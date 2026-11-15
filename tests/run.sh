@@ -103,3 +103,10 @@ $cc -g -fsanitize=leak,undefined -ffunction-sections -fdata-sections \
     "$FFMPEG_BUILD/libavcodec/libavcodec.a" "$FFMPEG_BUILD/libswresample/libswresample.a" \
     "$FFMPEG_BUILD/libavutil/libavutil.a" -lm ${FFMPEG_EXTRA_LIBS:-} -o "$tmp/container_open"
 timeout 20 "$tmp/container_open"
+# The DVB output against a stub driver: video events, the decoder's answers and the track description.
+$cc -g -fsanitize=undefined -ffunction-sections -fdata-sections \
+    -Wno-deprecated-declarations -Dff_mpeg4audio_channels=exteplayer3_mpeg4audio_channels \
+    -Iinclude -Iexternal -I"$FFMPEG_BUILD" -I"$FFMPEG_SOURCE" \
+    tests/video_info_test.c tools/debug.c manager/manager.c manager/audio.c manager/video.c manager/subtitle.c \
+    -Wl,--gc-sections -pthread ${FFMPEG_EXTRA_LIBS:-} -o "$tmp/video_info"
+timeout 20 "$tmp/video_info"

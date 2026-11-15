@@ -28,6 +28,12 @@ static unsigned long failing_request;
 static const char *encoding = "A_IPCM";
 static int audio_flushes;
 
+/* The video track report on a position request; its text is checked in video_info_test.c. */
+void E2iSendMsg(const char *format, ...)
+{
+    (void)format;
+}
+
 int test_open(const char *path, int flags, ...)
 {
     (void)path;
