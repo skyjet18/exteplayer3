@@ -86,7 +86,7 @@ static uint32 show_bits(BR* p, uint32 bits)
   uint32 tmp;
   
   pp = p->buf + p->read;
-  tmp = (pp[0] << 24) | (pp[1] << 16) | (pp[2] << 8 ) | (pp[3]);
+  tmp = ((uint32)pp[0] << 24) | (pp[1] << 16) | (pp[2] << 8 ) | (pp[3]);
   tmp <<= p->bitoffset;
   tmp >>= 32 - bits;
 
@@ -99,8 +99,8 @@ static int32 show_sbits(BR* p, uint32 bits)
   int32 tmp;
   
   pp = p->buf + p->read;
-  tmp = (pp[0] << 24) | (pp[1] << 16) | (pp[2] << 8 ) | (pp[3]);
-  tmp <<= p->bitoffset;
+  /* shifted as unsigned, the sign comes with the conversion */
+  tmp = (int32)((((uint32)pp[0] << 24) | (pp[1] << 16) | (pp[2] << 8 ) | (pp[3])) << p->bitoffset);
   tmp >>= 32 - bits;
 
   return tmp;
