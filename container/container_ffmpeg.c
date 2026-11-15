@@ -3378,7 +3378,11 @@ static void FFMPEGThread(Context_t *context)
                                          ((AVStream*) audioTrack->stream)->time_base.num * (int64_t)out_sample_rate * c->sample_rate);
                         }
                         
-                        currentAudioPts = audioTrack->pts = pts = calcPts(cAVIdx, audioTrack->stream, next_out_pts);
+                        /* the decoder gives its frames out behind the packets
+                         * the clock has seen (WMA Pro: up to three packets of
+                         * 1.5 s): map them like a DTS, they must not move the
+                         * clock back as a jump */
+                        currentAudioPts = audioTrack->pts = pts = calcDts(cAVIdx, audioTrack->stream, next_out_pts);
                         out_samples = swr_convert(swr, &output[0], out_samples, (const uint8_t **) decoded_frame->extended_data, in_samples);
                         if (out_samples < 0)
                         {
