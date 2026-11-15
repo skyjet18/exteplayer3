@@ -76,7 +76,8 @@ static void __inline put_bits(BW* p, uint32 bits, uint32 value)
 
 	if (shift <= 32)
 	{
-		p->tmp |= value << shift;
+		if (shift < 32) /* 32: no bits to put */
+			p->tmp |= value << shift;
 		forword_bits(p, bits);
 	}
 	else
