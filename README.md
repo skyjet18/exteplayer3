@@ -10,6 +10,14 @@ Core of movie player for E2 based on the libeplayer using the ffmpeg solution
   switching during playback.
 - `-D 0|1`: retain all HLS audio renditions (default), or prefer default audio.
   Groups without a default retain their available tracks.
+- `EP3_H264_LEVEL41=0|1`: H.264 SPS level limit. On MIPS builds a `level_idc`
+  above 4.1 in the SPS taken from `avcC` (baseline, main, extended and high
+  profile) is written to the decoder as 4.1, as every version before 185 did;
+  the limit was made for the MIPS Broadcom decoders. ARM and other builds pass
+  the level on unchanged, as in 185. `1` applies the limit and `0` disables it
+  on any CPU; unset or empty keeps the build default, which
+  `-DH264_LEVEL41_DEFAULT=0|1` can set at compile time. Parameter sets inside
+  the packets and Annex B codec data are never changed.
 - `-M WIDTHxHEIGHT`: optional automatic H.264 resolution limit; `0x0` (default)
   disables it. Unknown dimensions remain eligible. HEVC is not restricted.
   Explicit positive program IDs selected with `-P` override automatic limits.
@@ -679,7 +687,8 @@ Intentional exclusions/adaptations:
   ordering, experimental forced fairness or `/tmp` diagnostic-file machinery.
   Local HLS already defaults `max_reload` to 100; no replacement is necessary.
 - Sparse DASH subtitles are discarded only when the player opts in, not as a
-  global FFmpeg default. H.264 levels are not rewritten; the optional resolution
+  global FFmpeg default. H.264 levels are not rewritten outside MIPS builds
+  (`EP3_H264_LEVEL41` above); the optional resolution
   limit replaces the fork's receiver-specific hard limit.
 - FIFO framing and `writev` were repaired rather than copying the reference's
   partial-frame behavior or silent 128-vector truncation.
@@ -751,6 +760,10 @@ provider/SSAI behavior. Before deployment, check on representative receivers:
   and `EP3_DTS_PAD=1` on other chipsets.
 - MP4/MKV/adaptive subtitle selection and disabling, forced flags, ICY and
   metadata clearing across stations; retained DRM/MOV_TEXT behavior.
+- The H.264 level limit has only been forced with `EP3_H264_LEVEL41=1` on an
+  ARM box (VU+ Uno 4K SE, openATV 8.0.2, ffmpeg-ext 6.1.1): level 4.2 is
+  written as 4.1 and the picture is unchanged. Still open: 1080p50/60
+  (level 4.2) H.264 on MIPS boxes with and without `EP3_H264_LEVEL41=0`.
 - `-K` off/on CPU cost, export consumers joining/leaving, slow readers,
   format changes, seeks and audio switching without decoder silence.
 - `-Z`/`-X`/`-E`/`-Y` transcoding has been checked on one receiver only (VU+
