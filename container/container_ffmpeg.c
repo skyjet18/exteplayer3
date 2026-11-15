@@ -94,6 +94,8 @@
 #define cERR_CONTAINER_FFMPEG_END_OF_FILE    -10
 
 #define IPTV_AV_CONTEXT_MAX_NUM 2
+
+#define DEFAULT_HTTP_USER_AGENT "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36"
 /* ***************************** */
 /* Types                         */
 /* ***************************** */
@@ -4305,6 +4307,14 @@ int32_t container_ffmpeg_init_av_context(Context_t *context, char *filename, uin
             readStallLimitMs[AVIdx] = limit < 60000 ? 60000 : limit > INT32_MAX ? INT32_MAX : (uint32_t)limit;
         }
         av_dict_set(&avio_opts, "reconnect", "1", 0);
+        /* the default User-Agent of the FFmpeg 6.1-derived companion tree;
+         * libavformat without that change sends "Lavf/<version>", which some
+         * servers refuse. -u (or -f user_agent=) replaces it, and a
+         * User-Agent line given with -h goes before both, as in libavformat. */
+        if (!av_dict_get(avio_opts, "user_agent", NULL, 0))
+        {
+            av_dict_set(&avio_opts, "user_agent", DEFAULT_HTTP_USER_AGENT, 0);
+        }
         if (context->playback->isTSLiveMode) // special mode for live TS stream with skip packet 
         {
             av_dict_set(&avio_opts, "seekable", "0", 0);
