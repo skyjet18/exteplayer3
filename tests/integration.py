@@ -30,6 +30,27 @@ def read_fifo(fd):
         return b""
 
 
+def pgs_cues(path, cues):
+    """A PGS (.sup) track: a 32x8 picture in two colours at each cue start, cleared at its end."""
+    def segment(seconds, kind, payload):
+        return b"PG" + struct.pack(">IIBH", int(seconds * 90000), 0, kind, len(payload)) + payload
+    window = struct.pack(">BBHHHH", 1, 0, 100, 400, 32, 8)
+    palette = struct.pack(">BB", 0, 0) + bytes([1, 235, 128, 128, 255, 2, 81, 240, 90, 192])
+    rle = b"\x00\x90\x01\x00\x90\x02\x00\x00" * 8  # 16 pixels colour 1, 16 colour 2, end of line
+    picture = (struct.pack(">HBB", 0, 0, 0xC0) + (len(rle) + 4).to_bytes(3, "big")
+               + struct.pack(">HH", 32, 8) + rle)
+    data, number = b"", 0
+    for start, end in cues:
+        data += (segment(start, 0x16, struct.pack(">HHBHBBBBHBBHH", 720, 576, 0x10, number, 0x80,
+                                                  0, 0, 1, 0, 0, 0, 100, 400))
+                 + segment(start, 0x17, window) + segment(start, 0x14, palette)
+                 + segment(start, 0x15, picture) + segment(start, 0x80, b""))
+        data += (segment(end, 0x16, struct.pack(">HHBHBBBB", 720, 576, 0x10, number + 1, 0, 0, 0, 0))
+                 + segment(end, 0x17, window) + segment(end, 0x80, b""))
+        number += 2
+    path.write_bytes(data)
+
+
 class Player:
     def __init__(self, executable, *args, env=None):
         self.events = queue.Queue()
@@ -452,6 +473,44 @@ def main():
             finally:
                 player.stop()
             print("PASS MP4 subtitles: mov_text cues arrive with their whole text and nothing else")
+
+            # Graphic subtitles with -G; exteplayer3png.so is not installed here.
+            sup = root / "cues.sup"
+            pgs_cues(sup, [(1, 2), (3, 4), (5, 6), (7, 8)])
+            graphic = []
+            for name, options, encoding in (("pgs.mkv", ["-c:s", "copy"], "S_GRAPHIC/PGS"),
+                                            ("dvb.ts", ["-c:s", "dvbsub"], "S_GRAPHIC/DVB")):
+                target = root / name
+                fix = ["-fix_sub_duration"] if "dvbsub" in options else []
+                run(args.ffmpeg, "-y", "-i", str(media), *fix, "-i", str(sup),
+                    "-map", "0:v", "-map", "0:a", "-map", "1", "-c:v", "copy", "-c:a", "copy",
+                    *options, str(target))
+                graphic.append((target, encoding))
+            for target, encoding in graphic:
+                frames = root / ("frames-" + target.suffix[1:])
+                frames.mkdir()
+                player = Player(args.player, "-G", str(frames), str(target))
+                try:
+                    tracks = player.wait("s_l")
+                    assert [track["e"] for track in tracks] == [encoding], tracks
+                    player.command("si0")
+                    assert player.wait("s_s")["sts"] == 0
+                    rects = []
+                    while not rects:  # a cleared screen comes without rectangles
+                        rects = player.wait("s_a")["r"]
+                    for rect in rects:
+                        picture = frames / rect["f"]
+                        png = picture.read_bytes()
+                        assert png[:8] == b"\x89PNG\r\n\x1a\n" and png[12:16] == b"IHDR", png[:16]
+                        assert struct.unpack(">II", png[16:24]) == (rect["w"], rect["h"]), rect
+                        pixels = run(args.ffmpeg, "-v", "error", "-i", str(picture),
+                                     "-f", "rawvideo", "-pix_fmt", "rgba", "-").stdout
+                        assert len(pixels) == rect["w"] * rect["h"] * 4 and any(pixels[3::4]), rect
+                finally:
+                    player.stop()
+                assert not any("e_plugin" in message for message in player.messages), player.messages
+                assert not list(frames.glob("*.tmp")), list(frames.iterdir())
+            print("PASS PGS/DVB graphic subtitles with -G: PNG files and rectangles without the plugin")
 
             player = Player(args.player, str(radio))
             try:

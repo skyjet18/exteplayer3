@@ -5,6 +5,16 @@ set -eu
 cd "$(dirname "$0")/.."
 tmp=$(mktemp -d)
 trap 'rm -f "$tmp/manager" "$tmp/container" "$tmp/output" "$tmp/dvb" "$tmp/pts" "$tmp/pcm_export" "$tmp/playback" "$tmp/buffering"; rmdir "$tmp"' EXIT HUP INT TERM
+# Graphic subtitles without exteplayer3png.so: the PNG encoder of libavcodec,
+# read back with its decoder; LeakSanitizer checks the encoder of each picture.
+${CC:-cc} -g -fsanitize=address,undefined -ffunction-sections -fdata-sections \
+    -Wno-deprecated-declarations -Iinclude -Iexternal \
+    -I"$FFMPEG_BUILD" -I"$FFMPEG_SOURCE" tests/png_test.c tools/debug.c \
+    -Wl,--gc-sections -pthread "$FFMPEG_BUILD/libavcodec/libavcodec.a" \
+    "$FFMPEG_BUILD/libswresample/libswresample.a" "$FFMPEG_BUILD/libavutil/libavutil.a" \
+    -lm -ldl ${FFMPEG_EXTRA_LIBS:-} -o "$tmp/png"
+ASAN_OPTIONS=detect_leaks=1 timeout 20 "$tmp/png"
+rm -f "$tmp/png"
 cc=${CC:-cc}
 # Decoder restarts of the DVB output: the audio restart behind a buffer clear
 # and the video writer on OUTPUT_SWITCH "video".
