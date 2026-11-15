@@ -3811,6 +3811,8 @@ static int32_t container_ffmpeg_play(Context_t *context)
         pthread_attr_init(&attr);
         pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
 
+        /* before the thread exists: it clears the flag when it ends */
+        hasPlayThreadStarted = 1;
         if((error = pthread_create(&PlayThread, &attr, (void *)&FFMPEGThread, context)) != 0) 
         {
             ffmpeg_printf(10, "Error creating thread, error:%d:%s\n", error,strerror(error));
@@ -3821,8 +3823,6 @@ static int32_t container_ffmpeg_play(Context_t *context)
         else 
         {
             ffmpeg_printf(10, "Created thread\n");
-
-            hasPlayThreadStarted = 1;
         }
     }
     else 
