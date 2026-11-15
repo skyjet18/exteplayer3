@@ -340,6 +340,60 @@ finish:
     
 }
 
+/* The FFmpeg option of an option in an .mpd URL, NULL for none. */
+static const char *mpd_url_option(char name)
+{
+    switch (name)
+    {
+    case '0':
+        return "video_rep_index";
+    case '1':
+        return "audio_rep_index";
+    case '5':
+        return "cenc_decryption_key";
+    case '6':
+        return "cenc_decryption_video_key";
+    case '7':
+        return "cenc_decryption_audio_key";
+    default:
+        return NULL;
+    }
+}
+
+/* "&0=", "&1=", "&5=", "&6=" and "&7=" after ".mpd" in a URL set what -0, -1,
+ * -5, -6 and -7 set. They are taken out of the URL, everything else of it
+ * stays as it is. */
+static void take_mpd_url_options(char *url)
+{
+    char *in = strstr(url, ".mpd");
+    char *out;
+
+    if (!in)
+    {
+        return;
+    }
+    out = in;
+    while (*in)
+    {
+        const char *option = in[0] == '&' && in[1] && in[2] == '=' ? mpd_url_option(in[1]) : NULL;
+        if (option)
+        {
+            char *value = in + 3;
+            size_t len = strcspn(value, "&");
+            char saved = value[len];
+            value[len] = '\0';
+            ffmpeg_av_dict_set(option, value, 0);
+            value[len] = saved;
+            in = value + len;
+        }
+        else
+        {
+            *out++ = *in++;
+        }
+    }
+    *out = '\0';
+}
+
 static char *map_inter_file_path(const char *filename)
 {
     char *filename2 = NULL;
@@ -398,6 +452,7 @@ static char *map_inter_file_path(const char *filename)
     {
         strcpy(ret, filname_prefix);
         strcat(ret, filename);
+        take_mpd_url_options(ret);
     }
 
     if( filename2 )

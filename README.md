@@ -35,6 +35,12 @@ Core of movie player for E2 based on the libeplayer using the ffmpeg solution
   open. `-P` and a DASH `-0` representation are not overridden. Whether the
   receiver's decoder supports a codec that has a writer (HEVC, VP9) is not
   judged. `-L FFMPEG_DEBUG_LEVEL:1` logs the skipped variant and the reopen.
+- Options in an `.mpd` URL, as in the OE-Alliance tree: `&0=`, `&1=`, `&5=`,
+  `&6=` and `&7=` after `.mpd` set what `-0`, `-1`, `-5`, `-6` and `-7` set
+  (representation indexes, decryption keys for all, video and audio streams)
+  and are removed from the URL before it is opened; the rest of the URL, such
+  as `&suburi=`, stays. Those of the playback URL win over the command line. URLs
+  without `.mpd` or without these five are opened unchanged.
 - HTTP MPEG-TS uses approximate byte seeking when duration, resource size,
   transport packet layout (188/192/204 bytes) and HTTP seekability are known.
   Positions are packet-aligned; timestamp seeking is the fallback. Variable
