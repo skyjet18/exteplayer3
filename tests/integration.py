@@ -1,6 +1,7 @@
 """Native-player and loopback HTTP regression fixtures; no receiver required."""
 
 import argparse
+import gzip
 import http.server
 import json
 import math
@@ -173,6 +174,9 @@ def main():
             "-c:v", "copy", "-c:a:0", "opus", "-c:a:1", "vorbis", "-strict", "-2", str(codecs))
 
         requests = []
+        # Accept-Encoding of every request; paths that fail n more times, that
+        # carry a Content-Type, that are compressed when gzip is accepted.
+        encodings, failures, content_types, compressed = [], {}, {}, set()
         payload = media.read_bytes()
         master = (b"#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=100000\nlow.m3u8\n"
                   b"#EXT-X-STREAM-INF:BANDWIDTH=900000\nhigh.m3u8\n")
@@ -211,14 +215,27 @@ def main():
 
             def do_GET(self):
                 data = resources[self.path]
+                encoding = self.headers.get("Accept-Encoding")
+                encodings.append((self.path, encoding))
+                gzipped = self.path in compressed and "gzip" in (encoding or "")
+                if gzipped:
+                    data = gzip.compress(data)
                 start = 0
                 header = self.headers.get("Range")
                 if header:
                     start = int(header.split("=")[1].split("-")[0])
                 requests.append((self.path, start))
+                if failures.get(self.path):
+                    failures[self.path] -= 1
+                    self.send_error(503)
+                    return
                 self.send_response(206 if header else 200)
                 self.send_header("Content-Length", str(len(data) - start))
                 self.send_header("Accept-Ranges", "bytes")
+                if self.path in content_types:
+                    self.send_header("Content-Type", content_types[self.path])
+                if gzipped:
+                    self.send_header("Content-Encoding", "gzip")
                 if header:
                     self.send_header("Content-Range", f"bytes {start}-{len(data)-1}/{len(data)}")
                 self.end_headers()
@@ -388,6 +405,59 @@ def main():
                 finally:
                     player.stop()
             print("PASS track names: valid JSON with quotes and control bytes, long names cut")
+
+            # HLS options for http input: segment names, segment retry, gzip playlists.
+            run(args.ffmpeg, "-y", "-i", str(media), "-c", "copy", "-t", "3", "-f", "hls",
+                "-hls_time", "1", "-hls_list_size", "0",
+                "-hls_segment_filename", str(root / "part%d.ts"), str(root / "part.m3u8"))
+            lines = (root / "part.m3u8").read_text().splitlines()
+            parts = [line for line in lines if line.startswith("part")]
+            playlists = {"/fast/": "live?id=5", "/retry/": "index.m3u8", "/gz/": "index.m3u8"}
+            for prefix, playlist in playlists.items():
+                suffix = "" if prefix == "/fast/" else ".ts"
+                names = {part: f"{number}{suffix}" for number, part in enumerate(parts)}
+                for part, name in names.items():
+                    resources[prefix + name] = (root / part).read_bytes()
+                resources[prefix + playlist] = "".join(
+                    names.get(line, line) + "\n" for line in lines).encode()
+
+            # No .m3u8 in the url, the Content-Type tells; segments without an extension.
+            content_types["/fast/live?id=5"] = "application/vnd.apple.mpegurl"
+            requests.clear()
+            player = Player(args.player, base + "/fast/live?id=5")
+            try:
+                assert player.wait("PLAYBACK_OPEN")["sts"] == 0, player.messages
+                assert player.wait("PLAYBACK_PLAY")["sts"] == 0
+            finally:
+                player.stop()
+            assert ("/fast/0", 0) in requests, requests
+            print("PASS HLS: segments without an extension behind a playlist url without .m3u8")
+
+            # The first segment fails once: asked for again before the next one.
+            failures["/retry/0.ts"] = 1
+            requests.clear()
+            player = Player(args.player, base + "/retry/index.m3u8")
+            try:
+                assert player.wait("PLAYBACK_OPEN")["sts"] == 0
+            finally:
+                player.stop()
+            segments = [path for path, _ in requests if path.endswith(".ts")]
+            assert segments[:2] == ["/retry/0.ts", "/retry/0.ts"], segments
+            print("PASS HLS: a segment that failed to open is requested again, not skipped")
+
+            # gzip is asked for and inflated; an Accept-Encoding given with -h wins.
+            compressed.add("/gz/index.m3u8")
+            for options, expected in (([], "gzip"), (["-h", "Accept-Encoding: identity\r\n"], "identity")):
+                encodings.clear()
+                player = Player(args.player, *options, base + "/gz/index.m3u8")
+                try:
+                    assert player.wait("PLAYBACK_OPEN")["sts"] == 0
+                    assert player.wait("PLAYBACK_PLAY")["sts"] == 0
+                finally:
+                    player.stop()
+                asked = [value for path, value in encodings if path == "/gz/index.m3u8"]
+                assert asked and all(value == expected for value in asked), (options, encodings)
+            print("PASS HLS: playlist requested with Accept-Encoding: gzip, -h identity kept")
 
             player = Player(args.player, str(embedded[1]))
             try:
