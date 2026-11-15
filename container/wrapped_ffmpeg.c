@@ -139,7 +139,8 @@ void free_all_stored_avcodec_context()
 static AVCodecContext *wrapped_avcodec_get_context(uint32_t cAVIdx, AVStream *stream)
 {
 #if (LIBAVFORMAT_VERSION_MAJOR > 57) || ((LIBAVFORMAT_VERSION_MAJOR == 57) && (LIBAVFORMAT_VERSION_MINOR > 32))
-    AVCodecContext *avCodecCtx = restore_avcodec_context(cAVIdx, stream->id);
+    /* AVStream.id need not be unique (FLV: 0 for every stream), the index is */
+    AVCodecContext *avCodecCtx = restore_avcodec_context(cAVIdx, stream->index);
     if (!avCodecCtx)
     {
         avCodecCtx = avcodec_alloc_context3(NULL);
@@ -161,7 +162,7 @@ static AVCodecContext *wrapped_avcodec_get_context(uint32_t cAVIdx, AVStream *st
         avCodecCtx->pkt_timebase = stream->time_base;
 #endif
         /* only a stored context is found again and flushed */
-        if (store_avcodec_context(avCodecCtx, cAVIdx, stream->id) < 0)
+        if (store_avcodec_context(avCodecCtx, cAVIdx, stream->index) < 0)
         {
             ffmpeg_err("storing the context for stream %d failed\n", (int)stream->id);
             avcodec_free_context(&avCodecCtx);
