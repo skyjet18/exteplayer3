@@ -1,6 +1,203 @@
 #include <assert.h>
 #include "pts_clock.h"
 
+/* Tracks that do not count from the same origin. */
+
+#define SECONDS(n) (INT64_C(90000) * (n))
+#define HOURS(n) SECONDS(INT64_C(3600) * (n))
+/* Up to this distance the first timestamps of two tracks are an A/V offset. */
+#define EPOCH_LIMIT SECONDS(60)
+
+static int epoch_video, epoch_audio, epoch_second;
+
+/* 25 video and audio timestamps a second, the audio just after the video. */
+static void epoch_run(PtsClock *clock, int64_t video, int64_t audio, int64_t now,
+                      int64_t video_out, int64_t audio_out, int count)
+{
+    int i;
+    for (i = 1; i <= count; i++)
+    {
+        assert(pts_clock_update(clock, 0, &epoch_video, video + i * 3600,
+                                now + i * 40000) == video_out + i * 3600);
+        assert(pts_clock_update(clock, 1, &epoch_audio, audio + i * 3600,
+                                now + i * 40000 + 1) == audio_out + i * 3600);
+    }
+}
+
+/* Video counts from 21.6 h and the audio is stamped 108 s earlier. The
+ * demuxer takes such a timestamp for one of the next 33-bit round, so the
+ * audio arrives 26.48 h after the video. */
+static void epoch_far_apart(void)
+{
+    PtsClock clock = {0};
+    const int64_t video = SECONDS(77760), audio = video - SECONDS(108) + PTS_CLOCK_WRAP;
+
+    assert(pts_clock_update(&clock, 0, &epoch_video, video, 1) == 0);
+    assert(pts_clock_update(&clock, 1, &epoch_audio, audio, 2) == 0);
+    epoch_run(&clock, video, audio, 2, 0, 0, 150);
+    assert(clock.delta_locked && clock.delta <= 0 && clock.delta >= -3600);
+    /* A second rendition in the origin of the audio, 30 ms after its last sample. */
+    assert(pts_clock_update(&clock, 1, &epoch_second, audio + 150 * 3600 + 2700,
+                            6000004) == 150 * 3600 + 2700);
+    /* A seek: the video keeps the base, the audio starts with it again. */
+    pts_clock_reset(&clock, 1);
+    assert(pts_clock_update(&clock, 0, &epoch_video, video + SECONDS(600), 7000000) == SECONDS(600));
+    assert(pts_clock_update(&clock, 1, &epoch_audio, audio + SECONDS(600), 7000001) == SECONDS(600));
+    epoch_run(&clock, video + SECONDS(600), audio + SECONDS(600), 7000001,
+              SECONDS(600), SECONDS(600), 10);
+
+    /* The audio is delivered first. */
+    pts_clock_reset(&clock, 0);
+    assert(pts_clock_update(&clock, 1, &epoch_audio, audio, 1) == 0);
+    assert(pts_clock_update(&clock, 0, &epoch_video, video, 2) == 0);
+    assert(pts_clock_update(&clock, 1, &epoch_audio, audio + 1920, 3) == 1920);
+    assert(pts_clock_update(&clock, 0, &epoch_video, video + 3600, 4) == 3600);
+
+    /* Hours apart without a 33-bit round between them, later and earlier. */
+    pts_clock_reset(&clock, 0);
+    assert(pts_clock_update(&clock, 0, &epoch_video, HOURS(1), 1) == 0);
+    assert(pts_clock_update(&clock, 1, &epoch_audio, HOURS(8), 2) == 0);
+    epoch_run(&clock, HOURS(1), HOURS(8), 2, 0, 0, 10);
+    pts_clock_reset(&clock, 0);
+    assert(pts_clock_update(&clock, 0, &epoch_video, HOURS(8), 1) == 0);
+    assert(pts_clock_update(&clock, 1, &epoch_audio, HOURS(3), 2) == 0);
+    epoch_run(&clock, HOURS(8), HOURS(3), 2, 0, 0, 10);
+
+    /* The video is some frames on when the first audio comes: the audio
+     * starts where the video started, not where it is now. */
+    pts_clock_reset(&clock, 0);
+    assert(pts_clock_update(&clock, 0, &epoch_video, HOURS(1), 1) == 0);
+    assert(pts_clock_update(&clock, 0, &epoch_video, HOURS(1) + 3600, 40001) == 3600);
+    assert(pts_clock_update(&clock, 0, &epoch_video, HOURS(1) + 7200, 80001) == 7200);
+    assert(pts_clock_update(&clock, 1, &epoch_audio, HOURS(8), 80002) == 0);
+    assert(pts_clock_update(&clock, 1, &epoch_audio, HOURS(8) + 1920, 80003) == 1920);
+
+    /* Just over the limit. */
+    pts_clock_reset(&clock, 0);
+    assert(pts_clock_update(&clock, 0, &epoch_video, 900000, 1) == 0);
+    assert(pts_clock_update(&clock, 1, &epoch_audio, 900000 + EPOCH_LIMIT + 1, 2) == 0);
+    pts_clock_reset(&clock, 0);
+    assert(pts_clock_update(&clock, 0, &epoch_video, HOURS(1), 1) == 0);
+    assert(pts_clock_update(&clock, 1, &epoch_audio, HOURS(1) - EPOCH_LIMIT - 1, 2) == 0);
+}
+
+/* A/V offsets of the source are kept as they are. */
+static void epoch_real_offsets(void)
+{
+    static const int64_t offsets[] = {
+        18000, SECONDS(3), SECONDS(20), EPOCH_LIMIT, -18000, -SECONDS(20), -EPOCH_LIMIT
+    };
+    PtsClock clock = {0};
+    unsigned int i;
+
+    for (i = 0; i < sizeof(offsets) / sizeof(offsets[0]); i++)
+    {
+        pts_clock_reset(&clock, 0);
+        assert(pts_clock_update(&clock, 0, &epoch_video, HOURS(1), 1) == 0);
+        assert(pts_clock_update(&clock, 1, &epoch_audio, HOURS(1) + offsets[i], 2) == offsets[i]);
+        epoch_run(&clock, HOURS(1), HOURS(1) + offsets[i], 2, 0, offsets[i], 10);
+        /* The audio first. */
+        pts_clock_reset(&clock, 0);
+        assert(pts_clock_update(&clock, 1, &epoch_audio, HOURS(1), 1) == 0);
+        assert(pts_clock_update(&clock, 0, &epoch_video, HOURS(1) + offsets[i], 2) == offsets[i]);
+    }
+
+    /* The distance counts from where the other track is, not from where it
+     * started: audio that begins 100 s into the video and 20 s ahead of it. */
+    pts_clock_reset(&clock, 0);
+    assert(pts_clock_update(&clock, 0, &epoch_video, HOURS(1), 1) == 0);
+    for (i = 1; i <= 50; i++)
+        assert(pts_clock_update(&clock, 0, &epoch_video, HOURS(1) + SECONDS(2) * i,
+                                1 + i * 2000000) == SECONDS(2) * i);
+    assert(pts_clock_update(&clock, 1, &epoch_audio, HOURS(1) + SECONDS(120),
+                            100000002) == SECONDS(120));
+
+    /* A second audio rendition that joins later, 2 s after the last sample
+     * of the first one, keeps these 2 s. */
+    pts_clock_reset(&clock, 0);
+    assert(pts_clock_update(&clock, 0, &epoch_video, HOURS(1), 1) == 0);
+    assert(pts_clock_update(&clock, 1, &epoch_audio, HOURS(1) + 18000, 2) == 18000);
+    epoch_run(&clock, HOURS(1), HOURS(1) + 18000, 2, 0, 18000, 150);
+    assert(pts_clock_update(&clock, 1, &epoch_second, HOURS(1) + 18000 + 150 * 3600 + SECONDS(2),
+                            6000004) == 18000 + 150 * 3600 + SECONDS(2));
+    /* One from another origin is no first timestamp of its track: it is a
+     * jump, anchored to the video with the A/V offset learned so far. */
+    pts_clock_reset(&clock, 0);
+    assert(pts_clock_update(&clock, 0, &epoch_video, HOURS(1), 1) == 0);
+    assert(pts_clock_update(&clock, 1, &epoch_audio, HOURS(1) + 18000, 2) == 18000);
+    epoch_run(&clock, HOURS(1), HOURS(1) + 18000, 2, 0, 18000, 150);
+    assert(clock.delta_locked);
+    assert(pts_clock_update(&clock, 1, &epoch_second, HOURS(9), 6000004) ==
+           clock.track[0].corrected + clock.delta);
+}
+
+/* The 33-bit round is no other origin. */
+static void epoch_wrap(void)
+{
+    PtsClock clock = {0};
+
+    /* The audio has passed the end of the round, the video has not. */
+    assert(pts_clock_update(&clock, 0, &epoch_video, PTS_CLOCK_WRAP - 100, 1) == 0);
+    assert(pts_clock_update(&clock, 1, &epoch_audio, PTS_CLOCK_WRAP + 100, 2) == 200);
+    /* The same with timestamps that nobody has unwrapped. */
+    pts_clock_reset(&clock, 0);
+    assert(pts_clock_update(&clock, 0, &epoch_video, PTS_CLOCK_WRAP - 100, 1) == 0);
+    assert(pts_clock_update(&clock, 1, &epoch_audio, 100, 2) == 200);
+    assert(pts_clock_update(&clock, 0, &epoch_video, 3500, 3) == 3600);
+    assert(pts_clock_update(&clock, 1, &epoch_audio, 2020, 4) == 2120);
+    /* One round and 20 s apart: an offset of 20 s. */
+    pts_clock_reset(&clock, 0);
+    assert(pts_clock_update(&clock, 0, &epoch_video, HOURS(1), 1) == 0);
+    assert(pts_clock_update(&clock, 1, &epoch_audio, HOURS(1) + PTS_CLOCK_WRAP + SECONDS(20), 2) == SECONDS(20));
+    pts_clock_reset(&clock, 0);
+    assert(pts_clock_update(&clock, 0, &epoch_video, HOURS(1) + PTS_CLOCK_WRAP, 1) == 0);
+    assert(pts_clock_update(&clock, 1, &epoch_audio, HOURS(1) + SECONDS(20), 2) == SECONDS(20));
+    /* Another origin, and the video passes the end of the round. */
+    pts_clock_reset(&clock, 0);
+    assert(pts_clock_update(&clock, 0, &epoch_video, PTS_CLOCK_WRAP - 100, 1) == 0);
+    assert(pts_clock_update(&clock, 1, &epoch_audio, HOURS(5), 2) == 0);
+    assert(pts_clock_update(&clock, 0, &epoch_video, 3500, 3) == 3600);
+    assert(pts_clock_update(&clock, 1, &epoch_audio, HOURS(5) + 1920, 4) == 1920);
+    /* The audio passes it. */
+    pts_clock_reset(&clock, 0);
+    assert(pts_clock_update(&clock, 0, &epoch_video, HOURS(5), 1) == 0);
+    assert(pts_clock_update(&clock, 1, &epoch_audio, PTS_CLOCK_WRAP - 100, 2) == 0);
+    assert(pts_clock_update(&clock, 0, &epoch_video, HOURS(5) + 3600, 3) == 3600);
+    assert(pts_clock_update(&clock, 1, &epoch_audio, 1820, 4) == 1920);
+}
+
+/* One track alone has nothing to be compared with. */
+static void epoch_single_track(void)
+{
+    PtsClock clock = {0};
+
+    assert(pts_clock_update(&clock, 1, &epoch_audio, HOURS(26), 1) == 0);
+    assert(pts_clock_update(&clock, 1, &epoch_audio, HOURS(26) + 1920, 2) == 1920);
+    assert(pts_clock_update(&clock, 1, &epoch_second, HOURS(26) + 3840, 3) == 3840);
+    pts_clock_reset(&clock, 0);
+    assert(pts_clock_update(&clock, 0, &epoch_video, HOURS(26), 1) == 0);
+    assert(pts_clock_update(&clock, 0, &epoch_video, HOURS(26) + 3600, 2) == 3600);
+    /* After a seek the base is kept, also hours into the stream. */
+    pts_clock_reset(&clock, 1);
+    assert(pts_clock_update(&clock, 0, &epoch_video, HOURS(28), 3) == HOURS(2));
+}
+
+/* DASH keeps the timeline of the manifest whatever the distance is. */
+static void epoch_preserve_timeline(void)
+{
+    PtsClock clock = {0};
+
+    clock.preserve_timeline = 1;
+    assert(pts_clock_update(&clock, 0, &epoch_video, 900000, 1) == 0);
+    assert(pts_clock_update(&clock, 1, &epoch_audio, 900000 + HOURS(8), 2) == HOURS(8));
+    assert(pts_clock_update(&clock, 1, &epoch_second, 900000 + SECONDS(61), 3) == SECONDS(61));
+    assert(pts_clock_update(&clock, 0, &epoch_video, 903600, 4) == 3600);
+    pts_clock_reset(&clock, 1);
+    assert(clock.preserve_timeline);
+    assert(pts_clock_update(&clock, 1, &epoch_audio, 900000 + HOURS(8), 5) == HOURS(8));
+    assert(pts_clock_update(&clock, 0, &epoch_video, 900000 + SECONDS(600), 6) == SECONDS(600));
+}
+
 int main(void)
 {
     PtsClock clock = {0};
@@ -69,5 +266,10 @@ int main(void)
     assert(pts_clock_update(&clock, 1, &audio, PTS_CLOCK_WRAP - 80, 2) == 20);
     assert(pts_clock_update(&clock, 1, &replacement_audio, 100, 3) == 200);
     assert(pts_clock_update(&clock, 0, &video, 120, 4) == 220);
+    epoch_far_apart();
+    epoch_real_offsets();
+    epoch_wrap();
+    epoch_single_track();
+    epoch_preserve_timeline();
     return 0;
 }
