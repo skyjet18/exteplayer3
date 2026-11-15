@@ -159,6 +159,106 @@ static void read_ahead_buffer_goes_back_to_av_free(void)
     assert(!av_block && !ffmpeg_buf);
 }
 
+/* Software decoding: the WAV file is sent as A_IPCM, so its track gets a
+ * decoder context from wrapped_avcodec_get_context(). */
+static AVCodecContext *added_decoder;
+
+/* The track update links these; the WAV track takes none of their paths. */
+stb_type_t GetSTBType(void)
+{
+    return STB_UNKNOWN;
+}
+
+const char *GetGraphicSubPath(void)
+{
+    return NULL;
+}
+
+uint8_t get_chan_config(int channels)
+{
+    (void)channels;
+    return 0;
+}
+
+int avpriv_mpeg4audio_get_config(MPEG4AudioConfig *c, const uint8_t *buf, int bit_size, int sync_extension)
+{
+    (void)c, (void)buf, (void)bit_size, (void)sync_extension;
+    return -1;
+}
+
+int avpriv_copy_pce_data(PutBitContext *pb, GetBitContext *gb)
+{
+    (void)pb, (void)gb;
+    return 0;
+}
+
+static int decoder_manager(void *opaque, ManagerCmd_t command, void *argument)
+{
+    (void)opaque;
+    if (command == MANAGER_ADD)
+        added_decoder = ((Track_t *)argument)->avCodecCtx;
+    else if (command == MANAGER_GET_TRACK || command == MANAGER_REF_LIST)
+        *(Track_t **)argument = NULL;
+    else if (command == MANAGER_REF_LIST_SIZE)
+        *(int32_t *)argument = 0;
+    return 0;
+}
+
+static Manager_t decoder_audio = {.Command = decoder_manager};
+static ManagerHandler_t decoder_managers = {.audio = &decoder_audio};
+static Context_t decoder_context = {.playback = &playback, .manager = &decoder_managers};
+
+static AVCodecContext *open_decoder(void)
+{
+    terminating = 0; /* left set by the stop of the case before */
+    added_decoder = NULL;
+    assert(!container_ffmpeg_init_av_context(&decoder_context, wav, 0, NULL, 0, 0));
+    assert(!container_ffmpeg_update_tracks(&decoder_context, wav, 1));
+    assert(added_decoder && avcodec_is_open(added_decoder));
+    return added_decoder;
+}
+
+static void stop_decoder(void)
+{
+    added_decoder = NULL;
+    isContainerRunning = 1;
+    assert(!container_ffmpeg_stop(&decoder_context));
+}
+
+/* A track list updates the tracks again: the track keeps its decoder. */
+static void track_update_keeps_the_decoder(void)
+{
+    AVCodecContext *decoder = open_decoder();
+    assert(!container_ffmpeg_update_tracks(&decoder_context, wav, 0));
+    assert(added_decoder == decoder);
+    stop_decoder();
+}
+
+/* The flush after a seek drops the frame the decoder holds. */
+static void seek_flush_resets_the_decoder(void)
+{
+    AVCodecContext *decoder = open_decoder();
+    AVPacket *packet = av_packet_alloc();
+    AVFrame *frame = av_frame_alloc();
+    assert(packet && frame && !av_new_packet(packet, 64));
+    memset(packet->data, 0, packet->size);
+    assert(!avcodec_send_packet(decoder, packet));
+    wrapped_avcodec_flush_buffers(0);
+    assert(avcodec_receive_frame(decoder, frame) == AVERROR(EAGAIN));
+    av_frame_free(&frame);
+    av_packet_free(&packet);
+    stop_decoder();
+}
+
+/* The decoders of all track updates are gone after the stop. */
+static void stop_frees_the_decoders(void)
+{
+    open_decoder();
+    assert(!container_ffmpeg_update_tracks(&decoder_context, wav, 0));
+    stop_decoder();
+    assert(!__lsan_do_recoverable_leak_check());
+}
+
 int main(void)
 {
     static const uint8_t header[44] = {
@@ -183,6 +283,9 @@ int main(void)
     opened_input_keeps_no_options();
     stop_closes_the_custom_io();
     read_ahead_buffer_goes_back_to_av_free();
+    track_update_keeps_the_decoder();
+    seek_flush_resets_the_decoder();
+    stop_frees_the_decoders();
     unlink(wav);
     unlink(empty);
     return 0;
