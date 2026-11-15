@@ -12,6 +12,22 @@ void E2iSendMsg(const char *format, ...)
     notifications++;
 }
 
+/* misc.c is not linked: the box type is the one of the case. */
+static stb_type_t stb_type = STB_OTHER;
+stb_type_t GetSTBType(void) { return stb_type; }
+
+/* Neither is external/ffmpeg/src/mpeg4audio.c; Codec2Encoding() asks it for
+ * AAC only, which the cases here do not use. */
+int avpriv_mpeg4audio_get_config(MPEG4AudioConfig *c, const uint8_t *buf,
+                                 int bit_size, int sync_extension)
+{
+    (void)c;
+    (void)buf;
+    (void)bit_size;
+    (void)sync_extension;
+    abort();
+}
+
 static Track_t seek_track;
 static Track_t live_tracks[2];
 
@@ -388,6 +404,38 @@ int main(void)
         avContextTab[0] = NULL;
         seek_track.stream = NULL;
         avformat_free_context(av);
+    }
+    {
+        /* WMA, WMA Pro, Vorbis and Opus: the hardware writer only where the
+         * driver has a decoder for them; on Vu+ they are decoded in software. */
+        static const struct {
+            stb_type_t type;
+            const char *wma, *wma_pro, *vorbis, *opus;
+        } boxes[] = {
+            {STB_VUPLUS, "A_IPCM", "A_IPCM", "A_IPCM", "A_IPCM"},
+            {STB_DREAMBOX, "A_WMA", "A_WMA/PRO", "A_VORBIS", "A_OPUS"},
+            {STB_HISILICON, "A_WMA", "A_WMA/PRO", "A_VORBIS", "A_OPUS"},
+            {STB_OTHER, "A_WMA", "A_WMA/PRO", "A_VORBIS", "A_OPUS"},
+        };
+        int32_t version = 0;
+        unsigned i;
+        vorbis_software_decode = opus_software_decode = 0;
+        for (i = 0; i < sizeof(boxes) / sizeof(boxes[0]); i++) {
+            stb_type = boxes[i].type;
+            assert(!strcmp(Codec2Encoding(AV_CODEC_ID_WMAV2, AVMEDIA_TYPE_AUDIO, NULL, 0, 0, &version), boxes[i].wma));
+            assert(!strcmp(Codec2Encoding(AV_CODEC_ID_WMAPRO, AVMEDIA_TYPE_AUDIO, NULL, 0, 0, &version), boxes[i].wma_pro));
+            assert(!strcmp(Codec2Encoding(AV_CODEC_ID_VORBIS, AVMEDIA_TYPE_AUDIO, NULL, 0, 0, &version), boxes[i].vorbis));
+            assert(!strcmp(Codec2Encoding(AV_CODEC_ID_OPUS, AVMEDIA_TYPE_AUDIO, NULL, 0, 0, &version), boxes[i].opus));
+            /* The options for software decoding still apply everywhere. */
+            wma_software_decode = 1;
+            assert(!strcmp(Codec2Encoding(AV_CODEC_ID_WMAV2, AVMEDIA_TYPE_AUDIO, NULL, 0, 0, &version), "A_IPCM"));
+            assert(!strcmp(Codec2Encoding(AV_CODEC_ID_WMAPRO, AVMEDIA_TYPE_AUDIO, NULL, 0, 0, &version), "A_IPCM"));
+            wma_software_decode = 0;
+        }
+        vorbis_software_decode = opus_software_decode = 1;
+        assert(!strcmp(Codec2Encoding(AV_CODEC_ID_VORBIS, AVMEDIA_TYPE_AUDIO, NULL, 0, 0, &version), "A_IPCM"));
+        assert(!strcmp(Codec2Encoding(AV_CODEC_ID_OPUS, AVMEDIA_TYPE_AUDIO, NULL, 0, 0, &version), "A_IPCM"));
+        stb_type = STB_OTHER;
     }
     return 0;
 }
