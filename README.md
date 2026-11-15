@@ -283,6 +283,13 @@ video after the first SPS, or 2 MiB in total, were inspected; `3` can still
 become `1` or `2` in that time. Packets are only copied for inspection;
 nothing extra is read from the input and no video is decoded.
 
+Commands are read from stdin. When stdin is a pipe or a socket and reaches
+its end (the front end exited or crashed without sending `q`), the player
+acts as on `q`: it stops and frees the audio and video devices, also while
+the input is still opening. A terminal, `/dev/null` or a regular file on
+stdin keeps the old behaviour: the end of input is not a command, and
+playback goes on until it ends by itself.
+
 ## FFmpeg companions
 
 These backports target the local FFmpeg 6.1-derived tree, not an unmodified
