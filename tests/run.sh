@@ -48,6 +48,12 @@ rm -f "$tmp/play_thread"
 # The subtitle and writer programs link no command table, so ASan checks them too.
 trap 'rm -rf "$tmp"' EXIT HUP INT TERM
 export ASAN_OPTIONS=detect_leaks=0
+# The DD+ restart after the first passthrough start, with the model and the
+# mode from stubbed /proc files and a clock moved by the test.
+$cc -g -fsanitize=undefined -ffunction-sections -fdata-sections \
+    -Wno-deprecated-declarations -Iinclude -Iexternal -I"$FFMPEG_BUILD" -I"$FFMPEG_SOURCE" \
+    tests/eac3_restart_test.c tools/debug.c -Wl,--gc-sections -pthread -o "$tmp/eac3_restart"
+timeout 20 "$tmp/eac3_restart"
 # Output follow-up: the writers with allocations that fail (malloc() of these
 # sources is the one of the test), and a leak check of the buffering queue.
 sources="tests/writers_alloc_test.c tools/debug.c output/writer/common/pes.c output/writer/common/misc.c"
