@@ -8,6 +8,11 @@
 #define PTS_CLOCK_WRAP (INT64_C(1) << 33)
 #define PTS_CLOCK_JUMP (INT64_C(3) * 90000)
 #define PTS_CLOCK_FRESH_US 700000
+/* A track whose first timestamp is further than this from the other track
+ * does not count from the same origin. Sixty seconds is where the demuxer
+ * draws that line: libavformat takes a timestamp more than 60 s before the
+ * first one of its program for one of the next 33-bit round. */
+#define PTS_CLOCK_EPOCH (INT64_C(60) * 90000)
 
 typedef struct {
     const void *stream;
@@ -19,6 +24,7 @@ typedef struct {
     unsigned int next;
     int ready, trusted;
     int64_t raw, corrected, time_us, offset, step;
+    int64_t first; /* corrected timestamp the track started with */
 } PtsTrackClock;
 
 typedef struct {
@@ -94,6 +100,18 @@ static inline int64_t pts_clock_update(PtsClock *clock, int kind,
         else
             entry->offset = self->ready ? self->offset : -clock->base;
     }
+    if (!self->ready && other->ready && !clock->preserve_timeline)
+    {
+        /* The first timestamp of this track while the other one runs. */
+        int64_t apart = pts_clock_difference(raw, other->raw);
+        if (pts_clock_abs(apart) > PTS_CLOCK_EPOCH)
+            /* Another origin: this distance is no A/V offset, nothing could
+             * play it. The track starts where the other one started. */
+            entry->offset = other->first - raw;
+        else
+            /* The same origin; whole 33-bit rounds between them are dropped. */
+            entry->offset -= raw - other->raw - apart;
+    }
     if (self->ready && pts_clock_abs(raw + entry->offset - self->corrected) > PTS_CLOCK_JUMP)
         changed = 1;
     if (clock->preserve_timeline)
@@ -116,6 +134,8 @@ static inline int64_t pts_clock_update(PtsClock *clock, int kind,
     self->raw = raw;
     self->corrected = corrected;
     self->offset = entry->offset;
+    if (!self->ready)
+        self->first = corrected;
     self->ready = 1;
     self->time_us = now;
     if (!changed && fresh && self->trusted && other->trusted && !clock->delta_locked)
