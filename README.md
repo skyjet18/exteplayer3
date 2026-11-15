@@ -101,6 +101,24 @@ seeks; the earlier `79390c5c6d` fix alone does not cover real reopening.
 If the receiver rejects the DASH sync ioctl, startup/switch reports an error
 rather than silently running with hardware sync disabled.
 
+`EP3_DTS_HD_MODE=0|1` controls the DTS-HD bypass mode of the non-SH4 DVB
+backend. Some drivers pass DTS-HD MA and DTS:X through in full only in their
+DTS-HD mode (`AUDIO_SET_BYPASS_MODE` `0x10`); in plain DTS mode (`2`) they send
+the core alone. A DTS track is still started in plain DTS mode. The first frame
+written after a start or an audio switch decides: if it begins with the DTS-HD
+extension substream sync `64 58 20 25`, or one follows its 16-bit big-endian
+core frame, the decoder is stopped, cleared and restarted in DTS-HD mode before
+that frame is written; if the driver refuses the mode, plain DTS is set again.
+A frame without extension costs no ioctl, and a seek keeps the mode. While
+playback is paused the decoder is not touched and a later frame decides.
+Unset, this is active only where `/proc/stb/audio/dtshd` exists and the
+receiver is not a Dreambox, the drivers whose DTS-HD mode is known to cope
+with a receiver that has no DTS-HD; elsewhere such a receiver could get no
+sound at all. Only the exact values `0` and `1` are honored; anything else
+selects that default. Software-decoded DTS uses the PCM writer and is not
+affected. `-L LINUXDVB_DEBUG_LEVEL:10 -L LINUXDVB_SILENT:0` logs
+`DTS with HD extension, set bypass 0x10`.
+
 Audio and video share one timestamp origin, and the distance between their
 first timestamps is kept as the source has it. A track whose first timestamp
 is more than 60 seconds (modulo the 33-bit PTS range) away from where the
@@ -615,6 +633,13 @@ provider/SSAI behavior. Before deployment, check on representative receivers:
   resets, long stalls, pause/resume, repeated seeks and stream switches.
 - A source whose audio and video count from different origins (first
   timestamps more than 60 seconds apart): audible audio and its lip sync.
+- The DTS-HD bypass mode has been checked on one receiver only (VU+ Uno 4K
+  SE, openATV 8.0.2, ffmpeg-ext 6.1.1, with an AV receiver): it has no
+  `/proc/stb/audio/dtshd`, so the automatic mode stays off; forced with
+  `EP3_DTS_HD_MODE=1` the AV receiver shows DTS-HD MA, without it DTS (core).
+  Still open: a box with `/proc/stb/audio/dtshd`, sound with a receiver without
+  DTS-HD, DTS:X, plain DTS after switching to a core-only track, and
+  `EP3_DTS_HD_MODE=1` on other chipsets.
 - AAC dejitter and passthrough versus software PCM; DTS/PES B-frame output,
   initial/changed H.264 SPS/PPS, busy decoder devices and stop latency.
 - DTS core-frame padding has been checked on one receiver only (VU+ Uno 4K
