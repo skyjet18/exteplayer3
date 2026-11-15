@@ -28,6 +28,7 @@ typedef enum {
     OUTPUT_GET_PROGRESSIVE,
     OUTPUT_SET_BUFFER_SIZE,
     OUTPUT_GET_BUFFER_SIZE,
+    OUTPUT_GET_VIDEO_INFO,
 } OutputCmd_t;
 
 typedef struct

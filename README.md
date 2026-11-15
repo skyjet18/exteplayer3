@@ -118,6 +118,30 @@ Language alone never implies forced subtitles. Disabled subtitles report ID
 `-1`, `f:0`. Adaptive demuxers discard unselected subtitles; embedded MP4/MKV
 subtitle handling remains enabled.
 
+The current video track is reported as
+`{"v_c":{"id":2,"e":"V_MPEG4/ISO/AVC","n":"und","w":1280,"h":720,"f":25000,"p":1,"an":1,"ad":1}}`:
+picture size, frame rate in frames per 1000 seconds and the progressive flag
+(`-1` unknown) of the decoder. The line is sent at start, on `vc` and again
+when the decoder reports the progressive flag. For a stream FFmpeg has not
+seen a picture of (live MPEG-TS or HLS over HTTP: `"w":0,"h":0` and a guessed
+`f`) the non-SH4 DVB backend completes `w`, `h`, `f` and `p` with the values
+of the video decoder and sends the line once more, with the final values. The
+driver sends its size, frame-rate and progressive events only for values that
+differ from the previous playback, so what no event delivers is asked from it
+(`VIDEO_GET_SIZE`, `VIDEO_GET_FRAME_RATE`, `/proc/stb/vmpeg/0/progressive`).
+Right after the start the driver still answers with the values of the
+previous playback and its events follow a moment after it has been asked:
+that first answer is never used. Once no event has come for half a second of
+decoder PTS the open values are asked again and the line is sent, also for
+a progressive event; without a size the driver is asked up to ten more
+times. Events and PTS are also read on position requests (`j`), since a
+file is often written to the end before that. Values FFmpeg knows are never
+replaced, and such streams produce the same lines as before.
+`{"v_e":{"w":1280,"h":720,"a":1,"f":25000,"p":1}}` repeats the decoder events
+once size, frame rate and progressive have all been reported by events in
+this process, which the same driver behaviour makes rare; front ends should
+read `v_c`.
+
 Audio-only playback additionally emits
 `{"m_t":{"rt":"Artist - Title","t":"Title","a":"Artist"}}` when ICY or
 format/stream metadata changes. Empty strings clear old metadata; unchanged
