@@ -108,6 +108,7 @@ void free_all_stored_avcodec_context()
     while (g_codecCtxStoreListHead != NULL)
     {
         CodecCtxStoreItem_t *ptr = g_codecCtxStoreListHead->next;
+        avcodec_free_context(&g_codecCtxStoreListHead->avCodecCtx);
         free(g_codecCtxStoreListHead);
         g_codecCtxStoreListHead = ptr;
     }
@@ -161,7 +162,7 @@ static AVCodecContext *wrapped_avcodec_get_context(uint32_t cAVIdx, AVStream *st
 #else
         avCodecCtx->pkt_timebase = stream->time_base;
 #endif
-        /* only a stored context is found again and flushed */
+        /* only a stored context is found again, flushed and freed */
         if (store_avcodec_context(avCodecCtx, cAVIdx, stream->index) < 0)
         {
             ffmpeg_err("storing the context for stream %d failed\n", (int)stream->id);
