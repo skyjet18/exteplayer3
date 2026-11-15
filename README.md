@@ -364,6 +364,30 @@ expectations fail against the unchanged muxer. All three companion FATE targets
 and the generated-media HTTP fixture pass; this series does not alter that muxer
 behavior.
 
+## DD+ passthrough restart on VU+ Ultimo 4K and Duo 4K SE
+
+On these two models the first E-AC-3 start through the playpump stays silent
+when the receiver passes DD+ on as a bitstream, while an audio switch made
+afterwards gives sound. The non-SH4 DVB backend therefore follows that start
+once by what an audio switch does, without changing the track: 100 ms after
+the first DD+ packet, the command loop seeks the input by 0 s where a switch
+would (with `isSeeking` set) and restarts the audio decoder (`OUTPUT_SWITCH`).
+It is armed only at the first audio start of the process, for the E-AC-3
+bitstream writer (software-decoded DD+ uses the PCM writer), outside DASH,
+on a VU+ whose `/proc/stb/info/vumodel` is `ultimo4k` or `duo4kse` and whose
+`/proc/stb/audio/ac3` is `passthrough`. Everywhere else nothing changes: the
+command loop keeps its 1 s idle wait. While the restart is due it polls every
+20 ms; a first DD+ packet later than 5 s gets its restart with the next 1 s
+poll. An audio switch or stop before that point cancels it; a loop restart of
+the file does not arm it again.
+
+`EP3_EAC3_RESTART=1` arms it on any receiver and `EP3_EAC3_RESTART=0` never;
+only these exact values are honored, anything else keeps the model and mode
+test. Known limitation: a seek sent within about 100 ms after the first DD+
+packet can be overtaken by the restart's own 0 s seek and lose its target.
+`-L LINUXDVB_DEBUG_LEVEL:10 -L LINUXDVB_SILENT:0` logs
+`DD+ passthrough start, audio restart armed`.
+
 ## Backport provenance and exclusions
 
 Reference: [boingbasti/e2-serviceapp-vti](https://github.com/boingbasti/e2-serviceapp-vti),
@@ -444,6 +468,12 @@ provider/SSAI behavior. Before deployment, check on representative receivers:
 
 - HLS/DASH startup and explicit quality/program selection, separate audio,
   short live windows, EVENT playlists and discontinuity/ad transitions.
+- The DD+ passthrough restart has only been forced with `EP3_EAC3_RESTART=1`
+  on a VU+ Uno 4K SE (openATV 8.0.2, ffmpeg-ext 6.1.1, with an AV receiver):
+  harmless there, DD+ with sound. Still open: sound from the first E-AC-3
+  start on VU+ Ultimo 4K and Duo 4K SE with `/proc/stb/audio/ac3` set to
+  `passthrough`, no audible gap or A/V offset from the restart there, and a
+  seek right after the start.
 - Natural AV offsets, 33-bit PTS wrap, reordered video, audio/video clock
   resets, long stalls, pause/resume, repeated seeks and stream switches.
 - A source whose audio and video count from different origins (first
