@@ -180,12 +180,16 @@ static bool LinuxDvbReadProcLine(const char *path, char *buf, size_t size)
 }
 
 /* Read once, at the first audio start: one of the two models, and the box
- * is set to hand DD+ on as a bitstream. */
+ * is set to hand DD+ on as a bitstream. EP3_EAC3_RESTART=1 / EP3_EAC3_RESTART=0
+ * in the environment forces it on / off, e.g. to try it on another model. */
 static bool LinuxDvbEac3NeedsRestart(void)
 {
+    const char *env = getenv("EP3_EAC3_RESTART");
     char model[32] = "";
     char mode[32] = "";
 
+    if (env && (env[0] == '0' || env[0] == '1') && env[1] == '\0')
+        return env[0] == '1';
     if (STB_VUPLUS != GetSTBType())
         return false;
     if (!LinuxDvbReadProcLine("/proc/stb/info/vumodel", model, sizeof(model)) ||
