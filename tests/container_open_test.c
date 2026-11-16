@@ -52,6 +52,7 @@ static Context_t context = {.playback = &playback};
 static char rtmp[] = "rtmp://127.0.0.1/app/stream";
 static char empty[] = "/tmp/exteplayer3-open-XXXXXX";
 static char wav[] = "/tmp/exteplayer3-open-XXXXXX";
+static char adts[] = "/tmp/exteplayer3-open-XXXXXX.aac";
 
 int8_t PlaybackDieNow(int8_t value)
 {
@@ -259,6 +260,31 @@ static void stop_frees_the_decoders(void)
     assert(!__lsan_do_recoverable_leak_check());
 }
 
+/* An audio manager whose track list is full: ManagerAdd() of manager/audio.c
+ * refuses the 21st track and does not take the codec header of an AAC track. */
+static int full_manager(void *opaque, ManagerCmd_t command, void *argument)
+{
+    if (command == MANAGER_ADD)
+        return -1;
+    return decoder_manager(opaque, command, argument);
+}
+
+static Manager_t full_audio = {.Command = full_manager};
+static ManagerHandler_t full_managers = {.audio = &full_audio};
+static Context_t full_context = {.playback = &playback, .manager = &full_managers};
+
+static void refused_audio_track_frees_its_codec_header(void)
+{
+    terminating = 0;
+    assert(!container_ffmpeg_init_av_context(&full_context, adts, 0, NULL, 0, 0));
+    assert(avContextTab[0]->nb_streams == 1 &&
+           avContextTab[0]->streams[0]->codecpar->codec_id == AV_CODEC_ID_AAC);
+    assert(!container_ffmpeg_update_tracks(&full_context, adts, 1));
+    isContainerRunning = 1;
+    assert(!container_ffmpeg_stop(&full_context));
+    assert(!__lsan_do_recoverable_leak_check());
+}
+
 int main(void)
 {
     static const uint8_t header[44] = {
@@ -269,6 +295,14 @@ int main(void)
     int file = mkstemp(wav);
     assert(file >= 0 && write(file, header, sizeof(header)) == sizeof(header));
     assert(write(file, samples, sizeof(samples)) == sizeof(samples) && !close(file));
+    /* ten ADTS frames, AAC LC mono 48 kHz: a single channel element with
+     * no scale factor band, then the end element */
+    static const uint8_t frame[11] = {0xff, 0xf1, 0x4c, 0x40, 0x01, 0x7f, 0xfc, 0x00, 0x00, 0x00, 0x07};
+    file = mkstemps(adts, 4);
+    assert(file >= 0);
+    for (int i = 0; i < 10; i++)
+        assert(write(file, frame, sizeof(frame)) == sizeof(frame));
+    assert(!close(file));
     file = mkstemp(empty);
     assert(file >= 0 && !close(file));
     rtmp_proto_impl = 1; /* the native rtmp protocol, which takes its parameters from the uri */
@@ -286,7 +320,9 @@ int main(void)
     track_update_keeps_the_decoder();
     seek_flush_resets_the_decoder();
     stop_frees_the_decoders();
+    refused_audio_track_frees_its_codec_header();
     unlink(wav);
+    unlink(adts);
     unlink(empty);
     return 0;
 }
