@@ -49,12 +49,20 @@ typedef enum OutputType_e{
     OUTPUT_VIDEO,
 } OutputType_t;
 
+/* A node holds the iovec segments of one WriteV() call: their lengths
+ * (segCount of them) behind the node, then their data. The buffering thread
+ * writes them one by one, as writev() does on the decoder devices: several
+ * drivers parse every write() of a PES header on its own. */
 typedef struct BufferingNode_s {
     uint32_t dataSize;
+    uint32_t segCount;
     OutputType_t dataType;
     void *stamp;
     struct BufferingNode_s *next;
 } BufferingNode_t;
+
+#define NODE_SEGMENTS(node) ((uint32_t *)((uint8_t *)(node) + sizeof(BufferingNode_t)))
+#define NODE_DATA(node) ((uint8_t *)(node) + sizeof(BufferingNode_t) + (node)->segCount * sizeof(uint32_t))
 
 /* ***************************** */
 /* Makros/Constants              */
@@ -201,16 +209,23 @@ static void LinuxDvbBuffThread(Context_t *context)
             (nodePtr->dataType == OUTPUT_VIDEO || !context->playback->isAudioSwitching) &&
             context->playback->stamp == nodePtr->stamp)
         {
-            /* Write data to valid output */
-            uint8_t *dataPtr = (uint8_t *)nodePtr + sizeof(BufferingNode_t);
+            /* Write data to valid output, segment by segment */
+            uint8_t *dataPtr = NODE_DATA(nodePtr);
+            const uint32_t *segments = NODE_SEGMENTS(nodePtr);
+            uint32_t seg;
             int fd = nodePtr->dataType == OUTPUT_VIDEO ? videofd : audiofd;
             g_bDuringWrite = true;
             g_bWritingAudio = nodePtr->dataType == OUTPUT_AUDIO;
             pthread_mutex_unlock(&bufferingMtx);
-            if (0 != WriteWithRetry(context, g_pfd[0], fd, g_pDVBMtx, dataPtr,
-                                   nodePtr->dataSize, nodePtr->dataType == OUTPUT_VIDEO))
+            for (seg = 0; seg < nodePtr->segCount; seg++)
             {
-                buff_err("Something is WRONG\n");
+                if (segments[seg] && 0 != WriteWithRetry(context, g_pfd[0], fd, g_pDVBMtx, dataPtr,
+                                                         segments[seg], nodePtr->dataType == OUTPUT_VIDEO))
+                {
+                    buff_err("Something is WRONG\n");
+                    break;
+                }
+                dataPtr += segments[seg];
             }
         }
         else
@@ -482,17 +497,19 @@ ssize_t BufferingWriteV(int fd, const struct iovec *iov, int ic)
     chunkSize += sizeof(BufferingNode_t);
     
     /* Allocate memory for queue node + data */
-    nodePtr = malloc(chunkSize);
+    nodePtr = malloc(chunkSize + ic * sizeof(uint32_t));
     if (!nodePtr)
     {
         buff_err("OUT OF MEM\n");
         return cERR_LINUX_DVB_BUFFERING_ERROR;
     }
+    nodePtr->segCount = ic;
     
     /* Copy data to new buffer */
-    dataPtr = (uint8_t *)nodePtr + sizeof(BufferingNode_t);
+    dataPtr = NODE_DATA(nodePtr);
     for (i=0; i<ic; ++i)
     {
+        NODE_SEGMENTS(nodePtr)[i] = iov[i].iov_len;
         memcpy(dataPtr, iov[i].iov_base, iov[i].iov_len);
         dataPtr += iov[i].iov_len;
     }
