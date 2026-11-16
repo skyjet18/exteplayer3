@@ -512,6 +512,26 @@ def main():
                 assert not list(frames.glob("*.tmp")), list(frames.iterdir())
             print("PASS PGS/DVB graphic subtitles with -G: PNG files and rectangles without the plugin")
 
+            # A subtitle file of its own counts from the start of the TS file, whose
+            # timestamps start at about 1.4 s: a cue before that is no exception.
+            separate = root / "separate.vtt"
+            separate.write_text("WEBVTT\n\n00:00:00.500 --> 00:00:01.500\nEarly\n\n"
+                                "00:00:04.000 --> 00:00:05.000\nLater\n", encoding="utf-8")
+            player = Player(args.player, "-x", str(separate), str(media))
+            try:
+                assert len(player.wait("s_l")) == 1
+                player.command("si0")
+                assert player.wait("s_s")["sts"] == 0
+                starts = {}
+                while "Later" not in starts:
+                    atom = player.wait("s_a")
+                    starts.setdefault(atom["t"], atom["s"])
+            finally:
+                player.stop()
+            assert abs(starts.get("Early", -1) - 500) <= 100, starts
+            assert abs(starts["Later"] - 4000) <= 100, starts
+            print("PASS -x WebVTT file: cues at their time in the TS file, also the one before its first timestamp")
+
             player = Player(args.player, str(radio))
             try:
                 metadata = player.wait("m_t")
