@@ -672,6 +672,17 @@ packet can be overtaken by the restart's own 0 s seek and lose its target.
 `-L LINUXDVB_DEBUG_LEVEL:10 -L LINUXDVB_SILENT:0` logs
 `DD+ passthrough start, audio restart armed`.
 
+Under the same conditions (model and mode, or `EP3_EAC3_RESTART=1`, outside
+DASH), setting the DD+ bypass mode again while the decoder runs DD+
+passthrough silences the HDMI output. So once an audio switch (the restart
+above included) has started the decoder in DD+ bypass mode, a later switch to
+another track written as E-AC-3 (native E-AC-3, or DTS/TrueHD transcoded with
+`-E`, `--dts-eac3`, `--truehd-eac3`) does not stop the decoder or set the
+mode again: only its buffer is cleared, a paused decoder stays paused, and the
+debug log shows `DD+ -> DD+ switch, decoder kept running`. A switch to any
+other codec, and the first switch after an audio start or stop, still restart
+the decoder in full.
+
 ## Backport provenance and exclusions
 
 Reference: [boingbasti/e2-serviceapp-vti](https://github.com/boingbasti/e2-serviceapp-vti),
@@ -786,8 +797,9 @@ provider/SSAI behavior. Before deployment, check on representative receivers:
   on a VU+ Uno 4K SE (openATV 8.0.2, ffmpeg-ext 6.1.1, with an AV receiver):
   harmless there, DD+ with sound. Still open: sound from the first E-AC-3
   start on VU+ Ultimo 4K and Duo 4K SE with `/proc/stb/audio/ac3` set to
-  `passthrough`, no audible gap or A/V offset from the restart there, and a
-  seek right after the start.
+  `passthrough`, no audible gap or A/V offset from the restart there, a
+  seek right after the start, and sound after a DD+ -> DD+ track switch
+  that keeps the decoder running.
 - Natural AV offsets, 33-bit PTS wrap, reordered video, audio/video clock
   resets, long stalls, pause/resume, repeated seeks and stream switches.
 - The HiSilicon handling has not been validated on a receiver: detection on
