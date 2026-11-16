@@ -5197,10 +5197,14 @@ int32_t container_ffmpeg_update_tracks(Context_t *context, char *filename, int32
                     if (context->manager->audio)
                     {
                         ffmpeg_printf(1, "cAVIdx[%d]: MANAGER_ADD track AUDIO\n", cAVIdx);
-                        if (context->manager->audio->Command(context, MANAGER_ADD, &track) < 0) 
+                        if (context->manager->audio->Command(context, MANAGER_ADD, &track) < 0)
                         {
                             /* konfetti: fixme: is this a reason to return with error? */
                             ffmpeg_err("failed to add track %d\n", n);
+                            /* the manager has not taken the codec header (more
+                             * than TRACKWRAP tracks, or no memory for its list) */
+                            free(track.aacbuf);
+                            track.aacbuf = NULL;
                         }
                     }
                 }
