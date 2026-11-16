@@ -826,3 +826,47 @@ provider/SSAI behavior. Before deployment, check on representative receivers:
   seeks and pause/continue keep the sound. Still open: other chipsets, CPU
   cost on weaker boxes, a measured lip sync, track switches and mid-stream
   format changes.
+
+## Credits
+
+Several features and fixes merged since 185 were ported from other
+exteplayer3 trees and Enigma2 projects. Thanks to their authors:
+
+**OpenBH / Ev0-BH** ([BlackHole/exteplayer3](https://github.com/BlackHole/exteplayer3),
+also in OpenViX/exteplayer3)
+
+- Audio codec description and live channel count in the track messages
+  (#19): [528ef20](https://github.com/BlackHole/exteplayer3/commit/528ef20),
+  [e9a449a](https://github.com/BlackHole/exteplayer3/commit/e9a449a),
+  [cd9a8b7](https://github.com/BlackHole/exteplayer3/commit/cd9a8b7).
+- HDR10/HLG detection of HEVC streams (#20):
+  [5112b90](https://github.com/BlackHole/exteplayer3/commit/5112b90).
+- DTS core-frame padding (#21) and DTS-HD bypass mode (#22): the DTS driver
+  fixes for the GStreamer DVB audio sink,
+  [0004-dvbaudiosink-dts-driver-fixes.patch](https://github.com/oe-alliance/oe-alliance-core/blob/6.0/meta-oe/recipes-multimedia/gstreamer/gstreamer1.0-plugin-dvbmediasink/0004-dvbaudiosink-dts-driver-fixes.patch)
+  in oe-alliance-core ([4f339a5](https://github.com/oe-alliance/oe-alliance-core/commit/4f339a5268));
+  the padding is also in [b6213a8](https://github.com/BlackHole/exteplayer3/commit/b6213a8).
+- Audio transcoding DTS/TrueHD to AC-3 or E-AC-3 and HE-AAC to AAC-LC (#23):
+  [86199f9](https://github.com/BlackHole/exteplayer3/commit/86199f9),
+  [853bc07](https://github.com/BlackHole/exteplayer3/commit/853bc07),
+  [a8529b0](https://github.com/BlackHole/exteplayer3/commit/a8529b0).
+- DD+ passthrough restart on VU+ Ultimo 4K / Duo 4K SE (#24):
+  [4ad6f5a](https://github.com/BlackHole/exteplayer3/commit/4ad6f5a).
+
+**OpenVu** ([OpenVu/exteplayer3](https://github.com/OpenVu/exteplayer3))
+
+- HiSilicon detection by vendor SDK paths and chipset name, write-first with
+  `-b`, optional software playback clock (#26):
+  [c7ed2b7](https://github.com/OpenVu/exteplayer3/commit/c7ed2b7),
+  [b7970df](https://github.com/OpenVu/exteplayer3/commit/b7970df).
+- No rescale of a missing timestamp of software decoded audio (#6):
+  [377d2a9](https://github.com/OpenVu/exteplayer3/commit/377d2a9).
+
+**boingbasti** ([boingbasti/e2-serviceapp-vti](https://github.com/boingbasti/e2-serviceapp-vti),
+`exteplayer3-build/src`)
+
+- `Accept-Encoding: gzip` for HLS playlists (#18):
+  [eb75eb1](https://github.com/boingbasti/e2-serviceapp-vti/commit/eb75eb1).
+- The case of audio and video that count from timestamp origins hours apart,
+  found and analysed there (#13 solves it differently):
+  [8c3cb3c](https://github.com/boingbasti/e2-serviceapp-vti/commit/8c3cb3c).
