@@ -68,6 +68,18 @@ static const char AUDIODEV[] = "/dev/dvb/adapter0/audio0";
 static int videofd 	= -1;
 static int audiofd 	= -1;
 
+/*
+ * What LinuxDvbStop() still has to do for a device: stop the decoder, which
+ * runs (or is held) since the open or its last PLAY, and give the source back
+ * to the demux, which the open set to memory. A playback stopped with "q" is
+ * stopped by OUTPUT_STOP and then closed by OUTPUT_CLOSE, and the close called
+ * LinuxDvbStop() again on the stopped decoders. Some Vu+ drivers are reported
+ * to crash on that second stop; now every step happens once.
+ * Every PLAY sets the running flag again, every STOP clears it.
+ */
+static bool videoRunning, audioRunning;
+static bool videoOnMemory, audioOnMemory;
+
 struct DVBApiVideoInfo_s
 {
     int aspect_ratio;
@@ -672,6 +684,7 @@ static void LinuxDvbDtsHdStart(Context_t *context, const uint8_t *data, size_t s
             }
             if (context->playback->isDash)
                 LinuxDvbApplyAVSync(context);
+            audioRunning = true;
             if (ioctl(audiofd, AUDIO_PLAY) == -1)
             {
                 linuxdvb_err("AUDIO_PLAY: ERROR %d, %s\n", errno, strerror(errno));
@@ -764,6 +777,8 @@ int LinuxDvbOpen(Context_t  *context __attribute__((unused)), char *type)
         {
             linuxdvb_err("VIDEO_FREEZE: ERROR %d, %s\n", errno, strerror(errno));
         }
+        videoRunning = true;
+        videoOnMemory = true;
 
         if (isBufferedOutput)
             LinuxDvbBuffOpen(context, type, videofd, &LinuxDVBmutex);
@@ -800,7 +815,9 @@ int LinuxDvbOpen(Context_t  *context __attribute__((unused)), char *type)
         {
             linuxdvb_err("AUDIO_PAUSE: ERROR %d, %s\n", errno, strerror(errno));
         }
-        
+        audioRunning = true;
+        audioOnMemory = true;
+
         if (isBufferedOutput)
             LinuxDvbBuffOpen(context, type, audiofd, &LinuxDVBmutex);
     }
@@ -818,6 +835,7 @@ int LinuxDvbClose(Context_t  *context, char *type)
     /* closing stand alone is not allowed, so prevent
      * user from closing and don't call stop. stop will
      * set default values for us (speed and so on).
+     * After OUTPUT_STOP there is nothing left for it to do.
      */
     LinuxDvbStop(context, type);
 
@@ -912,7 +930,8 @@ int LinuxDvbPlay(Context_t  *context, char *type) {
             }
         }
         free(Encoding);
-        
+
+        videoRunning = true;
         if (0 != ioctl(videofd, VIDEO_PLAY))
         {
             linuxdvb_err("VIDEO_PLAY: ERROR %d, %s\n", errno, strerror(errno));
@@ -986,12 +1005,13 @@ int LinuxDvbPlay(Context_t  *context, char *type) {
                 eac3Restart = 1;
             }
         }
+        audioRunning = true;
         if (ioctl(audiofd, AUDIO_PLAY) < 0)
         {
             linuxdvb_err("AUDIO_PLAY: ERROR %d, %s\n", errno, strerror(errno));
             ret = cERR_LINUXDVB_ERROR;
         }
-        
+
         if (ioctl(audiofd, AUDIO_CONTINUE) < 0)
         {
             linuxdvb_err("AUDIO_CONTINUE: ERROR %d, %s\n", errno, strerror(errno));
@@ -1017,22 +1037,31 @@ int LinuxDvbStop(Context_t  *context __attribute__((unused)), char * type)
 
     getLinuxDVBMutex();
 
-    if (video && videofd != -1) 
+    /* a decoder that is stopped already is left alone, see videoRunning */
+    if (video && videofd != -1)
     {
-        if (ioctl(videofd, VIDEO_CLEAR_BUFFER) == -1)
+        if (videoRunning)
         {
-            linuxdvb_err("VIDEO_CLEAR_BUFFER: ERROR %d, %s\n", errno, strerror(errno));
-        }
-        
-        if (ioctl(videofd, VIDEO_STOP) == -1)
-        {
-            linuxdvb_err("VIDEO_STOP: ERROR %d, %s\n", errno, strerror(errno));
-            ret = cERR_LINUXDVB_ERROR;
-        }
+            videoRunning = false;
+            if (ioctl(videofd, VIDEO_CLEAR_BUFFER) == -1)
+            {
+                linuxdvb_err("VIDEO_CLEAR_BUFFER: ERROR %d, %s\n", errno, strerror(errno));
+            }
 
-        ioctl(videofd, VIDEO_SLOWMOTION, 0);
-        ioctl(videofd, VIDEO_FAST_FORWARD, 0);
-        ioctl(videofd, VIDEO_SELECT_SOURCE, VIDEO_SOURCE_DEMUX);
+            if (ioctl(videofd, VIDEO_STOP) == -1)
+            {
+                linuxdvb_err("VIDEO_STOP: ERROR %d, %s\n", errno, strerror(errno));
+                ret = cERR_LINUXDVB_ERROR;
+            }
+
+            ioctl(videofd, VIDEO_SLOWMOTION, 0);
+            ioctl(videofd, VIDEO_FAST_FORWARD, 0);
+        }
+        if (videoOnMemory)
+        {
+            videoOnMemory = false;
+            ioctl(videofd, VIDEO_SELECT_SOURCE, VIDEO_SOURCE_DEMUX);
+        }
     }
     if (audio && audiofd != -1) {
         /* not left or right for what plays next, DVB services included;
@@ -1040,17 +1069,25 @@ int LinuxDvbStop(Context_t  *context __attribute__((unused)), char * type)
         if (OUTPUT_AUDIO_CHANNEL_STEREO != audioChannelApplied)
             LinuxDvbSetAudioChannel(OUTPUT_AUDIO_CHANNEL_STEREO);
 
-        if (ioctl(audiofd, AUDIO_CLEAR_BUFFER) == -1)
+        if (audioRunning)
         {
-            linuxdvb_err("AUDIO_CLEAR_BUFFER: ERROR %d, %s\n", errno, strerror(errno));
-        }
+            audioRunning = false;
+            if (ioctl(audiofd, AUDIO_CLEAR_BUFFER) == -1)
+            {
+                linuxdvb_err("AUDIO_CLEAR_BUFFER: ERROR %d, %s\n", errno, strerror(errno));
+            }
 
-        if (ioctl(audiofd, AUDIO_STOP) == -1)
-        {
-            linuxdvb_err("AUDIO_STOP: ERROR %d, %s\n", errno, strerror(errno));
-            ret = cERR_LINUXDVB_ERROR;
+            if (ioctl(audiofd, AUDIO_STOP) == -1)
+            {
+                linuxdvb_err("AUDIO_STOP: ERROR %d, %s\n", errno, strerror(errno));
+                ret = cERR_LINUXDVB_ERROR;
+            }
         }
-        ioctl(audiofd, AUDIO_SELECT_SOURCE, AUDIO_SOURCE_DEMUX);
+        if (audioOnMemory)
+        {
+            audioOnMemory = false;
+            ioctl(audiofd, AUDIO_SELECT_SOURCE, AUDIO_SOURCE_DEMUX);
+        }
         eac3Restart = 0;
         eac3BypassKept = 0;
     }
@@ -1133,6 +1170,7 @@ int LinuxDvbAudioMute(Context_t  *context __attribute__((unused)), char *flag) {
     if (audiofd != -1) {
         if(*flag == '1')
         {
+            audioRunning = false;
             if (ioctl(audiofd, AUDIO_STOP, NULL) == -1)
             {
                 linuxdvb_err("AUDIO_STOP: ERROR %d, %s\n", errno, strerror(errno));
@@ -1141,6 +1179,7 @@ int LinuxDvbAudioMute(Context_t  *context __attribute__((unused)), char *flag) {
         }
         else
         {
+            audioRunning = true;
             if (ioctl(audiofd, AUDIO_PLAY) == -1)
             {
                 linuxdvb_err("AUDIO_PLAY: ERROR %d, %s\n", errno, strerror(errno));
@@ -1264,6 +1303,7 @@ int LinuxDvbClear(Context_t  *context __attribute__((unused)), char *type)
                     }
                     /* The buffer is cleared at this point. Restarting a decoder
                      * that still runs is not an error of the clear. */
+                    audioRunning = true;
                     if (ioctl(audiofd, AUDIO_PLAY) < 0)
                     {
                         linuxdvb_err("AUDIO_PLAY: %s\n", strerror(errno));
@@ -1405,6 +1445,8 @@ int LinuxDvbSwitch(Context_t  *context, char *type)
                 }
                 eac3BypassKept = 0;
 
+                /* a DASH switch that fails below leaves the decoder stopped */
+                audioRunning = false;
                 if (ioctl(audiofd, AUDIO_STOP ,NULL) == -1)
                 {
                     linuxdvb_err("AUDIO_STOP: ERROR %d, %s\n", errno, strerror(errno));
@@ -1468,6 +1510,7 @@ int LinuxDvbSwitch(Context_t  *context, char *type)
                     }
                     timing_after_switch = 1;
                 }
+                audioRunning = true;
                 if (ioctl(audiofd, AUDIO_PLAY) == -1)
                 {
                     linuxdvb_err("AUDIO_PLAY: ERROR %d, %s\n", errno, strerror(errno));
@@ -1532,6 +1575,7 @@ audio_switch_done:
                     }
                 }
 
+                videoRunning = true;
                 if (ioctl(videofd, VIDEO_PLAY) == -1)
                 {
                     /* konfetti: fixme: think on this, I think we should
