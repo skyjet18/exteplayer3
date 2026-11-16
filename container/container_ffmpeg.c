@@ -3201,8 +3201,11 @@ static void FFMPEGThread(Context_t *context)
                         {
                             if (ret != AVERROR(EAGAIN) && ret != AVERROR_EOF) 
                             {
-                                restart_audio_resampling = 1;
-                                break;
+                                /* only this frame is broken: the decoder goes
+                                 * on with the next one, and a packet it has
+                                 * refused is still to be sent */
+                                ffmpeg_printf(10, "avcodec_receive_frame: %d\n", ret);
+                                continue;
                             }
                             else
                             {
