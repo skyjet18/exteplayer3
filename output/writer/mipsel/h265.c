@@ -70,6 +70,9 @@ static unsigned int            NalLengthBytes = 1;
 static unsigned char           *CodecData     = NULL; 
 static unsigned int            CodecDataLen   = 0;
 static int                     resetPending = 0;
+/* the extradata the parameter sets were last taken from */
+static uint8_t                 *last_private_data;
+static unsigned int            last_private_size;
 /* ***************************** */
 /* Prototypes                    */
 /* ***************************** */
@@ -210,6 +213,31 @@ static int writeData(void* _call)
 
     if (__atomic_exchange_n(&resetPending, 0, __ATOMIC_ACQ_REL))
     {
+        initialHeader = 1;
+    }
+
+    /* a size without a buffer is no codec data either */
+    if (call->private_data == NULL)
+    {
+        call->private_size = 0;
+    }
+
+    /* New parameter sets without a codec change (another representation of
+     * an adaptive stream): send them before the next picture, as for H.264. */
+    if (call->private_size &&
+        (last_private_size != call->private_size ||
+         memcmp(last_private_data, call->private_data, call->private_size)))
+    {
+        uint8_t *copy = malloc(call->private_size);
+        if (!copy)
+        {
+            h264_err("allocating codec data failed\n");
+            return -1;
+        }
+        memcpy(copy, call->private_data, call->private_size);
+        free(last_private_data);
+        last_private_data = copy;
+        last_private_size = call->private_size;
         initialHeader = 1;
     }
     
