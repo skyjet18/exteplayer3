@@ -83,7 +83,12 @@ static int writeData(void *_call)
 
     amr_printf(10, "\n");
 
-    if (call == NULL || call->data == NULL || call->len <= 0 || call->fd < 0) {
+    if (call == NULL) {
+        amr_err("call data is NULL...\n");
+        return 0;
+    }
+
+    if (call->data == NULL || call->len <= 0 || call->fd < 0) {
         amr_err("call error wrong data call: %p, data: %p, len: %d, fd: %d\n", call, call->data, call->len, call->fd);
         return 0;
     }
