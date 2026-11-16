@@ -118,6 +118,11 @@ $cc -g -fsanitize=undefined -ffunction-sections -fdata-sections \
     -Wno-deprecated-declarations -Iinclude -Iexternal -I"$FFMPEG_BUILD" -I"$FFMPEG_SOURCE" \
     tests/eac3_restart_test.c tools/debug.c -Wl,--gc-sections -pthread -o "$tmp/eac3_restart"
 timeout 20 "$tmp/eac3_restart"
+# The position of the DVB output with a driver whose VIDEO_GET_PTS stays 0.
+$cc -g -fsanitize=undefined -ffunction-sections -fdata-sections \
+    -Wno-deprecated-declarations -Iinclude -Iexternal -I"$FFMPEG_BUILD" -I"$FFMPEG_SOURCE" \
+    tests/video_pts_test.c tools/debug.c -Wl,--gc-sections -pthread -o "$tmp/video_pts"
+timeout 20 "$tmp/video_pts"
 # Software decoded audio of the play thread with a decoder of the test that
 # fails on single frames: the packets after the error still go to it.
 $cc -g -fsanitize=undefined -ffunction-sections -fdata-sections \
