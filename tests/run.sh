@@ -212,6 +212,13 @@ for f in output/linuxdvb_sh4.c output/writer/sh4/writer.c output/writer/sh4/aac.
         -Wno-deprecated-declarations -Iinclude -Iexternal -Iexternal/flv2mpeg4 \
         -I"$FFMPEG_BUILD" -I"$FFMPEG_SOURCE" "$f"
 done
+# The sh4 writers with a WriteV of the test.
+$cc -g -fsanitize=address,undefined -ffunction-sections -fdata-sections \
+    -Wno-deprecated-declarations -Iinclude -Iexternal -I"$FFMPEG_BUILD" -I"$FFMPEG_SOURCE" \
+    tests/sh4_writers_test.c output/writer/sh4/pcm.c output/writer/common/pes.c \
+    output/writer/common/misc.c tools/debug.c \
+    -Wl,--gc-sections -pthread -o "$tmp/sh4_writers"
+ASAN_OPTIONS=detect_leaks=1 timeout 20 "$tmp/sh4_writers"
 # The open program asks LeakSanitizer itself after single cases. Without ASan
 # it registers no globals, so section GC still drops the command table.
 $cc -g -fsanitize=leak,undefined -ffunction-sections -fdata-sections \
