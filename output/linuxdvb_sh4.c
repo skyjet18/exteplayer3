@@ -37,6 +37,7 @@
 #include <errno.h>
 #include <poll.h>
 #include <sys/uio.h>
+#include <inttypes.h>
 
 #include "bcm_ioctls.h"
 #include "stm_ioctls.h"
@@ -926,7 +927,7 @@ static int Write(void  *_context, void* _out)
     video = !strcmp("video", out->type);
     audio = !strcmp("audio", out->type);
   
-    linuxdvb_printf(20, "DataLength=%u PrivateLength=%u Pts=%llu FrameRate=%f\n", 
+    linuxdvb_printf(20, "DataLength=%u PrivateLength=%u Pts=%"PRIu64" FrameRate=%d\n",
                                                     out->len, out->extralen, out->pts, out->frameRate);
     linuxdvb_printf(20, "v%d a%d\n", video, audio);
 
@@ -968,7 +969,7 @@ static int Write(void  *_context, void* _out)
                 {
                     if (evt.type == VIDEO_EVENT_SIZE_CHANGED)
                     {
-                        linuxdvb_printf(10, "VIDEO_EVENT_SIZE_CHANGED\n", evt.type);
+                        linuxdvb_printf(10, "VIDEO_EVENT_SIZE_CHANGED type: 0x%x\n", evt.type);
                         linuxdvb_printf(10, "width  : %d\n", evt.u.size.w);
                         linuxdvb_printf(10, "height : %d\n", evt.u.size.h);
                         linuxdvb_printf(10, "aspect : %d\n", evt.u.size.aspect_ratio);
@@ -978,13 +979,13 @@ static int Write(void  *_context, void* _out)
                     }
                     else if (evt.type == VIDEO_EVENT_FRAME_RATE_CHANGED)
                     {
-                        linuxdvb_printf(10, "VIDEO_EVENT_FRAME_RATE_CHANGED\n", evt.type);
+                        linuxdvb_printf(10, "VIDEO_EVENT_FRAME_RATE_CHANGED type: 0x%x\n", evt.type);
                         linuxdvb_printf(10, "framerate : %d\n", evt.u.frame_rate);
                         videoInfo.frame_rate = evt.u.frame_rate;
                     }
                     else if (evt.type == 16 /*VIDEO_EVENT_PROGRESSIVE_CHANGED*/)
                     {
-                        linuxdvb_printf(10, "VIDEO_EVENT_PROGRESSIVE_CHANGED\n", evt.type);
+                        linuxdvb_printf(10, "VIDEO_EVENT_PROGRESSIVE_CHANGED type: 0x%x\n", evt.type);
                         linuxdvb_printf(10, "progressive : %d\n", evt.u.frame_rate);
                         videoInfo.progressive = evt.u.frame_rate;
                         context->manager->video->Command(context, MANAGER_UPDATED_TRACK_INFO, NULL);

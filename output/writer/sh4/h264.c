@@ -40,6 +40,7 @@
 #include <errno.h>
 #include <assert.h>
 #include <stdint.h>
+#include <inttypes.h>
 
 #include "stm_ioctls.h"
 #include "common.h"
@@ -447,7 +448,7 @@ static int32_t writeData(void* _call)
             iov[ic++].iov_len = NalLength;
             VideoPosition += NalLength;
 
-            h264_printf (20, "  pts=%llu\n", VideoPts);
+            h264_printf (20, "  pts=%"PRIu64"\n", VideoPts);
 
             iov[0].iov_len = InsertPesHeader (PesHeader, NalLength, MPEG_VIDEO_PES_START_CODE, VideoPts, 0);
             ssize_t l = call->WriteV(call->fd, iov, ic);
