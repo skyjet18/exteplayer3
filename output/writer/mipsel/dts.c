@@ -81,8 +81,11 @@ static int32_t reset()
 
 /*
  * Whether lone DTS core frames are padded to a multiple of four bytes, see
- * dts_frame.h.  On by default on the boxes whose drivers are known to need
- * it; EP3_DTS_PAD=1 / EP3_DTS_PAD=0 in the environment forces it on / off.
+ * dts_frame.h.  On by default on every box but a Dreambox: the drivers of
+ * several chipsets cannot handle unaligned core frames (silence on Vu+ and
+ * GigaBlue 4K, noise on the SF8008), and a padded frame is valid DTS that
+ * decodes to the same audio. EP3_DTS_PAD=1 / EP3_DTS_PAD=0 in the
+ * environment forces it on / off.
  */
 static int padCoreFrames(void)
 {
@@ -91,7 +94,7 @@ static int padCoreFrames(void)
     {
         const char *env = getenv("EP3_DTS_PAD");
         stb_type_t type = GetSTBType();
-        enabled = STB_VUPLUS == type || STB_HISILICON == type;
+        enabled = STB_DREAMBOX != type;
         if (env && (env[0] == '0' || env[0] == '1') && env[1] == '\0')
             enabled = env[0] == '1';
     }

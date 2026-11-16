@@ -139,7 +139,7 @@ other track started. Distances up to 60 seconds, further streams of a track
 the two origins, so its lip sync is only as good as its interleaving.
 
 `EP3_DTS_PAD=0|1` controls padding of DTS core frames in the non-SH4 DTS
-bitstream writer. Unset, it is active on VU+ and HiSilicon receivers only.
+bitstream writer. Unset, it is active on every receiver but a Dreambox.
 Only the exact values `0` and `1` are honored; anything else selects that
 default. Several audio drivers handle only core frames whose size is a
 multiple of four bytes, while DVD-style full-rate DTS (1509.75 kbit/s at
@@ -856,9 +856,10 @@ provider/SSAI behavior. Before deployment, check on representative receivers:
 - DTS core-frame padding has been checked on one receiver only (VU+ Uno 4K
   SE, openATV 8.0.2, ffmpeg-ext 6.1.1, with an AV receiver): 2013-byte
   DVD-style frames are silent with `EP3_DTS_PAD=0` and play as DTS with the
-  padding, 1006-byte frames play. Still open: HiSilicon, DTS-ES and 96/24
-  frames whose extension size is raised, unchanged output for DTS-HD tracks,
-  and `EP3_DTS_PAD=1` on other chipsets.
+  padding, 1006-byte frames play. Still open: HiSilicon, GigaBlue and other
+  Broadcom chipsets (padded by default like in the dvbmediasink of
+  oe-alliance), DTS-ES and 96/24 frames whose extension size is raised, and
+  unchanged output for DTS-HD tracks.
 - MP4/MKV/adaptive subtitle selection and disabling, forced flags, ICY and
   metadata clearing across stations; retained DRM/MOV_TEXT behavior.
 - The H.264 level limit has only been forced with `EP3_H264_LEVEL41=1` on an
