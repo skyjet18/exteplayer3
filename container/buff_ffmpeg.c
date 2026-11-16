@@ -192,7 +192,7 @@ void getfillerMutex(const char *filename, const char *function, int line)
     ffmpeg_printf(100, "::%d received mutex\n", line);
 }
 
-void releasefillerMutex(const char *filename, const const char *function, int line) 
+void releasefillerMutex(const char *filename, const char *function, int line) 
 {
     pthread_mutex_unlock(&fillermutex);
 
