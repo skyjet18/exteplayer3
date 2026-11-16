@@ -633,6 +633,75 @@ static void AudioLiveInfo(TrackDescription_t *track)
     }
 }
 
+/* The audio tracks of the last MANAGER_LIST, with the values of the codec
+ * parameters; audioTracksListed once there was one (the list can be NULL). */
+static TrackDescription_t *audioTracks = NULL;
+static int audioTracksListed = 0;
+
+static void FreeTracks(TrackDescription_t *TrackList)
+{
+    int i;
+
+    if (NULL == TrackList)
+    {
+        return;
+    }
+    for (i = 0; TrackList[i].Id >= 0; ++i)
+    {
+        free(TrackList[i].Encoding);
+        free(TrackList[i].Name);
+        free(TrackList[i].Title);
+    }
+    free(TrackList);
+}
+
+/* The a_l, s_l or v_l message of TrackList into cache. The audio entries get
+ * the live values of the track that plays; TrackList is not changed. */
+static void FormatTracks(strbuffer_t *cache, const char *argvBuff, const TrackDescription_t *TrackList)
+{
+    char tmp_str[1024];
+    char enc[128];
+    char name[512];
+    char desc[64];
+    /* an audio entry with every string and both numbers at their
+     * limit is 1018 bytes: mind tmp_str when a buffer grows */
+    char title[256];
+    int i;
+
+    if (NULL == TrackList)
+    {
+        // not tracks
+        sprintf( tmp_str, "{\"%c_%c\": []}\n", argvBuff[0], argvBuff[1]);
+        strbuffer_add( cache, tmp_str );
+        return;
+    }
+
+    sprintf( tmp_str, "{\"%c_%c\": [", argvBuff[0], argvBuff[1]);
+    strbuffer_add( cache, tmp_str );
+
+    for (i = 0; TrackList[i].Id >= 0; ++i)
+    {
+        if(0 < i)
+        {
+            strbuffer_add( cache, ", " );
+        }
+
+        if ('s' == argvBuff[0])
+            snprintf(tmp_str, sizeof(tmp_str), "{\"id\":%d,\"e\":\"%s\",\"n\":\"%s\",\"f\":%d,\"t\":\"%s\"}", TrackList[i].Id, JsonEscape(enc, sizeof(enc), TrackList[i].Encoding), JsonEscape(name, sizeof(name), TrackList[i].Name), TrackList[i].is_forced, JsonEscape(title, sizeof(title), TrackList[i].Title));
+        else if ('a' == argvBuff[0])
+        {
+            TrackDescription_t track = TrackList[i];
+
+            AudioLiveInfo(&track);
+            snprintf(tmp_str, sizeof(tmp_str), "{\"id\":%d,\"e\":\"%s\",\"n\":\"%s\",\"c\":%d,\"d\":\"%s\",\"t\":\"%s\"}", track.Id, JsonEscape(enc, sizeof(enc), track.Encoding), JsonEscape(name, sizeof(name), track.Name), track.channels, JsonEscape(desc, sizeof(desc), track.Description), JsonEscape(title, sizeof(title), track.Title));
+        }
+        else
+            snprintf(tmp_str, sizeof(tmp_str), "{\"id\":%d,\"e\":\"%s\",\"n\":\"%s\"}", TrackList[i].Id, JsonEscape(enc, sizeof(enc), TrackList[i].Encoding), JsonEscape(name, sizeof(name), TrackList[i].Name));
+        strbuffer_add( cache, tmp_str );
+    }
+    strbuffer_add( cache, "]}\n");
+}
+
 static int HandleTracks(Manager_t *ptrManager, const PlaybackCmd_t playbackSwitchCmd, const char *argvBuff)
 {
     int commandRetVal = 0;
@@ -646,7 +715,11 @@ static int HandleTracks(Manager_t *ptrManager, const PlaybackCmd_t playbackSwitc
     {
         case 'l': 
         {
-            /* the audio list has values that change while the track plays */
+            /* The audio list has values that change while the track plays.
+             * Only those values are taken again, the list is formatted from
+             * the copy of the last MANAGER_LIST: that refreshes the tracks
+             * under the container lock, which the play thread holds while a
+             * read waits for the network (a live edge, a stalled server). */
             if ('a' == argvBuff[0])
             {
                 static int audioInfoGenSeen = 0;
@@ -656,6 +729,11 @@ static int HandleTracks(Manager_t *ptrManager, const PlaybackCmd_t playbackSwitc
                 {
                     strbuffer_free( ptrManager->tracks_cache );
                     ptrManager->tracks_cache = NULL;
+                    if (audioTracksListed)
+                    {
+                        ptrManager->tracks_cache = strbuffer_init( 1024 );
+                        FormatTracks(ptrManager->tracks_cache, argvBuff, audioTracks);
+                    }
                 }
                 audioInfoGenSeen = audioInfoGen;
             }
@@ -663,53 +741,19 @@ static int HandleTracks(Manager_t *ptrManager, const PlaybackCmd_t playbackSwitc
         	{
         		/* read tracks info into cache */
         		ptrManager->tracks_cache = strbuffer_init( 1024 );
-        		char tmp_str[1024];
-        		char enc[128];
-        		char name[512];
-        		char desc[64];
-        		/* an audio entry with every string and both numbers at their
-        		 * limit is 1018 bytes: mind tmp_str when a buffer grows */
-        		char title[256];
 
 				TrackDescription_t *TrackList = NULL;
 				ptrManager->Command(g_player, MANAGER_LIST, &TrackList);
-				if( NULL != TrackList)
+				FormatTracks(ptrManager->tracks_cache, argvBuff, TrackList);
+				if ('a' == argvBuff[0] && !tracks_cache_disabled)
 				{
-					int i = 0;
-
-					sprintf( tmp_str, "{\"%c_%c\": [", argvBuff[0], argvBuff[1]);
-					strbuffer_add( ptrManager->tracks_cache, tmp_str );
-
-					for (i = 0; TrackList[i].Id >= 0; ++i)
-					{
-						if(0 < i)
-						{
-							strbuffer_add( ptrManager->tracks_cache, ", " );
-						}
-
-						if ('s' == argvBuff[0])
-							snprintf(tmp_str, sizeof(tmp_str), "{\"id\":%d,\"e\":\"%s\",\"n\":\"%s\",\"f\":%d,\"t\":\"%s\"}", TrackList[i].Id, JsonEscape(enc, sizeof(enc), TrackList[i].Encoding), JsonEscape(name, sizeof(name), TrackList[i].Name), TrackList[i].is_forced, JsonEscape(title, sizeof(title), TrackList[i].Title));
-						else if ('a' == argvBuff[0])
-						{
-							AudioLiveInfo(&TrackList[i]);
-							snprintf(tmp_str, sizeof(tmp_str), "{\"id\":%d,\"e\":\"%s\",\"n\":\"%s\",\"c\":%d,\"d\":\"%s\",\"t\":\"%s\"}", TrackList[i].Id, JsonEscape(enc, sizeof(enc), TrackList[i].Encoding), JsonEscape(name, sizeof(name), TrackList[i].Name), TrackList[i].channels, JsonEscape(desc, sizeof(desc), TrackList[i].Description), JsonEscape(title, sizeof(title), TrackList[i].Title));
-						}
-						else
-							snprintf(tmp_str, sizeof(tmp_str), "{\"id\":%d,\"e\":\"%s\",\"n\":\"%s\"}", TrackList[i].Id, JsonEscape(enc, sizeof(enc), TrackList[i].Encoding), JsonEscape(name, sizeof(name), TrackList[i].Name));
-						strbuffer_add( ptrManager->tracks_cache, tmp_str );
-
-						free(TrackList[i].Encoding);
-						free(TrackList[i].Name);
-						free(TrackList[i].Title);
-					}
-					strbuffer_add( ptrManager->tracks_cache, "]}\n");
-					free(TrackList);
+					FreeTracks(audioTracks);
+					audioTracks = TrackList;
+					audioTracksListed = 1;
 				}
 				else
 				{
-					// not tracks
-					sprintf( tmp_str, "{\"%c_%c\": []}\n", argvBuff[0], argvBuff[1]);
-					strbuffer_add( ptrManager->tracks_cache, tmp_str );
+					FreeTracks(TrackList);
 				}
         	}
         	E2iSendMsg("%s", ptrManager->tracks_cache->buffer );
@@ -964,7 +1008,7 @@ static int ParseParams(int argc,char* argv[], PlayFiles_t *playbackFiles, int *p
             printf("Software decoder will be used for WMA codec\n");
             wma_software_decoder_set(1);
             break;
-        case 'l':
+        case 'l': 
             printf("Audio software decoding as LPCM\n");
             insert_pcm_as_lpcm_set(1);
             break;
