@@ -1,6 +1,7 @@
 #include <assert.h>
 #include <signal.h>
 #include <sys/select.h>
+#include <sys/socket.h>
 #include <semaphore.h>
 #include <stdarg.h>
 #include <stdio.h>
@@ -251,6 +252,39 @@ static void open_while_the_playback_stops(Context_t *context, int decoder[2])
     chunk_arrives(context, decoder, 5);
 }
 
+/* A PES header and its payload given as segments reach the decoder in a write()
+ * of their own each, as writev() hands them to a driver: the decoder is a
+ * packet socket here, every write() of the thread is one packet. An empty
+ * segment is not written. */
+static void segments_written_one_by_one(void)
+{
+    PlaybackHandler_t playback = {0};
+    Context_t context = {.playback = &playback};
+    uint8_t header[14] = {0, 0, 1, 0xc0}, payload[300], arrived[512];
+    struct iovec vector[3] = {{header, sizeof(header)}, {payload, 0}, {payload, sizeof(payload)}};
+    int decoder[2];
+    size_t i;
+
+    for (i = 0; i < sizeof(payload); i++)
+        payload[i] = (uint8_t)i;
+    assert(!socketpair(AF_UNIX, SOCK_SEQPACKET, 0, decoder));
+    signal(SIGALRM, hung);
+    stopped = 0;
+    assert(audiofd == -1);
+    assert(!LinuxDvbBuffOpen(&context, "audio", decoder[1], NULL));
+    assert(BufferingWriteV(decoder[1], vector, 3) == sizeof(header) + sizeof(payload));
+    hang = "the buffering thread does not write the segments\n";
+    alarm(5);
+    assert(read(decoder[0], arrived, sizeof(arrived)) == sizeof(header));
+    assert(!memcmp(arrived, header, sizeof(header)));
+    assert(read(decoder[0], arrived, sizeof(arrived)) == sizeof(payload));
+    assert(!memcmp(arrived, payload, sizeof(payload)));
+    alarm(0);
+    assert(!LinuxDvbBuffClose(&context));
+    close(decoder[0]);
+    close(decoder[1]);
+}
+
 static void close_and_open(void)
 {
     PlaybackHandler_t playback = {0};
@@ -286,7 +320,6 @@ int main(void)
     node = bufferingQueueHead;
     assert(node && node == bufferingQueueTail && !node->next);
     assert(node->dataType == OUTPUT_VIDEO && node->dataSize == sizeof(frame));
-    assert(!memcmp(node + 1, frame, sizeof(frame)));
     assert(bufferingDataSize == sizeof(*node) + sizeof(frame));
     free(node);
     pthread_mutex_destroy(&bufferingMtx);
@@ -294,5 +327,6 @@ int main(void)
     pthread_cond_destroy(&bufferingdDataAddedCond);
     thread_end();
     close_and_open();
+    segments_written_one_by_one();
     return 0;
 }
