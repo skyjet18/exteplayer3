@@ -6222,7 +6222,6 @@ static int32_t container_ffmpeg_update_duration(Context_t *context)
 
                     break;
                 }
-                break;
             }
         } /* for */
     }

@@ -2145,11 +2145,9 @@ static int Command(void  *_context, OutputCmd_t command, void * argument) {
     }
     case OUTPUT_SLOWMOTION: {
         return LinuxDvbSlowMotion(context, (char*)argument);
-        break;
     }
     case OUTPUT_AUDIOMUTE: {
         return LinuxDvbAudioMute(context, (char*)argument);
-        break;
     }
     case OUTPUT_GET_FRAME_COUNT: {
         unsigned long long int frameCount = 0;
