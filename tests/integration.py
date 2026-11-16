@@ -459,6 +459,38 @@ def main():
                     player.stop()
             print("PASS MP4/MKV subtitles: long mov_text, SubRip and ASS cues with quotes as JSON")
 
+            # fake_last_subtitle ends a WebVTT stream with a cue at pts INT64_MAX - 2. The
+            # first cue may be read before the track is selected.
+            webvtt = root / "subtitles.vtt"
+            webvtt.write_text("WEBVTT\n\n00:00:01.000 --> 00:00:02.000\nEarly\n\n"
+                              "00:00:04.000 --> 00:00:05.000\nFirst\n\n"
+                              "00:00:06.000 --> 00:00:07.000\nSecond\n", encoding="utf-8")
+            player = Player(args.player, "-x", str(webvtt), str(media))
+            try:
+                tracks = player.wait("s_l")
+                assert len(tracks) == 1, tracks
+                player.command("si0")
+                assert player.wait("s_s")["sts"] == 0
+                player.process.wait(timeout=20)
+            finally:
+                player.stop()
+            atoms = [message["s_a"] for message in player.messages if "s_a" in message]
+            texts = [atom["t"] for atom in atoms if atom["t"] != "Early"]
+            assert texts == ["First", "Second"], atoms
+            assert all(0 <= atom["s"] < 60000 for atom in atoms), atoms
+            player = Player(args.player, str(worded))
+            try:
+                assert len(player.wait("s_l")) == 1
+                player.command("si0")
+                assert player.wait("s_s")["sts"] == 0
+                atom = player.wait("s_a")
+                while atom["t"]:  # the empty sample that ends a mov_text cue
+                    atom = player.wait("s_a")
+                assert 0 <= atom["s"] < 60000, atom
+            finally:
+                player.stop()
+            print("PASS WebVTT: no cue without a time at the end; empty mov_text cues still sent")
+
             player = Player(args.player, str(worded))
             try:
                 assert len(player.wait("s_l")) == 1
