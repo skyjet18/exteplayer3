@@ -215,7 +215,7 @@ done
 # The sh4 writers with a WriteV of the test.
 $cc -g -fsanitize=address,undefined -ffunction-sections -fdata-sections \
     -Wno-deprecated-declarations -Iinclude -Iexternal -I"$FFMPEG_BUILD" -I"$FFMPEG_SOURCE" \
-    tests/sh4_writers_test.c output/writer/sh4/pcm.c output/writer/common/pes.c \
+    tests/sh4_writers_test.c output/writer/sh4/pcm.c output/writer/sh4/h264.c output/writer/common/pes.c \
     output/writer/common/misc.c tools/debug.c \
     -Wl,--gc-sections -pthread -o "$tmp/sh4_writers"
 ASAN_OPTIONS=detect_leaks=1 timeout 20 "$tmp/sh4_writers"
