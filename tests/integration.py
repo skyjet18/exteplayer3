@@ -562,6 +562,18 @@ def main():
                 assert invalid.returncode != 0, option
             print("PASS strict CLI validation")
 
+            # FFmpeg reads and decodes raw AC-4 but cannot encode it: the content here is
+            # AAC, the demuxer goes by the content and the container by the extension.
+            raw = root / "sound.ac4"
+            raw.write_bytes(radio.read_bytes())
+            player = Player(args.player, str(raw))
+            try:
+                assert player.wait("PLAYBACK_OPEN")["sts"] == 0
+                assert player.wait("PLAYBACK_PLAY")["sts"] == 0
+            finally:
+                player.stop()
+            print("PASS .ac4 file: opened like the other audio extensions")
+
             missing = subprocess.run([args.player, "iptv://" + str(root / "missing")],
                                      capture_output=True, timeout=5)
             assert missing.returncode == 1 and b"cannot be read" in missing.stdout, missing
