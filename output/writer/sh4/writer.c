@@ -100,10 +100,12 @@ ssize_t WriteWithRetry(Context_t *context, int pipefd, int fd, void *pDVBMtx, co
 {
     fd_set rfds;
     
-    ssize_t ret;
+    /* also what is returned when nothing is written: stop, seek, audio
+     * switch or a failed select while paused, as on mipsel */
+    ssize_t ret = 0;
     int retval = -1;
     struct timeval tv;
-    
+
     while(size > 0 && 0 == PlaybackDieNow(0) && !context->playback->isSeeking &&
           (is_video || !context->playback->isAudioSwitching))
     {
