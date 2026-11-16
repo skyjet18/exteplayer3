@@ -50,16 +50,23 @@ int test_usleep(useconds_t delay)
     return 0;
 }
 
+/* Set: the position requests are answered with decoder_pts. */
+static int decoder_answers;
+static unsigned long long decoder_pts;
+
 int test_ioctl(int fd, unsigned long request, ...)
 {
     (void)fd;
     va_list args;
+    unsigned long long *pts = NULL;
     assert(request_count < 64);
     requests[request_count] = request;
     va_start(args, request);
     if (request == AUDIO_SET_AV_SYNC || request == AUDIO_SET_BYPASS_MODE ||
         request == VIDEO_SET_STREAMTYPE)
         arguments[request_count] = va_arg(args, int);
+    if (request == VIDEO_GET_PTS || request == AUDIO_GET_PTS)
+        pts = va_arg(args, unsigned long long *);
     va_end(args);
     request_count++;
     if (request == failing_request) {
@@ -67,6 +74,10 @@ int test_ioctl(int fd, unsigned long request, ...)
         return -1;
     }
     if (request == VIDEO_GET_PTS || request == AUDIO_GET_PTS) {
+        if (decoder_answers) {
+            *pts = decoder_pts;
+            return 0;
+        }
         errno = ENOTTY;
         return -1;
     }
@@ -121,6 +132,12 @@ int32_t LinuxDvbBuffFlush(Context_t *context) { (void)context; return 0; }
 int32_t LinuxDvbBuffResume(Context_t *context) { (void)context; return 0; }
 int32_t LinuxDvbBuffSetSize(const uint32_t size) { (void)size; return 0; }
 uint32_t LinuxDvbBuffGetSize(void) { return 0; }
+/* Write() refers to these; getWriter() always has the writer stub, which
+ * writes nothing. */
+ssize_t writev_with_retry(int fd, const struct iovec *iov, int ic) { (void)fd; (void)iov; return ic; }
+ssize_t BufferingWriteV(int fd, const struct iovec *iov, int ic) { (void)fd; (void)iov; return ic; }
+Writer_t *getDefaultVideoWriter(void) { return NULL; }
+Writer_t *getDefaultAudioWriter(void) { return NULL; }
 
 static void switch_results_and_reset(Context_t *context, PlaybackHandler_t *playback,
                                      ManagerHandler_t *managers)
@@ -194,6 +211,114 @@ static void writer_without_reset(Context_t *context, ManagerHandler_t *managers)
     assert(!Command(context, OUTPUT_FLUSH, "audio"));
     pcm_writer.reset = reset_pcm;
     managers->video = NULL;
+}
+
+/* The position of a decoder that runs out of data (a live playlist that does
+ * not grow): the decoder clock goes on after the last frame and comes back
+ * to the PTS of the frames when data comes again. */
+#define TICKS(seconds) ((unsigned long long)((seconds) * 90000 + 0.5))
+
+static unsigned long long reported_position(Context_t *context, unsigned long long decoder)
+{
+    unsigned long long reported = 0;
+    decoder_pts = decoder;
+    request_count = 0;
+    assert(!LinuxDvbPts(context, &reported));
+    return reported;
+}
+
+static void written(Context_t *context, const char *type, unsigned long long from,
+                    unsigned long long to)
+{
+    uint8_t byte = 0;
+    AudioVideoOut_t out = {.data = &byte, .len = 1, .width = 64, .height = 64};
+    out.type = (char *)type;
+    for (; from <= to; from += TICKS(0.04))
+    {
+        out.pts = out.dts = (int64_t)from;
+        request_count = 0;
+        assert(!Write(context, &out));
+    }
+}
+
+static void cleared(Context_t *context, const char *type)
+{
+    request_count = 0;
+    assert(!Command(context, OUTPUT_CLEAR, (void *)type));
+}
+
+static void position_within_the_written_data(Context_t *context, ManagerHandler_t *managers)
+{
+    const unsigned long long wrap = 1ULL << 33;
+    int video = videofd;
+
+    decoder_answers = 1;
+    videofd = -1;
+    cleared(context, "audio");
+    written(context, "audio", 0, TICKS(24.84));
+    assert(reported_position(context, TICKS(20)) == TICKS(20));
+    assert(reported_position(context, TICKS(24.9)) == TICKS(24.9));
+    /* no more data: the decoder clock goes on, the position stands */
+    assert(reported_position(context, TICKS(26.9)) == TICKS(25.14));
+    assert(reported_position(context, TICKS(36.9)) == TICKS(25.14));
+    /* data again, the decoder still shows nothing of it */
+    written(context, "audio", TICKS(24.88), TICKS(26.84));
+    assert(reported_position(context, TICKS(37.5)) == TICKS(25.14));
+    /* the decoder shows the new data: no step back */
+    assert(reported_position(context, TICKS(24.88)) == TICKS(25.14));
+    assert(reported_position(context, TICKS(25.5)) == TICKS(25.5));
+    assert(reported_position(context, TICKS(26.5)) == TICKS(26.5));
+    /* after a clear: the PTS of an earlier playback is left as it is */
+    cleared(context, "audio");
+    assert(reported_position(context, TICKS(40)) == TICKS(40));
+    written(context, "audio", TICKS(10), TICKS(12));
+    assert(reported_position(context, TICKS(40)) == TICKS(40));
+    assert(reported_position(context, TICKS(10.5)) == TICKS(10.5));
+    assert(reported_position(context, TICKS(13)) == TICKS(12.3));
+    /* a jump back of more than a second is reported */
+    assert(reported_position(context, TICKS(5)) == TICKS(5));
+    /* far after the data (10 minutes and more) is no stall */
+    assert(reported_position(context, TICKS(12 + 1200)) == TICKS(12 + 1200));
+    /* the PTS wrap after 2^33 */
+    cleared(context, "audio");
+    written(context, "audio", wrap - TICKS(1), wrap + TICKS(0.48));
+    assert(reported_position(context, wrap - TICKS(0.5)) == wrap - TICKS(0.5));
+    assert(reported_position(context, TICKS(0.3)) == TICKS(0.3));
+    assert(reported_position(context, TICKS(3)) == TICKS(0.78));
+    /* video: the video data bounds the position of the video decoder */
+    videofd = 2;
+    managers->video = managers->audio;
+    cleared(context, "video");
+    written(context, "video", TICKS(100), TICKS(110));
+    assert(reported_position(context, TICKS(105)) == TICKS(105));
+    assert(reported_position(context, TICKS(118)) == TICKS(110.3));
+    written(context, "video", TICKS(110.04), TICKS(112));
+    assert(reported_position(context, TICKS(110.04)) == TICKS(110.3));
+    assert(reported_position(context, TICKS(111)) == TICKS(111));
+    /* the video output restarted after a long gap (OUTPUT_SWITCH): the
+     * decoder reports unrelated values until it shows the new data */
+    assert(reported_position(context, TICKS(113)) == TICKS(112.3));
+    request_count = 0;
+    assert(!Command(context, OUTPUT_SWITCH, "video"));
+    assert(reported_position(context, TICKS(1.55)) == TICKS(112.3));
+    written(context, "video", TICKS(112.04), TICKS(114));
+    assert(reported_position(context, TICKS(1.55)) == TICKS(112.3));
+    assert(reported_position(context, TICKS(120)) == TICKS(112.3));
+    assert(reported_position(context, TICKS(112.1)) == TICKS(112.3));
+    assert(reported_position(context, TICKS(113)) == TICKS(113));
+    /* data comes again but the decoder stays after it: the position stands
+     * until the data has gone 4 s beyond it, then follows the data */
+    assert(reported_position(context, TICKS(115)) == TICKS(114.3));
+    written(context, "video", TICKS(114.04), TICKS(117.96));
+    assert(reported_position(context, TICKS(119)) == TICKS(114.3));
+    written(context, "video", TICKS(118), TICKS(118));
+    assert(reported_position(context, TICKS(119)) == TICKS(118.3));
+    assert(reported_position(context, TICKS(118.2)) == TICKS(118.3));
+    written(context, "video", TICKS(118.04), TICKS(119));
+    assert(reported_position(context, TICKS(118.5)) == TICKS(118.5));
+    managers->video = NULL;
+    videofd = video;
+    decoder_answers = 0;
 }
 
 int main(void)
@@ -283,6 +408,7 @@ int main(void)
     switch_results_and_reset(&context, &playback, &managers);
     no_message_for_the_closed_video_device(&context);
     writer_without_reset(&context, &managers);
+    position_within_the_written_data(&context, &managers);
     pthread_mutex_destroy(&LinuxDVBmutex);
     return 0;
 }
