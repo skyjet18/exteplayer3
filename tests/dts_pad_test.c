@@ -10,8 +10,8 @@
 #include "../output/writer/common/misc.c"
 #undef GetSTBType
 
-/* The DTS writer with a DVD style 2013-byte core frame: on Vu+ and HiSilicon,
- * or with EP3_DTS_PAD=1, the PES carries the frame padded to 2016 bytes with
+/* The DTS writer with a DVD style 2013-byte core frame: on every box but a
+ * Dreambox, or with EP3_DTS_PAD=1, the PES carries the frame padded to 2016 bytes with
  * FSIZE raised. The choice is taken once per process, so every case runs in a
  * child of its own. */
 
@@ -99,11 +99,13 @@ static void unchanged(void)
 
 static void vuplus(void) { stb = STB_VUPLUS; padded(); }
 static void hisilicon(void) { stb = STB_HISILICON; padded(); }
-static void other(void) { unchanged(); }
+static void other(void) { padded(); }
 static void dreambox(void) { stb = STB_DREAMBOX; unchanged(); }
 static void forced_off(void) { stb = STB_VUPLUS; assert(!setenv("EP3_DTS_PAD", "0", 1)); unchanged(); }
-static void forced_on(void) { assert(!setenv("EP3_DTS_PAD", "1", 1)); padded(); }
-static void other_value(void) { assert(!setenv("EP3_DTS_PAD", "10", 1)); unchanged(); }
+static void forced_on(void) { stb = STB_DREAMBOX; assert(!setenv("EP3_DTS_PAD", "1", 1)); padded(); }
+static void other_value(void) { assert(!setenv("EP3_DTS_PAD", "10", 1)); padded(); }
+static void other_value_dreambox(void) { stb = STB_DREAMBOX; assert(!setenv("EP3_DTS_PAD", "10", 1)); unchanged(); }
+static void forced_off_other(void) { assert(!setenv("EP3_DTS_PAD", "0", 1)); unchanged(); }
 
 static int run(const char *name, void (*test)(void))
 {
@@ -131,7 +133,9 @@ int main(void)
     failed += run("other box", other);
     failed += run("Dreambox", dreambox);
     failed += run("EP3_DTS_PAD=0 on Vu+", forced_off);
-    failed += run("EP3_DTS_PAD=1 on another box", forced_on);
-    failed += run("EP3_DTS_PAD=10", other_value);
+    failed += run("EP3_DTS_PAD=0 on another box", forced_off_other);
+    failed += run("EP3_DTS_PAD=1 on a Dreambox", forced_on);
+    failed += run("EP3_DTS_PAD=10 on another box", other_value);
+    failed += run("EP3_DTS_PAD=10 on a Dreambox", other_value_dreambox);
     return failed ? 1 : 0;
 }
