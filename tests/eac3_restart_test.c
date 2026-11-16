@@ -36,11 +36,25 @@ static const char *encoding = "A_EAC3";
 static long clock_ms;
 static int writes;
 
+/* the ioctls of the audio decoder since the last calls_reset() */
+static unsigned long calls[64];
+static int ncalls;
+
 int test_ioctl(int fd, unsigned long request, ...)
 {
-    (void)fd;
-    (void)request;
+    if (fd == audiofd && ncalls < (int)(sizeof(calls) / sizeof(calls[0])))
+        calls[ncalls++] = request;
     return 0;
+}
+
+static void calls_reset(void) { ncalls = 0; }
+
+static int called(unsigned long request)
+{
+    int i, n = 0;
+    for (i = 0; i < ncalls; i++)
+        n += calls[i] == request;
+    return n;
 }
 
 FILE *test_fopen(const char *path, const char *how)
@@ -52,6 +66,9 @@ FILE *test_fopen(const char *path, const char *how)
         text = mode;
     if (!text)
         return NULL;
+    /* /proc reads may block: never with the output mutex held */
+    assert(!pthread_mutex_trylock(&LinuxDVBmutex));
+    pthread_mutex_unlock(&LinuxDVBmutex);
     return fmemopen((void *)text, strlen(text), how);
 }
 
@@ -73,8 +90,12 @@ static WriterCaps_t eac3_caps = {.dvbStreamType = AUDIOTYPE_AC3_PLUS};
 static WriterCaps_t ac3_caps = {.dvbStreamType = AUDIOTYPE_AC3};
 static Writer_t eac3_writer = {.reset = reset_writer, .writeData = write_packet, .caps = &eac3_caps};
 static Writer_t ac3_writer = {.reset = reset_writer, .writeData = write_packet, .caps = &ac3_caps};
+static WriterCaps_t dts_caps = {.dvbStreamType = AUDIOTYPE_DTS};
+static Writer_t dts_writer = {.reset = reset_writer, .writeData = write_packet, .caps = &dts_caps};
 Writer_t *getWriter(char *name)
 {
+    if (!strcmp(name, "A_DTS"))
+        return &dts_writer;
     return !strcmp(name, "A_EAC3") ? &eac3_writer : &ac3_writer;
 }
 Writer_t *getDefaultVideoWriter(void) { return NULL; }
@@ -212,6 +233,100 @@ static void late_first_packet(void)
     assert(LinuxDvbEac3RestartState() == 2);
 }
 
+/* One audio switch to a track written as `to`: whether it went the full way
+ * (stop, bypass mode, play) or only flushed the running decoder. */
+static int full_switch(const char *to)
+{
+    encoding = to;
+    calls_reset();
+    assert(!Command(&context, OUTPUT_SWITCH, "audio"));
+    if (!called(AUDIO_SET_BYPASS_MODE))
+    {
+        assert(!called(AUDIO_STOP) && !called(AUDIO_PLAY) && called(AUDIO_CLEAR_BUFFER) == 1);
+        return 0;
+    }
+    assert(called(AUDIO_STOP) == 1 && called(AUDIO_PLAY) == 1);
+    return 1;
+}
+
+/* The restart that un-sticks the DD+ start: a switch to the same track */
+static void start_and_restart(void)
+{
+    uint8_t data[4] = {0x0b, 0x77};
+    AudioVideoOut_t out = {.data = data, .len = sizeof(data), .type = "audio"};
+    start();
+    assert(!LinuxDvbOutput.Write(&context, &out));
+    clock_ms += 100;
+    assert(LinuxDvbEac3RestartState() == 2);
+    assert(full_switch("A_EAC3"));
+}
+
+/* After that restart a DD+ -> DD+ switch (native E-AC-3 <-> a track
+ * transcoded to E-AC-3, the same writer) keeps the decoder running, also
+ * while paused, and the restart does not come again. Any other bypass mode
+ * goes the full way, and so does the first DD+ switch after it. */
+static void eac3_kept(void)
+{
+    uint8_t data[4] = {0x0b, 0x77};
+    AudioVideoOut_t out = {.data = data, .len = sizeof(data), .type = "audio"};
+    start_and_restart();
+    assert(!full_switch("A_EAC3"));
+    assert(!full_switch("A_EAC3"));
+    playback.isPaused = 1;
+    assert(!full_switch("A_EAC3"));
+    playback.isPaused = 0;
+    assert(!LinuxDvbOutput.Write(&context, &out));
+    clock_ms += 6000;
+    assert(LinuxDvbEac3RestartState() == 0);
+    assert(full_switch("A_AC3"));
+    assert(full_switch("A_AC3"));
+    assert(full_switch("A_EAC3"));
+    assert(!full_switch("A_EAC3"));
+    assert(full_switch("A_DTS"));
+    assert(full_switch("A_EAC3"));
+    assert(!full_switch("A_EAC3"));
+}
+
+/* A switch from AC-3 to DD+ starts DD+ passthrough as well. */
+static void eac3_kept_after_ac3_start(void)
+{
+    encoding = "A_AC3";
+    start();
+    assert(LinuxDvbEac3RestartState() == 0);
+    assert(full_switch("A_EAC3"));
+    assert(!full_switch("A_EAC3"));
+}
+
+/* A new start or a stop: the first DD+ switch after it is a full one again. */
+static void eac3_restart_after_play(void)
+{
+    start_and_restart();
+    encoding = "A_EAC3";
+    assert(!Command(&context, OUTPUT_PLAY, "audio"));
+    assert(full_switch("A_EAC3"));
+    assert(!full_switch("A_EAC3"));
+    assert(!Command(&context, OUTPUT_STOP, "audio"));
+    assert(full_switch("A_EAC3"));
+}
+
+/* Every DD+ switch goes the full way where the restart is not used. */
+static void eac3_always_full(void)
+{
+    encoding = "A_EAC3";
+    start();
+    assert(full_switch("A_EAC3"));
+    assert(full_switch("A_EAC3"));
+    assert(full_switch("A_AC3"));
+    assert(full_switch("A_EAC3"));
+    assert(full_switch("A_EAC3"));
+}
+
+static void full_other_model(void) { model = "uno4kse\n"; eac3_always_full(); }
+static void full_not_passthrough(void) { mode = "downmix\n"; eac3_always_full(); }
+static void full_not_a_vuplus(void) { stb = STB_OTHER; eac3_always_full(); }
+static void full_forced_off(void) { assert(!setenv("EP3_EAC3_RESTART", "0", 1)); eac3_always_full(); }
+static void full_dash(void) { playback.isDash = 1; eac3_always_full(); }
+
 static int run(const char *name, void (*test)(void))
 {
     int status;
@@ -245,5 +360,13 @@ int main(void)
     failed += run("cancelled by a switch", cancelled_by_switch);
     failed += run("cancelled by a stop", cancelled_by_stop);
     failed += run("late first packet", late_first_packet);
+    failed += run("DD+ -> DD+ switch keeps the decoder", eac3_kept);
+    failed += run("DD+ kept after an AC-3 start", eac3_kept_after_ac3_start);
+    failed += run("DD+ full switch after a start or stop", eac3_restart_after_play);
+    failed += run("DD+ switch on another model", full_other_model);
+    failed += run("DD+ switch without passthrough", full_not_passthrough);
+    failed += run("DD+ switch not on a VU+", full_not_a_vuplus);
+    failed += run("DD+ switch with EP3_EAC3_RESTART=0", full_forced_off);
+    failed += run("DD+ switch with DASH", full_dash);
     return failed ? 1 : 0;
 }
