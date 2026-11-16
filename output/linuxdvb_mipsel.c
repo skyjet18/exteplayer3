@@ -571,6 +571,41 @@ int LinuxDvbClose(Context_t  *context, char *type)
     return cERR_LINUXDVB_NO_ERROR;
 }
 
+/* Broadcom drivers take the frame rate from this node when the stream itself
+ * carries none (H.264 without VUI timing, MPEG-4 part 2, some VC-1) and report
+ * it to the front end. Written before VIDEO_SET_STREAMTYPE with the frame rate
+ * of the container, the nearest the driver accepts, as gstdvbvideosink and
+ * libstbplayer do; a box without the node is left alone. */
+static void LinuxDvbSetFallbackFramerate(Context_t *context)
+{
+    static const uint32_t rates[] = {23976, 24000, 25000, 29970, 30000, 50000, 59940, 60000};
+    Track_t *track = NULL;
+    uint32_t best = rates[0], i;
+    FILE *f;
+
+    if (context->manager->video->Command(context, MANAGER_GET_TRACK, &track) < 0 ||
+        track == NULL || track->frame_rate == 0)
+    {
+        return;
+    }
+    for (i = 1; i < sizeof(rates) / sizeof(rates[0]); i++)
+    {
+        uint32_t diff = track->frame_rate > rates[i] ? track->frame_rate - rates[i] : rates[i] - track->frame_rate;
+        uint32_t bestDiff = track->frame_rate > best ? track->frame_rate - best : best - track->frame_rate;
+        if (diff < bestDiff)
+            best = rates[i];
+    }
+    f = fopen("/proc/stb/vmpeg/0/fallback_framerate", "w");
+    if (f == NULL)
+    {
+        linuxdvb_printf(20, "no fallback_framerate: %s\n", strerror(errno));
+        return;
+    }
+    fprintf(f, "%u", best);
+    fclose(f);
+    linuxdvb_printf(10, "fallback_framerate %u for %u\n", best, track->frame_rate);
+}
+
 int LinuxDvbPlay(Context_t  *context, char *type) {
     int32_t ret = cERR_LINUXDVB_NO_ERROR;
     Writer_t *writer;
@@ -597,6 +632,7 @@ int LinuxDvbPlay(Context_t  *context, char *type) {
             linuxdvb_printf(20, "found writer %s for encoding %s\n", writer->caps->name, Encoding);
             if (writer->reset)
                 writer->reset();
+            LinuxDvbSetFallbackFramerate(context);
             ret = ioctl( videofd, VIDEO_SET_STREAMTYPE, LinuxDvbMapStreamType(writer->caps->dvbStreamType, true));
             if (ret < 0) ret = ioctl( videofd, VIDEO_SET_STREAMTYPE, LinuxDvbMapStreamType(writer->caps->dvbStreamType, false));
             if (ret < 0)
