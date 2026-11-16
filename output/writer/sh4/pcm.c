@@ -135,6 +135,16 @@ static int32_t prepareClipPlay(int32_t uNoOfChannels, int32_t uSampleRate, int32
     SubFrameLen *= uNoOfChannels;
     SubFrameLen *= (uBitsPerSample / 8);
 
+    /* a sample rate the LPCM header has no code for (32 kHz, 22.05 kHz...),
+     * no channels, or a subframe larger than a PES: not played, SubFrameLen
+     * 0 tells writeData() */
+    if (SubFrameLen == 0 || SubFrameLen > (2048 - 18) - sizeof(lpcm_prv))
+    {
+        pcm_err("PCM not supported: rate %d, channels %d, bits %d\n", uSampleRate, uNoOfChannels, uBitsPerSample);
+        SubFrameLen = 0;
+        return 1;
+    }
+
     //rewrite PES size to have as many complete subframes per PES as we can
     // FIXME: PES header size was hardcoded to 18 in previous code. Actual size returned by InsertPesHeader is 14.
     SubFramesPerPES = ((2048 - 18) - sizeof(lpcm_prv))/SubFrameLen;
@@ -225,6 +235,12 @@ static int32_t writeData(void *_call)
         }
         initialHeader = 0;
         prepareClipPlay(pcmPrivateData->channels, pcmPrivateData->sample_rate, pcmPrivateData->bits_per_coded_sample, LE);
+    }
+
+    if (SubFrameLen == 0)
+    {
+        /* not supported, see prepareClipPlay() */
+        return 0;
     }
 
     uint8_t *buffer = call->data;
