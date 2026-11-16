@@ -3533,7 +3533,9 @@ static void FFMPEGThread(Context_t *context)
                     duration = (int64_t)av_rescale(get_packet_duration(&packet), (int64_t)stream->time_base.num * 1000, stream->time_base.den); 
                 }
 
-                if (duration > 0 || duration == -1)
+                /* the cue that fake_last_subtitle adds at the end of a WebVTT
+                 * stream (pts INT64_MAX - 2) has no time: it is not sent */
+                if ((duration > 0 || duration == -1) && pts != INVALID_PTS_VALUE)
                 {
                     SubtitleOut_t subOut;
                     memset(&subOut, 0, sizeof(subOut));
