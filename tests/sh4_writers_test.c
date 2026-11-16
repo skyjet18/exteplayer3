@@ -79,10 +79,55 @@ static void pcm_subframe_larger_than_pes_is_not_written(void)
     assert(write_pcm(192000, 8, 24) == 0 && writes == 0);
 }
 
+static int write_h264(const uint8_t *packet, unsigned int size)
+{
+    /* an avcC with no parameter set: the writer takes them from the packet */
+    static uint8_t avcc[7] = {1, 0x64, 0x00, 0x28, 0xff, 0xe0, 0x00};
+    /* exactly as long as the packet, so that ASan sees a read beyond it */
+    uint8_t *data = malloc(size);
+    assert(data);
+    memcpy(data, packet, size);
+    WriterAVCallData_t call = {
+        .fd = 1,
+        .data = data,
+        .len = size,
+        .private_data = avcc,
+        .private_size = sizeof(avcc),
+        .FrameRate = 1001,
+        .FrameScale = 24000,
+        .WriteV = count_writev,
+    };
+    writes = 0;
+    WriterVideoH264.reset();
+    int ret = WriterVideoH264.writeData(&call);
+    free(data);
+    return ret;
+}
+
+/* The length of the SPS points 96 bytes beyond the packet: the parameter
+ * sets of the packet are not taken, nothing beyond it is read. */
+static void h264_sps_beyond_the_packet_is_not_read(void)
+{
+    static const uint8_t packet[] = {0, 0, 0, 100, 0x67, 0x64, 0x00, 0x28};
+    assert(write_h264(packet, sizeof(packet)) >= 0);
+}
+
+/* The avcC built from the SPS of the packet is freed when the write of the
+ * first header fails (LeakSanitizer). */
+static void h264_failed_header_write_frees_the_codec_data(void)
+{
+    static const uint8_t packet[] = {0, 0, 0, 8, 0x67, 0x64, 0x00, 0x28, 0xac, 0xd9, 0x40, 0x78};
+    fail_write = 1;
+    assert(write_h264(packet, sizeof(packet)) < 0 && writes == 1);
+    fail_write = 0;
+}
+
 int main(void)
 {
     pcm_48khz_is_written();
     pcm_32khz_is_not_written();
     pcm_subframe_larger_than_pes_is_not_written();
+    h264_sps_beyond_the_packet_is_not_read();
+    h264_failed_header_write_frees_the_codec_data();
     return 0;
 }
