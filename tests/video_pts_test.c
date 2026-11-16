@@ -170,7 +170,9 @@ int main(void)
     assert(position(cERR_LINUXDVB_NO_ERROR) == 0 && audio_requests == 0);
     audiofd = AUDIO_FD;
 
-    /* a running video decoder is asked alone */
+    /* a running video decoder is asked alone (within the written video,
+     * further ahead the position is kept within the data) */
+    write_video(180000);
     video_pts = 180000;
     audio_pts = 170000;
     audio_requests = 0;
