@@ -219,9 +219,9 @@ static int __inline decode_AC(BR* p, BLOCK* block, int escape_type, int i)
 			{
 				last = get_bits(p, 1);
 				run = get_bits(p, 6);
+				/* 8 bit two's complement */
 				level = get_bits(p, 8);
-				sign = level >= 128;
-				if (sign) level = 256 - level;
+				if (level >= 128) level -= 256;
 			}
 		}
 		else

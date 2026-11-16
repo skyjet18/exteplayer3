@@ -154,12 +154,27 @@ static int write_pad_not_coded_frames(flv2mpeg4_CTX *pub_ctx, CONVCTX *c, BW *bw
     return 0;
 }
 
+/* the DQUANT that moves the MPEG-4 quantiser towards the H.263 one */
+static int requant(int qscale, int *m4v_qscale)
+{
+    int dquant = qscale - *m4v_qscale;
+    if (dquant > 2)
+        dquant = 2;
+    else if (dquant < -2)
+        dquant = -2;
+    *m4v_qscale += dquant;
+    return dquant;
+}
+
 static int write_m4v_picture_frame(flv2mpeg4_CTX *pub_ctx, CONVCTX *c, BR *br, BW *bw, PICTURE *flvpic, uint32 time)
 {
     MICROBLOCK mb;
     M4V_VOP vop;
     M4V_MICROBLOCK m4v_mb;
     int x, y;
+    /* the quantiser of the H.263 macroblock and the one the MPEG-4 decoder
+     * follows: DQUANT of the source is passed on as DQUANT */
+    int qscale = flvpic->qscale, m4v_qscale = flvpic->qscale;
     int mb_width = (flvpic->width + 15) / 16;
     int mb_height = (flvpic->height + 15) / 16;
 
@@ -179,16 +194,21 @@ static int write_m4v_picture_frame(flv2mpeg4_CTX *pub_ctx, CONVCTX *c, BR *br, B
             if (vop.picture_type == M4V_I_TYPE)
             {
                 mb.intra = 1;
-                if (decode_I_mb(br, &mb, flvpic->escape_type, flvpic->qscale) < 0) return -1;
-                m4v_mb.qscale = vop.qscale;
+                if (decode_I_mb(br, &mb, flvpic->escape_type, qscale) < 0) return -1;
+                qscale += mb.dquant;
+                mb.dquant = requant(qscale, &m4v_qscale);
+                m4v_mb.qscale = m4v_qscale;
                 copy_microblock(&mb, &m4v_mb);
                 m4v_encode_I_dcpred(&m4v_mb, &c->vol.dcpred, x, y);
                 m4v_encode_I_mb(bw, &m4v_mb);
             }
             else
             {
-                if (decode_P_mb(br, &mb, flvpic->escape_type, flvpic->qscale) < 0) return -1;
-                m4v_mb.qscale = vop.qscale;
+                if (decode_P_mb(br, &mb, flvpic->escape_type, qscale) < 0) return -1;
+                qscale += mb.dquant;
+                /* a skipped macroblock carries no DQUANT */
+                mb.dquant = mb.skip ? 0 : requant(qscale, &m4v_qscale);
+                m4v_mb.qscale = m4v_qscale;
                 copy_microblock(&mb, &m4v_mb);
                 m4v_encode_I_dcpred(&m4v_mb, &c->vol.dcpred, x, y);
                 m4v_encode_P_mb(bw, &m4v_mb);
