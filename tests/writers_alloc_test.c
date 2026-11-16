@@ -53,10 +53,13 @@ static uint8_t hvcc[30] = {[0] = 1, [21] = 3, [22] = 1, [23] = 0x21, [25] = 1, [
 static void h265_no_memory_for_the_codec_data(void)
 {
     uint8_t frame[] = {0, 0, 0, 2, 0x26, 1};
+    /* The first allocation is the copy of the hvcC, the second the codec data. */
     WriterAVCallData_t call = packet(frame, sizeof(frame), hvcc, sizeof(hvcc), 1);
     WriterVideoH265.reset();
+    assert(WriterVideoH265.writeData(&call) < 0 && allocations == 1 && !calls);
+    call = packet(frame, sizeof(frame), hvcc, sizeof(hvcc), 2);
     /* The frame is not written, the next one brings the parameter sets. */
-    assert(!WriterVideoH265.writeData(&call) && allocations == 1 && !calls);
+    assert(!WriterVideoH265.writeData(&call) && allocations == 2 && !calls);
     call = packet(frame, sizeof(frame), hvcc, sizeof(hvcc), 0);
     assert(WriterVideoH265.writeData(&call) == 14 + 6 + 4 + 2 && part_count == 4);
     WriterVideoH265.reset();

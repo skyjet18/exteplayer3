@@ -207,6 +207,61 @@ static void h265_four_byte_start_code_in_extradata(void)
     WriterVideoH265.reset();
 }
 
+/* Other parameter sets in the extradata without a reset (another
+ * representation of an adaptive stream): the next packet carries them. */
+static void h265_new_parameter_sets(void)
+{
+    uint8_t frame[] = {0, 0, 0, 2, 0x26, 1};
+    uint8_t extra[sizeof(hvcc)];
+    WriterAVCallData_t call = packet(frame, sizeof(frame), hvcc, sizeof(hvcc), record);
+    memcpy(extra, hvcc, sizeof(hvcc));
+    WriterVideoH265.reset();
+    assert(WriterVideoH265.writeData(&call) == 14 + 6 + 4 + 2 && part_count == 4);
+    assert(parts[1].iov_len == 6 && !memcmp(parts[1].iov_base, "\0\0\0\1\x42\1", 6));
+    call = packet(frame, sizeof(frame), hvcc, sizeof(hvcc), record);
+    assert(WriterVideoH265.writeData(&call) == 14 + 4 + 2 && part_count == 3);
+    /* the same sets at another address: nothing again */
+    call = packet(frame, sizeof(frame), extra, sizeof(extra), record);
+    assert(WriterVideoH265.writeData(&call) == 14 + 4 + 2 && part_count == 3);
+    extra[29] = 2;
+    call = packet(frame, sizeof(frame), extra, sizeof(extra), record);
+    assert(WriterVideoH265.writeData(&call) == 14 + 6 + 4 + 2 && part_count == 4);
+    assert(parts[1].iov_len == 6 && !memcmp(parts[1].iov_base, "\0\0\0\1\x42\2", 6));
+    call = packet(frame, sizeof(frame), extra, sizeof(extra), record);
+    assert(WriterVideoH265.writeData(&call) == 14 + 4 + 2 && part_count == 3);
+    WriterVideoH265.reset();
+}
+
+/* Packets without extradata, or with a size but no buffer, neither crash
+ * nor count as new parameter sets; extradata coming later is sent. */
+static void h265_parameter_sets_without_extradata(void)
+{
+    uint8_t frame[] = {0, 0, 0, 2, 0x26, 1};
+    uint8_t annexb[] = {0, 0, 0, 1, 0x26, 1};
+    WriterAVCallData_t call = packet(frame, sizeof(frame), NULL, 0, record);
+    WriterVideoH265.reset();
+    /* nothing to start the decoder with yet: the frame is not written */
+    assert(WriterVideoH265.writeData(&call) == 0 && !calls);
+    call = packet(frame, sizeof(frame), NULL, sizeof(hvcc), record);
+    assert(WriterVideoH265.writeData(&call) == 0 && !calls);
+    call = packet(frame, sizeof(frame), hvcc, sizeof(hvcc), record);
+    assert(WriterVideoH265.writeData(&call) == 14 + 6 + 4 + 2 && part_count == 4);
+    assert(parts[1].iov_len == 6 && !memcmp(parts[1].iov_base, "\0\0\0\1\x42\1", 6));
+    call = packet(frame, sizeof(frame), NULL, sizeof(hvcc), record);
+    assert(WriterVideoH265.writeData(&call) == 14 + 4 + 2 && part_count == 3);
+    call = packet(frame, sizeof(frame), NULL, 0, record);
+    assert(WriterVideoH265.writeData(&call) == 14 + 4 + 2 && part_count == 3);
+    /* the same sets after packets without them: not sent again */
+    call = packet(frame, sizeof(frame), hvcc, sizeof(hvcc), record);
+    assert(WriterVideoH265.writeData(&call) == 14 + 4 + 2 && part_count == 3);
+    /* Annex B packet with a size but no buffer: injected as it is */
+    call = packet(annexb, sizeof(annexb), NULL, 6, record);
+    call.InfoFlags = 1;
+    assert(WriterVideoH265.writeData(&call) == 14 + 5 + 1 + 6 && part_count == 3);
+    assert(parts[2].iov_base == annexb && parts[2].iov_len == sizeof(annexb));
+    WriterVideoH265.reset();
+}
+
 static void mpeg2_packet_shorter_than_a_start_code(void)
 {
     uint8_t sequence[] = {0, 0, 1, 0xb3, 1, 2, 3, 4};
@@ -410,6 +465,8 @@ int main(void)
     h265_iovec_limit();
     h265_extradata_00_xx_01_is_no_start_code();
     h265_four_byte_start_code_in_extradata();
+    h265_new_parameter_sets();
+    h265_parameter_sets_without_extradata();
     mpeg2_packet_shorter_than_a_start_code();
     vc1_wmv_codec_data();
     vorbis_headers();
