@@ -1,0 +1,377 @@
+/* The FLV1 (Sorenson Spark) to MPEG-4 part 2 converter: the pictures the
+ * MPEG-4 decoder of libavcodec makes of the converted stream against the ones
+ * its FLV1 decoder makes of the source.
+ *
+ * - a picture written bit by bit in the version 0 format: AC levels as 8 bit
+ *   escapes, most of them negative, and macroblocks that change the quantiser
+ *   with DQUANT. Its DC values are multiples of the MPEG-4 DC scale of their
+ *   macroblock, so the conversion is exact;
+ * - pictures of the FLV1 encoder of libavcodec (version 1, 7 and 11 bit
+ *   escapes) with spatial masking, which moves the quantiser per macroblock,
+ *   I and P pictures. The DC values are rounded by the conversion here. */
+
+#include <assert.h>
+#include <math.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <libavcodec/avcodec.h>
+#include "flv2mpeg4/flv2mpeg4.h"
+
+#define MAX_PACKETS 32
+
+typedef struct
+{
+    AVFrame *frame[MAX_PACKETS];
+    int count;
+} Frames;
+
+static uint8_t extradata[256];
+static int extradata_size;
+static AVPacket *converted[MAX_PACKETS];
+static int converted_count;
+
+static int write_packet(void *usr_data, int keyframe, int pts, const uint8_t *buf, int size)
+{
+    AVPacket *pkt = av_packet_alloc();
+    (void)usr_data;
+    (void)pts;
+    assert(pkt && size > 0 && av_new_packet(pkt, size) == 0);
+    memcpy(pkt->data, buf, size);
+    if (keyframe)
+        pkt->flags |= AV_PKT_FLAG_KEY;
+    assert(converted_count < MAX_PACKETS);
+    converted[converted_count++] = pkt;
+    return 0;
+}
+
+static int write_extradata(void *usr_data, int width, int height, int bitrate, const uint8_t *data, int size)
+{
+    (void)usr_data;
+    (void)width;
+    (void)height;
+    (void)bitrate;
+    assert(size > 0 && size <= (int)sizeof(extradata));
+    memcpy(extradata, data, size);
+    extradata_size = size;
+    return 0;
+}
+
+/* every source packet becomes one MPEG-4 packet: the times leave no gap that
+ * the converter would fill with not coded pictures */
+static void convert(AVPacket **packets, int count, int width, int height)
+{
+    flv2mpeg4_CTX *ctx = flv2mpeg4_init_ctx(NULL, width, height, write_packet, write_extradata);
+    int i;
+    assert(ctx);
+    extradata_size = 0;
+    converted_count = 0;
+    assert(flv2mpeg4_prepare_extra_data(ctx) == 0 && extradata_size > 0);
+    for (i = 0; i < count; i++)
+        assert(flv2mpeg4_process_flv_packet(ctx, 0, packets[i]->data, packets[i]->size, i * 1000 / 30) == 0);
+    flv2mpeg4_release_ctx(&ctx);
+    assert(converted_count == count);
+}
+
+static void decode(enum AVCodecID id, const uint8_t *config, int config_size, AVPacket **packets, int count, Frames *out)
+{
+    const AVCodec *codec = avcodec_find_decoder(id);
+    AVCodecContext *ctx;
+    AVFrame *frame = av_frame_alloc();
+    int i, ret;
+
+    assert(codec && frame);
+    ctx = avcodec_alloc_context3(codec);
+    assert(ctx);
+    ctx->thread_count = 1;
+    if (config_size > 0)
+    {
+        ctx->extradata = av_mallocz(config_size + AV_INPUT_BUFFER_PADDING_SIZE);
+        assert(ctx->extradata);
+        memcpy(ctx->extradata, config, config_size);
+        ctx->extradata_size = config_size;
+    }
+    assert(avcodec_open2(ctx, codec, NULL) == 0);
+    out->count = 0;
+    for (i = 0; i <= count; i++)
+    {
+        ret = avcodec_send_packet(ctx, i < count ? packets[i] : NULL);
+        assert(ret == 0);
+        while ((ret = avcodec_receive_frame(ctx, frame)) == 0)
+        {
+            assert(out->count < MAX_PACKETS);
+            out->frame[out->count++] = av_frame_clone(frame);
+            av_frame_unref(frame);
+        }
+        assert(ret == AVERROR(EAGAIN) || ret == AVERROR_EOF);
+    }
+    av_frame_free(&frame);
+    avcodec_free_context(&ctx);
+}
+
+static void free_frames(Frames *frames)
+{
+    int i;
+    for (i = 0; i < frames->count; i++)
+        av_frame_free(&frames->frame[i]);
+    frames->count = 0;
+}
+
+static void free_packets(AVPacket **packets, int count)
+{
+    int i;
+    for (i = 0; i < count; i++)
+        av_packet_free(&packets[i]);
+}
+
+/* PSNR over the three planes and the largest difference of a sample */
+static double compare(const AVFrame *a, const AVFrame *b, int *max_diff)
+{
+    double sum = 0;
+    long samples = 0;
+    int plane, x, y;
+
+    assert(a->format == AV_PIX_FMT_YUV420P && b->format == AV_PIX_FMT_YUV420P);
+    assert(a->width == b->width && a->height == b->height);
+    *max_diff = 0;
+    for (plane = 0; plane < 3; plane++)
+    {
+        int w = plane ? (a->width + 1) / 2 : a->width;
+        int h = plane ? (a->height + 1) / 2 : a->height;
+        for (y = 0; y < h; y++)
+        {
+            for (x = 0; x < w; x++)
+            {
+                int d = a->data[plane][y * a->linesize[plane] + x] - b->data[plane][y * b->linesize[plane] + x];
+                sum += (double)d * d;
+                if (abs(d) > *max_diff)
+                    *max_diff = abs(d);
+                samples++;
+            }
+        }
+    }
+    if (sum == 0)
+        return 99.0;
+    return 10.0 * log10(255.0 * 255.0 * samples / sum);
+}
+
+/* converts, decodes both and checks every picture; returns the lowest PSNR */
+static double check(const char *name, AVPacket **packets, int count, int width, int height, int max_allowed_diff, double min_psnr)
+{
+    Frames source = {0}, mpeg4 = {0};
+    double lowest = 99.0;
+    int i;
+
+    convert(packets, count, width, height);
+    decode(AV_CODEC_ID_FLV1, NULL, 0, packets, count, &source);
+    decode(AV_CODEC_ID_MPEG4, extradata, extradata_size, converted, converted_count, &mpeg4);
+    printf("%s: %d packets, %d FLV1 pictures, %d MPEG-4 pictures\n", name, count, source.count, mpeg4.count);
+    assert(source.count == count && mpeg4.count == count);
+    for (i = 0; i < count; i++)
+    {
+        int max_diff;
+        double psnr = compare(source.frame[i], mpeg4.frame[i], &max_diff);
+        printf("%s: picture %d (%c): PSNR %.2f dB, largest difference %d\n", name, i,
+               av_get_picture_type_char(source.frame[i]->pict_type), psnr, max_diff);
+        if (psnr < lowest)
+            lowest = psnr;
+        if (psnr < min_psnr || max_diff > max_allowed_diff)
+        {
+            fprintf(stderr, "%s: picture %d differs from the FLV1 decode (PSNR %.2f < %.2f dB or difference %d > %d)\n",
+                    name, i, psnr, min_psnr, max_diff, max_allowed_diff);
+            exit(1);
+        }
+    }
+    free_frames(&source);
+    free_frames(&mpeg4);
+    free_packets(converted, converted_count);
+    converted_count = 0;
+    return lowest;
+}
+
+typedef struct
+{
+    uint8_t buf[1024];
+    int bits;
+} Bits;
+
+static void put(Bits *b, int count, unsigned value)
+{
+    int i;
+    for (i = count - 1; i >= 0; i--)
+    {
+        assert(b->bits < (int)sizeof(b->buf) * 8);
+        if (value >> i & 1)
+            b->buf[b->bits >> 3] |= 0x80 >> (b->bits & 7);
+        b->bits++;
+    }
+}
+
+/* intra DC and the AC coefficients {run, level}, every one an 8 bit escape */
+static void put_block(Bits *b, int dc, const int (*ac)[2], int count)
+{
+    int i;
+    put(b, 8, dc);
+    for (i = 0; i < count; i++)
+    {
+        put(b, 7, 3);                /* ESCAPE */
+        put(b, 1, i == count - 1);   /* LAST */
+        put(b, 6, ac[i][0]);         /* RUN */
+        put(b, 8, ac[i][1] & 0xff);  /* LEVEL, two's complement */
+    }
+}
+
+/* 32x32, four intra macroblocks: quantiser 10, then DQUANT +2, -1, +1.
+ * Luma DC * 8 is a multiple of the MPEG-4 DC scale of the macroblock
+ * (18, 20, 19, 20) and chroma DC * 8 of its chroma DC scale (11, 12, 12, 12). */
+static AVPacket *escaped_picture(void)
+{
+    /* DQUANT code per macroblock: none, +2, -1, +1 */
+    static const int dquant_code[4] = {-1, 3, 0, 2};
+    static const int dc[4][6] = {
+        {90, 99, 108, 117, 121, 110},
+        {100, 105, 110, 115, 126, 120},
+        {95, 114, 76, 133, 117, 129},
+        {120, 125, 80, 85, 123, 132},
+    };
+    static const int ac_a[][2] = {{0, -12}, {2, 9}, {1, -5}};
+    static const int ac_b[][2] = {{1, -10}, {0, 6}, {4, -3}};
+    static const int ac_c[][2] = {{0, -7}, {0, -6}, {3, 4}, {2, -2}};
+    const int (*ac[3])[2] = {ac_a, ac_b, ac_c};
+    const int ac_count[3] = {3, 3, 4};
+    Bits b;
+    AVPacket *pkt = av_packet_alloc();
+    int mb, n;
+
+    memset(&b, 0, sizeof(b));
+    put(&b, 17, 1);      /* picture start code */
+    put(&b, 5, 0);       /* version 0: H.263 escapes */
+    put(&b, 8, 0);       /* temporal reference */
+    put(&b, 3, 0);       /* 8 bit size */
+    put(&b, 8, 32);
+    put(&b, 8, 32);
+    put(&b, 2, 0);       /* I picture */
+    put(&b, 1, 0);       /* deblocking */
+    put(&b, 5, 10);      /* quantiser */
+    put(&b, 1, 0);       /* PEI */
+    for (mb = 0; mb < 4; mb++)
+    {
+        int code = dquant_code[mb];
+        if (code < 0)
+            put(&b, 3, 3);   /* MCBPC: intra, both chroma blocks coded */
+        else
+            put(&b, 6, 3);   /* MCBPC: intra + DQUANT, both chroma blocks coded */
+        put(&b, 2, 3);       /* CBPY: all luma blocks coded */
+        if (code >= 0)
+            put(&b, 2, code);
+        for (n = 0; n < 6; n++)
+            put_block(&b, dc[mb][n], ac[(mb + n) % 3], ac_count[(mb + n) % 3]);
+    }
+    assert(pkt && av_new_packet(pkt, (b.bits + 7) / 8 + 2) == 0);
+    memcpy(pkt->data, b.buf, (b.bits + 7) / 8);
+    memset(pkt->data + (b.bits + 7) / 8, 0, 2);
+    pkt->flags |= AV_PKT_FLAG_KEY;
+    return pkt;
+}
+
+static void fill_picture(AVFrame *frame, int t)
+{
+    int x, y;
+    assert(av_frame_make_writable(frame) == 0);
+    for (y = 0; y < frame->height; y++)
+    {
+        for (x = 0; x < frame->width; x++)
+        {
+            /* a flat left half and a detailed right half: masking gives
+             * them different quantisers */
+            int v = 60 + x + y + 3 * t;
+            if (x >= frame->width / 2)
+                v += ((x * 37 + y * 101 + t * 7) * 2654435761u >> 27) * 5 - 40;
+            frame->data[0][y * frame->linesize[0] + x] = (uint8_t)(v < 16 ? 16 : v > 235 ? 235 : v);
+        }
+    }
+    for (y = 0; y < frame->height / 2; y++)
+    {
+        for (x = 0; x < frame->width / 2; x++)
+        {
+            frame->data[1][y * frame->linesize[1] + x] = (uint8_t)(100 + x * 2 + t);
+            frame->data[2][y * frame->linesize[2] + x] = (uint8_t)(150 - y * 2 - t);
+        }
+    }
+}
+
+static int encode_pictures(AVPacket **packets, int width, int height, int pictures)
+{
+    const AVCodec *codec = avcodec_find_encoder(AV_CODEC_ID_FLV1);
+    AVCodecContext *ctx;
+    AVFrame *frame = av_frame_alloc();
+    AVPacket *pkt = av_packet_alloc();
+    int count = 0, t, ret;
+
+    assert(codec && frame && pkt);
+    ctx = avcodec_alloc_context3(codec);
+    assert(ctx);
+    ctx->width = width;
+    ctx->height = height;
+    ctx->pix_fmt = AV_PIX_FMT_YUV420P;
+    ctx->time_base = (AVRational){1, 30};
+    ctx->framerate = (AVRational){30, 1};
+    ctx->gop_size = 6;
+    ctx->max_b_frames = 0;
+    ctx->bit_rate = 120000;
+    ctx->qmin = 2;
+    ctx->qmax = 20;
+    ctx->spatial_cplx_masking = 0.8f;
+    ctx->thread_count = 1;
+    ctx->flags |= AV_CODEC_FLAG_BITEXACT;
+    assert(avcodec_open2(ctx, codec, NULL) == 0);
+    frame->format = ctx->pix_fmt;
+    frame->width = width;
+    frame->height = height;
+    assert(av_frame_get_buffer(frame, 0) == 0);
+    for (t = 0; t <= pictures; t++)
+    {
+        if (t < pictures)
+        {
+            fill_picture(frame, t);
+            frame->pts = t;
+        }
+        ret = avcodec_send_frame(ctx, t < pictures ? frame : NULL);
+        assert(ret == 0);
+        while ((ret = avcodec_receive_packet(ctx, pkt)) == 0)
+        {
+            assert(count < MAX_PACKETS);
+            packets[count] = av_packet_alloc();
+            assert(packets[count]);
+            av_packet_move_ref(packets[count], pkt);
+            count++;
+        }
+        assert(ret == AVERROR(EAGAIN) || ret == AVERROR_EOF);
+    }
+    av_packet_free(&pkt);
+    av_frame_free(&frame);
+    avcodec_free_context(&ctx);
+    return count;
+}
+
+int main(void)
+{
+    AVPacket *packets[MAX_PACKETS];
+    int count;
+    double lowest;
+
+    packets[0] = escaped_picture();
+    lowest = check("8 bit escapes", packets, 1, 32, 32, 1, 48.0);
+    free_packets(packets, 1);
+    printf("8 bit escapes: lowest PSNR %.2f dB\n", lowest);
+
+    count = encode_pictures(packets, 96, 64, 12);
+    assert(count == 12);
+    lowest = check("FLV1 encoder", packets, count, 96, 64, 255, 36.0);
+    free_packets(packets, count);
+    printf("FLV1 encoder: lowest PSNR %.2f dB\n", lowest);
+
+    printf("flv2mpeg4 tests passed\n");
+    return 0;
+}
