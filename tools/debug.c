@@ -167,7 +167,7 @@ int set_log_level(const char *level_str)
 
 	for( m = log_mapping; m->name; m++ )
 	{
-		printf("comparing %s with %.*s\n", m->name,  level_name_len, level_str );
+		printf("comparing %s with %.*s\n", m->name, (int) level_name_len, level_str );
 		if (strlen(m->name) == level_name_len && strncmp(m->name, level_str, level_name_len) == 0)
 		{
 			printf("match\n");
