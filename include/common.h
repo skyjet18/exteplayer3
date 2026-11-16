@@ -36,7 +36,7 @@ const char* GetGraphicSubPath();
 int32_t GetGraphicWindowWidth();
 int32_t GetGraphicWindowHeight();
 
-void E2iSendMsg(const char * format, ...);
+void E2iSendMsg(const char * format, ...) __attribute__((format(printf, 1, 2)));
 void E2iStartMsg(void);
 void E2iEndMsg(void);
 

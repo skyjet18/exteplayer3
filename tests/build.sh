@@ -9,7 +9,8 @@ alias_flags=""
 if [ "${HOST_HLS_ALIAS:-0}" = 1 ]; then
     alias_flags="tests/hls_format_alias.c -Wl,--wrap=avformat_open_input"
 fi
-${CC:-cc} ${CFLAGS:-} -g -D_FILE_OFFSET_BITS=64 -D_LARGEFILE64_SOURCE \
+# printf-style formats (the debug macros, E2iSendMsg) must match their arguments
+${CC:-cc} ${CFLAGS:-} -g -Werror=format -D_FILE_OFFSET_BITS=64 -D_LARGEFILE64_SOURCE \
     -D_LARGEFILE_SOURCE -DHAVE_FLV2MPEG4_CONVERTER \
     -Dff_mpeg4audio_channels=exteplayer3_mpeg4audio_channels \
     -DEXTEPLAYER_FAKE_VIDEO="\"${HOST_VIDEO_OUTPUT:-/dev/null}\"" \
