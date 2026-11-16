@@ -3508,9 +3508,20 @@ static void FFMPEGThread(Context_t *context)
                                           avContextTab[cAVIdx]->streams[packet.stream_index]))
             {
                 int64_t duration = -1;
-                int64_t pts = calcPts(cAVIdx, subtitleTrack->stream, packet.pts);
                 AVStream *stream = subtitleTrack->stream;
-                
+                int64_t subPts = packet.pts;
+                /* A subtitle file of its own (-x) counts from the start of the
+                 * main input, which need not be 0 (TS, HLS): its cues are put
+                 * on the timestamps of the main input. Cues with MPEG-TS
+                 * timestamps (WebVTT with an HLS X-TIMESTAMP-MAP) have them. */
+                if (cAVIdx != 0 && subPts != AV_NOPTS_VALUE && stream->pts_wrap_bits > 33 &&
+                    avContextTab[0]->start_time != AV_NOPTS_VALUE)
+                {
+                    subPts = av_sat_add64(subPts, av_rescale_q(avContextTab[0]->start_time,
+                                                               AV_TIME_BASE_Q, stream->time_base));
+                }
+                int64_t pts = calcPts(cAVIdx, stream, subPts);
+
                 if (packet.duration != 0)
                 {
                     // duration in milliseconds
