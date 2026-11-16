@@ -160,6 +160,11 @@ $cc -g -fsanitize=undefined -ffunction-sections -fdata-sections \
     -Wno-deprecated-declarations -Iinclude -Iexternal -I"$FFMPEG_BUILD" -I"$FFMPEG_SOURCE" \
     tests/dts_hd_test.c tools/debug.c -Wl,--gc-sections -pthread -o "$tmp/dts_hd"
 timeout 20 "$tmp/dts_hd"
+# The AMR writer of the hardware path with and without codec data.
+$cc -g -fsanitize=address,undefined -ffunction-sections -fdata-sections -Iinclude -Iexternal \
+    -I"$FFMPEG_BUILD" -I"$FFMPEG_SOURCE" tests/amr_writer_test.c tools/debug.c \
+    output/writer/common/pes.c output/writer/common/misc.c -Wl,--gc-sections -pthread -o "$tmp/amr_writer"
+timeout 20 "$tmp/amr_writer"
 $cc -g -fsanitize=address,undefined -ffunction-sections -fdata-sections -Iinclude -Iexternal \
     -I"$FFMPEG_BUILD" -I"$FFMPEG_SOURCE" tests/buffering_leak_test.c tools/debug.c \
     -Wl,--gc-sections -pthread -o "$tmp/buffering_leak"
