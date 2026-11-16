@@ -120,6 +120,203 @@ bool isBufferedOutput = false;
  * play, stop, flush or clear: from then on a VIDEO_GET_PTS of 0 is no position. */
 static volatile int videoPtsWritten;
 
+/* The position of a decoder that has run out of data. Vu+ decoders keep
+ * counting VIDEO_GET_PTS / AUDIO_GET_PTS with their clock after the last
+ * frame: a live stream whose playlist does not grow for 18 s reports a
+ * position 12 s after the last frame, and when data comes again the decoder
+ * goes back to the PTS of the frames it shows. So the position is kept
+ * within the data written to the decoder: once the decoder reports more than
+ * POS_BOUND_TOLERANCE after the highest PTS written, that PTS plus the
+ * tolerance is reported, until the decoder shows data again and has come up
+ * to that value. Only after the decoder was seen within the data: right
+ * after a start or a clear it can still report the PTS of an earlier
+ * playback, which is left as it is. PTS are compared as 33 bit values.
+ * A decoder restarted by OUTPUT_SWITCH (the video output after a long gap,
+ * an audio track switch) reports stale or unrelated values until it shows
+ * what is written after the restart: until then, at most for
+ * POS_BOUND_RESTART_MS, the position stays at the last one reported.
+ * Neither the standing position nor that wait outlast data that comes
+ * again: when the data written has gone POS_BOUND_FLOWING beyond the
+ * position reported, the position follows the data (a decoder that runs
+ * just after the live edge, a decoder restarted again and again). */
+#define POS_BOUND_MASK       0x1FFFFFFFFULL
+#define POS_BOUND_TOLERANCE  27000ULL         /* 300 ms */
+#define POS_BOUND_CATCH_UP   90000ULL         /* 1 s */
+#define POS_BOUND_LIMIT      (600ULL * 90000) /* 10 min: further is no stall */
+#define POS_BOUND_RESTART_MS 5000
+#define POS_BOUND_FLOWING    360000ULL        /* 4 s */
+typedef struct
+{
+    bool have_max;              /* max holds a PTS written since the last reset */
+    bool inside;                /* the decoder was seen within the written data */
+    bool latched;               /* latch is reported */
+    bool restarting;            /* restarted, not seen within the new data yet */
+    bool have_min;              /* min holds a PTS written since the restart */
+    bool have_reported;
+    unsigned long long max;     /* highest PTS written, 33 bit */
+    unsigned long long latch;
+    unsigned long long min;     /* lowest PTS written since the restart */
+    unsigned long long reported;
+    struct timespec restart_time;
+} PosBound_t;
+static PosBound_t videoPosBound, audioPosBound;
+/* written by the play thread, read by the position requests */
+static pthread_mutex_t posBoundMutex = PTHREAD_MUTEX_INITIALIZER;
+
+/* how far a is after b, modulo 2^33 */
+static unsigned long long PosBoundAhead(unsigned long long a, unsigned long long b)
+{
+    return (a - b) & POS_BOUND_MASK;
+}
+
+/* a is b or after b */
+static bool PosBoundNotBefore(unsigned long long a, unsigned long long b)
+{
+    return PosBoundAhead(a, b) < (1ULL << 32);
+}
+
+static void PosBoundWritten(PosBound_t *bound, unsigned long long pts)
+{
+    if (pts == INVALID_PTS_VALUE)
+        return;
+    pts &= POS_BOUND_MASK;
+    pthread_mutex_lock(&posBoundMutex);
+    /* B-frames and backward jumps leave the maximum as it is */
+    if (!bound->have_max || (pts != bound->max && PosBoundNotBefore(pts, bound->max)))
+    {
+        bound->max = pts;
+        bound->have_max = true;
+    }
+    if (bound->restarting && (!bound->have_min || !PosBoundNotBefore(pts, bound->min)))
+    {
+        bound->min = pts;
+        bound->have_min = true;
+    }
+    pthread_mutex_unlock(&posBoundMutex);
+}
+
+static PosBound_t *PosBoundOf(const char *type, int i)
+{
+    if (i == 0 && (!type || !strcmp(type, "video")))
+        return &videoPosBound;
+    if (i == 1 && (!type || !strcmp(type, "audio")))
+        return &audioPosBound;
+    return NULL;
+}
+
+static void PosBoundReset(const char *type)
+{
+    int i;
+
+    pthread_mutex_lock(&posBoundMutex);
+    for (i = 0; i < 2; i++)
+    {
+        PosBound_t *bound = PosBoundOf(type, i);
+        if (bound)
+            memset(bound, 0, sizeof(*bound));
+    }
+    pthread_mutex_unlock(&posBoundMutex);
+}
+
+/* The decoder starts again with the data written from now on, which goes
+ * on from the data before. */
+static void PosBoundRestart(const char *type)
+{
+    int i;
+
+    pthread_mutex_lock(&posBoundMutex);
+    for (i = 0; i < 2; i++)
+    {
+        PosBound_t *bound = PosBoundOf(type, i);
+        if (!bound)
+            continue;
+        if (!bound->have_reported || !bound->inside)
+        {
+            memset(bound, 0, sizeof(*bound));
+            continue;
+        }
+        /* one more restart before the decoder is back does not extend the wait */
+        if (!bound->restarting)
+            clock_gettime(CLOCK_MONOTONIC, &bound->restart_time);
+        bound->restarting = true;
+        bound->have_min = false;
+    }
+    pthread_mutex_unlock(&posBoundMutex);
+}
+
+static unsigned long long PosBoundApply(PosBound_t *bound, unsigned long long pts)
+{
+    unsigned long long ahead, reported = pts;
+
+    pthread_mutex_lock(&posBoundMutex);
+    if (!bound->have_max)
+        goto out;
+    ahead = PosBoundAhead(pts, bound->max);
+    if (bound->restarting)
+    {
+        struct timespec now;
+        int64_t ms;
+
+        clock_gettime(CLOCK_MONOTONIC, &now);
+        ms = (int64_t)(now.tv_sec - bound->restart_time.tv_sec) * 1000 +
+             (now.tv_nsec - bound->restart_time.tv_nsec) / 1000000;
+        if (bound->have_min && PosBoundNotBefore(pts + POS_BOUND_TOLERANCE, bound->min) &&
+            (ahead <= POS_BOUND_TOLERANCE || ahead >= (1ULL << 32)))
+        {
+            /* the decoder shows the data written since the restart */
+            bound->restarting = false;
+        }
+        else if (ms < POS_BOUND_RESTART_MS &&
+                 !PosBoundNotBefore(bound->max, bound->reported + POS_BOUND_FLOWING))
+        {
+            reported = bound->reported;
+            goto out;
+        }
+        else
+        {
+            bound->restarting = false;
+        }
+    }
+    if (ahead > POS_BOUND_TOLERANCE && ahead < POS_BOUND_LIMIT)
+    {
+        /* past the data */
+        if (!bound->latched)
+        {
+            if (!bound->inside)
+                goto out;
+            bound->latched = true;
+            bound->latch = pts - ahead + POS_BOUND_TOLERANCE;
+            if (pts <= POS_BOUND_MASK)
+                bound->latch &= POS_BOUND_MASK;
+        }
+        else if (PosBoundNotBefore(bound->max + POS_BOUND_TOLERANCE, bound->latch + POS_BOUND_FLOWING))
+        {
+            /* data comes again, the decoder stays after it: follow the data */
+            bound->latch = (bound->max + POS_BOUND_TOLERANCE) & POS_BOUND_MASK;
+        }
+        reported = bound->latch;
+        goto out;
+    }
+    if (ahead <= POS_BOUND_TOLERANCE || ahead >= (1ULL << 32))
+        bound->inside = true;
+    if (bound->latched)
+    {
+        /* data again: no step back below what was reported */
+        unsigned long long behind = PosBoundAhead(bound->latch, pts);
+        if (behind && behind < POS_BOUND_CATCH_UP)
+        {
+            reported = bound->latch;
+            goto out;
+        }
+        bound->latched = false;
+    }
+out:
+    bound->reported = reported;
+    bound->have_reported = true;
+    pthread_mutex_unlock(&posBoundMutex);
+    return reported;
+}
+
 /* Vu+ Ultimo 4K / Duo 4K SE: the first DD+ passthrough start through the
  * playpump stays silent, while an audio track switch made after it gives
  * sound. So on these two models the start is followed once by the restart
@@ -1069,6 +1266,9 @@ int LinuxDvbPts(Context_t  *context __attribute__((unused)), unsigned long long 
          * with a PTS was written, 0 is no position: the audio decoder's PTS is
          * taken when it has one. */
         zeroVideoPts = sCURRENT_PTS == 0 && videoPtsWritten;
+        /* a real video position is kept within the written video */
+        if (!zeroVideoPts)
+            sCURRENT_PTS = PosBoundApply(&videoPosBound, sCURRENT_PTS);
     }
     else if (videofd > -1)
     {
@@ -1080,7 +1280,8 @@ int LinuxDvbPts(Context_t  *context __attribute__((unused)), unsigned long long 
         unsigned long long int audioPts = 0;
         if (audiofd > -1 && !ioctl(audiofd, AUDIO_GET_PTS, (void*)&audioPts) && audioPts != 0)
         {
-            sCURRENT_PTS = audioPts;
+            /* the audio position, kept within the written audio */
+            sCURRENT_PTS = PosBoundApply(&audioPosBound, audioPts);
         }
         else
         {
@@ -1092,6 +1293,7 @@ int LinuxDvbPts(Context_t  *context __attribute__((unused)), unsigned long long 
         if (audiofd > -1 && !ioctl(audiofd, AUDIO_GET_PTS, (void*)&sCURRENT_PTS))
         {
             ret = cERR_LINUXDVB_NO_ERROR;
+            sCURRENT_PTS = PosBoundApply(&audioPosBound, sCURRENT_PTS);
         }
         else if (audiofd > -1)
         {
@@ -1706,9 +1908,13 @@ static int Write(void  *_context, void *_out)
                 linuxdvb_err("%s\n", strerror(errno));
                 ret = cERR_LINUXDVB_ERROR;
             }
-            else if (res > 0 && call.Pts != 0 && call.Pts != INVALID_PTS_VALUE)
+            else
             {
-                videoPtsWritten = 1;
+                PosBoundWritten(&videoPosBound, out->pts);
+                if (res > 0 && call.Pts != 0 && call.Pts != INVALID_PTS_VALUE)
+                {
+                    videoPtsWritten = 1;
+                }
             }
         }
 
@@ -1755,6 +1961,11 @@ static int Write(void  *_context, void *_out)
             if (writer->writeData)
             {
                 res = writer->writeData(&call);
+            }
+
+            if (res >= 0)
+            {
+                PosBoundWritten(&audioPosBound, out->pts);
             }
 
             if (1 == eac3Restart && res >= 0 && AUDIOTYPE_AC3_PLUS == writer->caps->dvbStreamType)
@@ -1831,11 +2042,13 @@ static int Command(void  *_context, OutputCmd_t command, void * argument) {
     case OUTPUT_CLOSE: {
         ret = LinuxDvbClose(context, (char*)argument);
         reset(context, (char*)argument);
+        PosBoundReset((char*)argument);
         sCURRENT_PTS = 0;
         videoPtsWritten = 0;
         break;
     }
     case OUTPUT_PLAY: {	// 4
+        PosBoundReset((char*)argument);
         sCURRENT_PTS = 0;
         videoPtsWritten = 0;
         ret = LinuxDvbPlay(context, (char*)argument);
@@ -1844,6 +2057,7 @@ static int Command(void  *_context, OutputCmd_t command, void * argument) {
     case OUTPUT_STOP: {
         reset(context, (char*)argument);
         ret = LinuxDvbStop(context, (char*)argument);
+        PosBoundReset((char*)argument);
         sCURRENT_PTS = 0;
         videoPtsWritten = 0;
         break;
@@ -1851,6 +2065,7 @@ static int Command(void  *_context, OutputCmd_t command, void * argument) {
     case OUTPUT_FLUSH: {
         ret = LinuxDvbFlush(context, (char*)argument);
         reset(context, (char*)argument);
+        PosBoundReset((char*)argument);
         sCURRENT_PTS = 0;
         videoPtsWritten = 0;
         break;
@@ -1871,6 +2086,7 @@ static int Command(void  *_context, OutputCmd_t command, void * argument) {
         reset(context, (char*)argument);
         ret = LinuxDvbClear(context, (char*)argument);
         reset(context, (char*)argument);
+        PosBoundReset((char*)argument);
         sCURRENT_PTS = 0;
         videoPtsWritten = 0;
         break;
@@ -1886,6 +2102,8 @@ static int Command(void  *_context, OutputCmd_t command, void * argument) {
         if (!strcmp("audio", (char*)argument))
             eac3Restart = 0;
         ret = LinuxDvbSwitch(context, (char*)argument);
+        /* the decoder starts again with the data written after the switch */
+        PosBoundRestart((char*)argument);
         break;
     }
     case OUTPUT_SLOWMOTION: {
