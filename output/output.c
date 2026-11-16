@@ -565,6 +565,17 @@ static int Command(void  *_context, OutputCmd_t command, void * argument)
         }
         break;
     }
+    case OUTPUT_AUDIO_CHANNEL:
+    {
+        /* also before the playback starts: the output keeps it for the
+         * decoder start */
+        if (context && context->output && context->output->audio)
+        {
+            return context->output->audio->Command(context, OUTPUT_AUDIO_CHANNEL, argument);
+        }
+        ret = cERR_OUTPUT_INTERNAL_ERROR;
+        break;
+    }
     default:
         output_err("%s::%s OutputCmd %d not supported!\n", FILENAME, __FUNCTION__, command);
         ret = cERR_OUTPUT_INTERNAL_ERROR;

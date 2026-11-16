@@ -140,6 +140,13 @@ static struct timespec eac3PacketTime; /* set before the state becomes 2 */
  * mode: the next switch to a DD+ track then only flushes the decoder. */
 static int eac3BypassKept = 0;
 
+/* Left, stereo or right of dual mono audio (two languages on L and R), an
+ * OutputAudioChannel_t: the one asked for, and the one the decoder was last
+ * set to. Drivers may reset it when the decoder starts, so a selection other
+ * than stereo is set again after every AUDIO_PLAY. */
+static int audioChannel = OUTPUT_AUDIO_CHANNEL_STEREO;
+static int audioChannelApplied = OUTPUT_AUDIO_CHANNEL_STEREO;
+
 pthread_mutex_t LinuxDVBmutex;
 
 /* ***************************** */
@@ -211,6 +218,34 @@ static int LinuxDvbApplyAVSync(Context_t *context)
     linuxdvb_printf(10, "hardware sync: dash=%d requested=%d applied=%d\n",
                    dash, requested, enabled);
     return 0;
+}
+
+/* The caller owns LinuxDVBmutex. AUDIO_CHANNEL_SELECT acts on decoded audio;
+ * a passthrough bitstream (bypass to HDMI/S/PDIF) is not changed by it. */
+static int LinuxDvbSetAudioChannel(int channel)
+{
+    audio_channel_select_t selection = AUDIO_STEREO;
+    if (OUTPUT_AUDIO_CHANNEL_LEFT == channel)
+        selection = AUDIO_MONO_LEFT;
+    else if (OUTPUT_AUDIO_CHANNEL_RIGHT == channel)
+        selection = AUDIO_MONO_RIGHT;
+    if (audiofd < 0)
+        return cERR_LINUXDVB_ERROR;
+    if (ioctl(audiofd, AUDIO_CHANNEL_SELECT, selection) < 0)
+    {
+        linuxdvb_err("AUDIO_CHANNEL_SELECT %d: ERROR %d, %s\n", (int)selection, errno, strerror(errno));
+        return cERR_LINUXDVB_ERROR;
+    }
+    audioChannelApplied = channel;
+    linuxdvb_printf(10, "audio channel %d\n", channel);
+    return cERR_LINUXDVB_NO_ERROR;
+}
+
+/* After AUDIO_PLAY: the selection again, as the decoder start may reset it. */
+static void LinuxDvbRestoreAudioChannel(void)
+{
+    if (OUTPUT_AUDIO_CHANNEL_STEREO != audioChannel)
+        LinuxDvbSetAudioChannel(audioChannel);
 }
 
 /* ***************************** */
@@ -411,6 +446,7 @@ static void LinuxDvbDtsHdStart(Context_t *context, const uint8_t *data, size_t s
             {
                 linuxdvb_err("AUDIO_CONTINUE: ERROR %d, %s\n", errno, strerror(errno));
             }
+            LinuxDvbRestoreAudioChannel();
         }
     }
     releaseLinuxDVBMutex();
@@ -727,6 +763,9 @@ int LinuxDvbPlay(Context_t  *context, char *type) {
             linuxdvb_err("AUDIO_CONTINUE: ERROR %d, %s\n", errno, strerror(errno));
             ret = cERR_LINUXDVB_ERROR;
         }
+        getLinuxDVBMutex();
+        LinuxDvbRestoreAudioChannel();
+        releaseLinuxDVBMutex();
         free(Encoding);
     }
 
@@ -762,6 +801,11 @@ int LinuxDvbStop(Context_t  *context __attribute__((unused)), char * type)
         ioctl(videofd, VIDEO_SELECT_SOURCE, VIDEO_SOURCE_DEMUX);
     }
     if (audio && audiofd != -1) {
+        /* not left or right for what plays next, DVB services included;
+         * the selection itself stays for a start that follows */
+        if (OUTPUT_AUDIO_CHANNEL_STEREO != audioChannelApplied)
+            LinuxDvbSetAudioChannel(OUTPUT_AUDIO_CHANNEL_STEREO);
+
         if (ioctl(audiofd, AUDIO_CLEAR_BUFFER) == -1)
         {
             linuxdvb_err("AUDIO_CLEAR_BUFFER: ERROR %d, %s\n", errno, strerror(errno));
@@ -867,6 +911,12 @@ int LinuxDvbAudioMute(Context_t  *context __attribute__((unused)), char *flag) {
             {
                 linuxdvb_err("AUDIO_PLAY: ERROR %d, %s\n", errno, strerror(errno));
                 ret = cERR_LINUXDVB_ERROR;
+            }
+            else
+            {
+                getLinuxDVBMutex();
+                LinuxDvbRestoreAudioChannel();
+                releaseLinuxDVBMutex();
             }
         }
     }
@@ -984,6 +1034,7 @@ int LinuxDvbClear(Context_t  *context __attribute__((unused)), char *type)
                     {
                         linuxdvb_err("AUDIO_PLAY: %s\n", strerror(errno));
                     }
+                    LinuxDvbRestoreAudioChannel();
                 }
                 free(encoding);
             }
@@ -1187,6 +1238,8 @@ int LinuxDvbSwitch(Context_t  *context, char *type)
                 else
                 {
                     eac3BypassKept = keepEac3;
+                    /* the new codec can reset the left/right selection */
+                    LinuxDvbRestoreAudioChannel();
                     /* AUDIO_PLAY starts the decoder: hold it again while the
                      * playback is paused, the continue command releases it */
                     if (context->playback->isPaused && ioctl(audiofd, AUDIO_PAUSE, NULL) == -1)
@@ -1898,6 +1951,21 @@ static int Command(void  *_context, OutputCmd_t command, void * argument) {
     case OUTPUT_GET_BUFFER_SIZE: {
         ret = cERR_LINUXDVB_NO_ERROR;
         *((uint32_t*)argument) = LinuxDvbBuffGetSize();
+        break;
+    }
+    case OUTPUT_AUDIO_CHANNEL: {
+        int channel = *((int*)argument);
+        if (channel < OUTPUT_AUDIO_CHANNEL_LEFT || channel > OUTPUT_AUDIO_CHANNEL_RIGHT)
+        {
+            ret = cERR_LINUXDVB_ERROR;
+            break;
+        }
+        getLinuxDVBMutex();
+        /* kept also when the driver refuses it: the decoder starts try again */
+        audioChannel = channel;
+        /* before the audio device is open the start of the decoder sets it */
+        ret = audiofd != -1 ? LinuxDvbSetAudioChannel(channel) : cERR_LINUXDVB_NO_ERROR;
+        releaseLinuxDVBMutex();
         break;
     }
     default:

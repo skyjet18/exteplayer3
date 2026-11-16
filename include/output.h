@@ -29,7 +29,17 @@ typedef enum {
     OUTPUT_SET_BUFFER_SIZE,
     OUTPUT_GET_BUFFER_SIZE,
     OUTPUT_GET_VIDEO_INFO,
+    OUTPUT_AUDIO_CHANNEL,
 } OutputCmd_t;
+
+/* The argument of OUTPUT_AUDIO_CHANNEL points to an int with one of these:
+ * the values of enigma2's iAudioChannelSelection (LEFT, STEREO, RIGHT). */
+typedef enum
+{
+    OUTPUT_AUDIO_CHANNEL_LEFT = 0,
+    OUTPUT_AUDIO_CHANNEL_STEREO = 1,
+    OUTPUT_AUDIO_CHANNEL_RIGHT = 2,
+} OutputAudioChannel_t;
 
 typedef struct
 {

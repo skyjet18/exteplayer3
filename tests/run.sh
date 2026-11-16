@@ -165,6 +165,12 @@ $cc -g -fsanitize=address,undefined -ffunction-sections -fdata-sections -Iinclud
     -I"$FFMPEG_BUILD" -I"$FFMPEG_SOURCE" tests/amr_writer_test.c tools/debug.c \
     output/writer/common/pes.c output/writer/common/misc.c -Wl,--gc-sections -pthread -o "$tmp/amr_writer"
 timeout 20 "$tmp/amr_writer"
+# Left, stereo or right of dual mono audio: AUDIO_CHANNEL_SELECT around the
+# decoder starts and the stop of the DVB output.
+$cc -g -fsanitize=undefined -ffunction-sections -fdata-sections \
+    -Wno-deprecated-declarations -Iinclude -Iexternal -I"$FFMPEG_BUILD" -I"$FFMPEG_SOURCE" \
+    tests/audio_channel_test.c tools/debug.c -Wl,--gc-sections -pthread -o "$tmp/audio_channel"
+timeout 20 "$tmp/audio_channel"
 $cc -g -fsanitize=address,undefined -ffunction-sections -fdata-sections -Iinclude -Iexternal \
     -I"$FFMPEG_BUILD" -I"$FFMPEG_SOURCE" tests/buffering_leak_test.c tools/debug.c \
     -Wl,--gc-sections -pthread -o "$tmp/buffering_leak"

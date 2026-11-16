@@ -210,6 +210,24 @@ packets without it; only headers of packets that are played anyway are
 parsed. No message is emitted for such a change: request `ac` or `al` again.
 A cached `a_l` answer is rebuilt when one of these values changed.
 
+Dual mono audio (two languages on the left and the right channel) has a
+channel selection, the one enigma2 offers for live TV
+(`iAudioChannelSelection`). Stdin `am<n>` selects `0` left, `1` stereo or
+`2` right; `am` alone reports the selection. The answer is
+`{"a_m":{"m":2,"sts":0}}`: `m` is the selection now, `sts` is `0` or `-1`
+when the value is not 0 to 2 (`m` unchanged) or the audio decoder refused
+`AUDIO_CHANNEL_SELECT`. `--audio-channel left|stereo|right` (or `0|1|2`) sets
+it before the playback starts. The DVB output gives it to the decoder
+(`AUDIO_STEREO`, `AUDIO_MONO_LEFT`, `AUDIO_MONO_RIGHT`), sets it again after
+every decoder start (track switch, DTS-HD restart, PCM restart after a seek)
+and leaves the decoder at stereo when it stops. Software decoded audio
+(`-K`, `-a`, `-3`, `-e`, `-d`, `-m`, `-w` and the decoders on by default)
+does not depend on the driver: the chosen channel is copied to both channels
+of the stereo PCM, so the selection works on every box and in the PCM export.
+A compressed bitstream passed through to HDMI or S/PDIF is not changed.
+`EPLAYER3_EXTENDED` carries `"achannel":1` for front ends to see that the
+command is known; an older player ignores `am` without an answer.
+
 `t` is the stream's `title` metadata tag (Matroska track name, AVI stream
 name). For HLS it falls back to `comment`, where the demuxer exports the
 `NAME` of an `EXT-X-MEDIA` rendition. DASH exports no name. Titles pass
