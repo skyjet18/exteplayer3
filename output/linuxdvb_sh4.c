@@ -1032,7 +1032,7 @@ static int Write(void  *_context, void* _out)
         char * Encoding = NULL;
         context->manager->audio->Command(context, MANAGER_GETENCODING, &Encoding);
 
-        linuxdvb_printf(20, "%s::%s Encoding = %s\n", FILENAME, __FUNCTION__, Encoding);
+        linuxdvb_printf(20, "Encoding = %s\n", Encoding);
 
         writer = getWriter(Encoding);
 

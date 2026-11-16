@@ -229,6 +229,19 @@ $cc -g -fsanitize=undefined -ffunction-sections -fdata-sections -DH264_LEVEL41_D
     -Iinclude -Iexternal -I"$FFMPEG_BUILD" -I"$FFMPEG_SOURCE" $sources \
     -Wl,--gc-sections -pthread -o "$tmp/h264_level"
 timeout 20 "$tmp/h264_level"
+# The sh4 output is built only for sh4 receivers: compile its sources here as
+# the recipe lists them, so that they keep compiling.
+for f in output/linuxdvb_sh4.c output/writer/sh4/writer.c output/writer/sh4/aac.c \
+         output/writer/sh4/ac3.c output/writer/sh4/divx2.c output/writer/sh4/dts.c \
+         output/writer/sh4/h263.c output/writer/sh4/h264.c output/writer/sh4/mp3.c \
+         output/writer/sh4/mpeg2.c output/writer/sh4/pcm.c output/writer/sh4/vc1.c \
+         output/writer/sh4/wma.c output/writer/sh4/wmv.c; do
+    $cc -fsyntax-only -Werror=implicit-function-declaration -Werror=format \
+        -D_FILE_OFFSET_BITS=64 -D_LARGEFILE64_SOURCE -D_LARGEFILE_SOURCE \
+        -DHAVE_FLV2MPEG4_CONVERTER "-DAUDIO_GET_PTS=_IOR('o', 19, __u64)" \
+        -Wno-deprecated-declarations -Iinclude -Iexternal -Iexternal/flv2mpeg4 \
+        -I"$FFMPEG_BUILD" -I"$FFMPEG_SOURCE" "$f"
+done
 # The open program asks LeakSanitizer itself after single cases. Without ASan
 # it registers no globals, so section GC still drops the command table.
 $cc -g -fsanitize=leak,undefined -ffunction-sections -fdata-sections \
