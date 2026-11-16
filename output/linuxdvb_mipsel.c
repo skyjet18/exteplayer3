@@ -285,7 +285,7 @@ static int LinuxDvbMapBypassMode(int bypass, bool primary)
             break;
         default:
             break;
-    };
+    }
 
     return bypass;
 }
@@ -420,7 +420,7 @@ static int LinuxDvbMapStreamType(int streamtype, bool primary)
             break;
         default:
             break;
-    };
+    }
 
     return streamtype;
 }

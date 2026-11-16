@@ -90,7 +90,7 @@ static int writeDataSimple(WriterAVCallData_t *call)
     iov[1].iov_base = call->data;
     iov[1].iov_len = call->len;
 
-    return call->WriteV(call->fd, iov, 2);;
+    return call->WriteV(call->fd, iov, 2);
 }
 
 static int writeDataBCMV(WriterAVCallData_t *call)

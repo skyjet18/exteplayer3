@@ -3553,8 +3553,8 @@ static void FFMPEGThread(Context_t *context)
                     subOut.durationMS = duration;
                     subOut.extradata = get_codecpar(stream)->extradata;
                     subOut.extralen  = get_codecpar(stream)->extradata_size;
-                    subOut.width     = get_codecpar(stream)->width;;
-                    subOut.height    = get_codecpar(stream)->height;;
+                    subOut.width     = get_codecpar(stream)->width;
+                    subOut.height    = get_codecpar(stream)->height;
                     if (Write(context->output->subtitle->Write, context, &subOut, pts) < 0)
                     {
                         ffmpeg_err("writing data to teletext fifo failed\n");
