@@ -313,6 +313,8 @@ def main():
         # Accept-Encoding of every request; paths that fail n more times, that
         # carry a Content-Type, that are compressed when gzip is accepted.
         encodings, failures, content_types, compressed = [], {}, {}, set()
+        # Paths whose answer waits: (set when it is asked for, set to answer).
+        held = {}
         payload = media.read_bytes()
         master = (b"#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=100000\nlow.m3u8\n"
                   b"#EXT-X-STREAM-INF:BANDWIDTH=900000\nhigh.m3u8\n")
@@ -366,6 +368,10 @@ def main():
                     failures[self.path] -= 1
                     self.send_error(503)
                     return
+                if self.path in held:
+                    asked, answer = held[self.path]
+                    asked.set()
+                    answer.wait(8)
                 self.send_response(206 if header else 200)
                 self.send_header("Content-Length", str(len(data) - start))
                 self.send_header("Accept-Ranges", "bytes")
@@ -785,6 +791,43 @@ def main():
                 asked = [value for path, value in encodings if path == "/gz/index.m3u8"]
                 assert asked and all(value == expected for value in asked), (options, encodings)
             print("PASS HLS: playlist requested with Accept-Encoding: gzip, -h identity kept")
+
+            # A read that waits for the network (here a segment whose answer
+            # is held back) holds the container lock. The track list, the
+            # current track and the position are answered meanwhile; the
+            # audio switch before it makes the live values of the audio
+            # list change, so "al" cannot come from the cached answer as is.
+            run(args.ffmpeg, "-y", "-i", str(media), "-map", "0:v", "-map", "0:a", "-map", "0:a",
+                "-c", "copy", "-f", "hls", "-hls_time", "1", "-hls_list_size", "0",
+                "-hls_segment_filename", str(root / "two%d.ts"), str(root / "two.m3u8"))
+            lines = (root / "two.m3u8").read_text().splitlines()
+            for line in lines:
+                if line.startswith("two"):
+                    resources["/two/" + line] = (root / line).read_bytes()
+            resources["/two/index.m3u8"] = "".join(line + "\n" for line in lines).encode()
+            asked, answer = threading.Event(), threading.Event()
+            held["/two/two4.ts"] = (asked, answer)
+            player = Player(args.player, base + "/two/index.m3u8")
+            try:
+                assert player.wait("PLAYBACK_PLAY")["sts"] == 0
+                tracks = player.wait("a_l")
+                assert len(tracks) == 2, tracks
+                player.command("ai1")
+                assert player.wait("a_s")["sts"] == 0
+                assert asked.wait(15), requests
+                time.sleep(1.5)  # what was read before the segment is played
+                started = time.monotonic()
+                player.command("al\nac\nj")
+                assert len(player.wait("a_l")) == 2
+                assert player.wait("a_c")["id"] == tracks[1]["id"]
+                player.wait("J")
+                waited = time.monotonic() - started
+                assert waited < 2, waited
+            finally:
+                answer.set()
+                player.stop()
+                del held["/two/two4.ts"]
+            print("PASS commands during a read that waits for the network: al, ac and j answered")
 
             player = Player(args.player, str(embedded[1]))
             try:
