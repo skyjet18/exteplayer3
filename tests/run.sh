@@ -23,6 +23,13 @@ $cc -g -fsanitize=undefined -ffunction-sections -fdata-sections \
     tests/dvb_restart_test.c tools/debug.c -Wl,--gc-sections -pthread -o "$tmp/dvb_restart"
 timeout 20 "$tmp/dvb_restart"
 rm -f "$tmp/dvb_restart"
+# The stop of the DVB decoders: once per device for OUTPUT_STOP and
+# OUTPUT_CLOSE together, with the requests of a recording driver.
+$cc -g -fsanitize=undefined -ffunction-sections -fdata-sections \
+    -Wno-deprecated-declarations -Iinclude -Iexternal -I"$FFMPEG_BUILD" -I"$FFMPEG_SOURCE" \
+    tests/decoder_stop_test.c tools/debug.c -Wl,--gc-sections -pthread -o "$tmp/decoder_stop"
+timeout 20 "$tmp/decoder_stop"
+rm -f "$tmp/decoder_stop"
 # The live start hold: the default of the box taken by the play thread, and
 # EP3_LIVE_SYNC, at the first video packet of a stream without a duration.
 # The play thread needs what the player links with the container: all of
