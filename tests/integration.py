@@ -610,8 +610,80 @@ def main():
                 assert offset == len(pcm) and nonzero
                 print("PASS PCM: software decode despite later -a 0; complete S16LE FIFO frames")
 
+                # Dual mono: a sine on the left, silence on the right.
+                dual = root / "dual.m4a"
+                left_only = b"".join(struct.pack("<hh", int(8000 * math.sin(i * math.pi / 48)), 0)
+                                     for i in range(4800))
+                (root / "dual.pcm").write_bytes(left_only * 120)
+                run(args.ffmpeg, "-y", "-f", "s16le", "-ar", "48000", "-ac", "2",
+                    "-i", str(root / "dual.pcm"), "-c:a", "aac", "-b:a", "128k", str(dual))
+                for channel, name in ((1, "stereo"), (0, "left"), (2, "right")):
+                    os.mkfifo(fifo, 0o600)
+                    reader = os.open(fifo, os.O_RDONLY | os.O_NONBLOCK)
+                    pcm = bytearray()
+                    player = Player(args.player, "-K", "--audio-channel", name, str(dual))
+                    try:
+                        deadline = time.monotonic() + 10
+                        asked = False
+                        while time.monotonic() < deadline and len(pcm) < 400000:
+                            chunk = read_fifo(reader)
+                            pcm.extend(chunk)
+                            if chunk and not asked:
+                                # the command loop runs: the selection it reports
+                                player.command("am")
+                                asked = True
+                            if player.process.poll() is not None:
+                                pcm.extend(read_fifo(reader))
+                                break
+                            time.sleep(0.005)
+                        assert asked and player.wait("a_m") == {"m": channel, "sts": 0}
+                    finally:
+                        player.stop()
+                        os.close(reader)
+                        fifo.unlink()
+                    lefts, rights, offset = [], [], 0
+                    while offset + 16 <= len(pcm):
+                        _, _, channels, _, size = struct.unpack_from("<IIHHI", pcm, offset)
+                        assert channels == 2
+                        frame = pcm[offset + 16:offset + 16 + size]
+                        count = len(frame) // 4 * 2
+                        samples = struct.unpack(f"<{count}h", frame[:count * 2])
+                        lefts.extend(samples[0::2])
+                        rights.extend(samples[1::2])
+                        offset += 16 + size
+                    assert len(lefts) >= 4096, (name, len(lefts))
+                    peak_left = max(abs(value) for value in lefts)
+                    peak_right = max(abs(value) for value in rights)
+                    if channel == 1:
+                        assert peak_left > 4000 and peak_right < 2000, (peak_left, peak_right)
+                    else:
+                        assert lefts == rights, name
+                        assert (peak_left > 4000) == (channel == 0), (name, peak_left)
+                print("PASS PCM dual mono: --audio-channel left/right copy that channel to both, stereo keeps them")
+
+            # am<n>: left/stereo/right of dual mono, am alone reports it; this
+            # host output has no decoder, so every valid value gives sts 0.
+            player = Player(args.player, str(media))
+            try:
+                assert player.wait("PLAYBACK_PLAY")["sts"] == 0
+                player.wait("a_c")
+                for command, answer in (("am", {"m": 1, "sts": 0}), ("am2", {"m": 2, "sts": 0}),
+                                        ("am7", {"m": 2, "sts": -1}), ("am-1", {"m": 2, "sts": -1}),
+                                        ("am0", {"m": 0, "sts": 0}), ("am", {"m": 0, "sts": 0}),
+                                        ("am1", {"m": 1, "sts": 0})):
+                    player.command(command)
+                    assert player.wait("a_m") == answer, (command, player.messages[-3:])
+                # the track commands next to it still work
+                player.command("ac")
+                assert player.wait("a_c")["id"] >= 0
+            finally:
+                player.stop()
+            assert player.messages[0]["EPLAYER3_EXTENDED"]["achannel"] == 1, player.messages[0]
+            print("PASS audio channel: am<n> selects and reports left/stereo/right, achannel capability")
+
             for option in (["-Q", "3"], ["-D", "2"], ["-M", "1920x0"],
-                           ["-M", "garbage"], ["-Q", "1junk"]):
+                           ["-M", "garbage"], ["-Q", "1junk"], ["--audio-channel", "mono"],
+                           ["--audio-channel", "3"]):
                 invalid = subprocess.run([args.player, *option, str(media)],
                                          capture_output=True, timeout=5)
                 assert invalid.returncode != 0, option

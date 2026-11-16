@@ -77,6 +77,7 @@ extern void h264_resolution_limit_set(int32_t width, int32_t height);
 
 extern void pcm_resampling_set(int32_t val);
 extern void stereo_software_decoder_set(int32_t val);
+extern void pcm_audio_channel_set(int32_t val);
 extern void insert_pcm_as_lpcm_set(int32_t val);
 extern void progressive_playback_set(int32_t val);
 
@@ -86,6 +87,30 @@ extern ContainerHandler_t      ContainerHandler;
 extern ManagerHandler_t        ManagerHandler;
 
 static Context_t *g_player = NULL;
+
+/* Dual mono (two languages on L and R): left, stereo or right, the values of
+ * enigma2's iAudioChannelSelection. Stdin "am<n>", --audio-channel. */
+static int g_audio_channel = OUTPUT_AUDIO_CHANNEL_STEREO;
+
+static int ParseAudioChannel(const char *text)
+{
+    if (!strcmp(text, "0") || !strcmp(text, "left"))
+        return OUTPUT_AUDIO_CHANNEL_LEFT;
+    if (!strcmp(text, "1") || !strcmp(text, "stereo"))
+        return OUTPUT_AUDIO_CHANNEL_STEREO;
+    if (!strcmp(text, "2") || !strcmp(text, "right"))
+        return OUTPUT_AUDIO_CHANNEL_RIGHT;
+    return -1;
+}
+
+/* The decoder of the box (AUDIO_CHANNEL_SELECT) and the software decoded PCM;
+ * the result is the one of the decoder. */
+static int SelectAudioChannel(int channel)
+{
+    g_audio_channel = channel;
+    pcm_audio_channel_set(channel);
+    return g_player->output->Command(g_player, OUTPUT_AUDIO_CHANNEL, &channel);
+}
 
 static void TerminateAllSockets(void)
 {
@@ -830,7 +855,8 @@ static int ParseParams(int argc,char* argv[], PlayFiles_t *playbackFiles, int *p
         OPT_TRUEHD_AC3,
         OPT_DTS_EAC3,
         OPT_TRUEHD_EAC3,
-        OPT_HEAAC_AACLC
+        OPT_HEAAC_AACLC,
+        OPT_AUDIO_CHANNEL
     };
     static const struct option long_options[] =
     {
@@ -839,6 +865,7 @@ static int ParseParams(int argc,char* argv[], PlayFiles_t *playbackFiles, int *p
         {"dts-eac3",    no_argument, NULL, OPT_DTS_EAC3},
         {"truehd-eac3", no_argument, NULL, OPT_TRUEHD_EAC3},
         {"heaac-aaclc", no_argument, NULL, OPT_HEAAC_AACLC},
+        {"audio-channel", required_argument, NULL, OPT_AUDIO_CHANNEL},
         {NULL, 0, NULL, 0}
     };
     while ( (c = getopt_long(argc, argv, "EZXYKG:W:H:A:V:U:we3dlsrimvCa:j:n:x:u:c:h:o:p:P:t:9:0:1:4:5:6:7:f:b:F:S:O:T:L:Q:D:M:", long_options, NULL)) != -1)
@@ -862,6 +889,15 @@ static int ParseParams(int argc,char* argv[], PlayFiles_t *playbackFiles, int *p
             break;
         case 'E':
             xcode_eac3 = 1;
+            break;
+        case OPT_AUDIO_CHANNEL:
+            g_audio_channel = ParseAudioChannel(optarg);
+            if (g_audio_channel < 0)
+            {
+                printf("--audio-channel: left, stereo or right (0, 1, 2), not \"%s\"\n", optarg);
+                g_audio_channel = OUTPUT_AUDIO_CHANNEL_STEREO;
+                ret = -1;
+            }
             break;
         case OPT_DTS_EAC3:
             xcode |= 8;
@@ -1236,12 +1272,14 @@ int main(int argc, char* argv[])
 
     /* inform client that we can handle additional commands */
     /* xcode: the audio transcoding this build can do, 1: to AC3 (-Z, -X), 2: to AAC-LC (-Y), 4: to E-AC-3 (-E) */
+    /* achannel: the stdin command am<n> (left/stereo/right of dual mono) is known */
     E2iSendMsg("{\"EPLAYER3_EXTENDED\":{\"version\":%d"
                ",\"xcode\":%d"
 #ifdef HAVE_DREAMNEXTGEN
                /* winds on keyframes with f<speed> and b<speed> */
                ",\"trick\":1"
 #endif
+               ",\"achannel\":1"
                "}}\n", 186,
                audio_transcode_caps());
 
@@ -1275,6 +1313,7 @@ int main(int argc, char* argv[])
         printf("[--truehd-eac3] TrueHD/MLP transcoding to E-AC-3 5.1, with or without -X\n");
         printf("[-Y] [--heaac-aaclc] HE-AAC transcoding to AAC-LC (not for AAC decoded in software, -a)\n");
         printf("     all of them need the encoder in FFmpeg (\"xcode\" in EPLAYER3_EXTENDED) and are off with -K\n");
+        printf("[--audio-channel left|stereo|right] dual mono channel at start (0|1|2, default stereo; stdin am<n>)\n");
 #ifdef HAVE_FLV2MPEG4_CONVERTER
         printf("[-4 0|1] - disable/enable flv2mpeg4 converter\n");
 #endif
@@ -1378,6 +1417,10 @@ int main(int argc, char* argv[])
     if (linuxDvbBufferSizeMB)
         g_player->output->Command(g_player, OUTPUT_SET_BUFFER_SIZE, &linuxDvbBufferSizeMB);
     
+    /* the output keeps it for the start of the decoder */
+    if (OUTPUT_AUDIO_CHANNEL_STEREO != g_audio_channel)
+        SelectAudioChannel(g_audio_channel);
+
     g_player->manager->video->Command(g_player, MANAGER_REGISTER_UPDATED_TRACK_INFO, UpdateVideoTrack);
     if (strncmp(playbackFiles.szFirstFile, "rtmp", 4) && strncmp(playbackFiles.szFirstFile, "ffrtmp", 6))
     {
@@ -1520,6 +1563,23 @@ int main(int argc, char* argv[])
             }
             case 'a': 
             {
+                /* am<n>: left (0), stereo (1) or right (2) of dual mono audio;
+                 * am alone reports it. sts is the one of the decoder of the
+                 * box, software decoded audio follows the selection anyway. */
+                if ('m' == argvBuff[1])
+                {
+                    int channel = -1;
+                    commandRetVal = 0;
+                    if (1 == sscanf(argvBuff + 2, "%d", &channel))
+                    {
+                        if (channel >= OUTPUT_AUDIO_CHANNEL_LEFT && channel <= OUTPUT_AUDIO_CHANNEL_RIGHT)
+                            commandRetVal = SelectAudioChannel(channel);
+                        else
+                            commandRetVal = -1;
+                    }
+                    E2iSendMsg("{\"a_m\":{\"m\":%d,\"sts\":%d}}\n", g_audio_channel, commandRetVal);
+                    break;
+                }
                 HandleTracks(g_player->manager->audio, PLAYBACK_SWITCH_AUDIO, argvBuff);
             break;
             }

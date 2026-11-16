@@ -312,6 +312,9 @@ static int32_t opus_software_decode = 1;
 
 static int32_t pcm_resampling = 1;
 static int32_t stereo_software_decoder = 0;
+/* left (0), stereo (1) or right (2) of dual mono audio for the software
+ * decoded PCM; set from the command loop while the play thread reads it */
+static volatile int32_t pcm_audio_channel = 1;
 static int32_t insert_pcm_as_lpcm = 0;
 static int32_t mp3_software_decode = 0;
 static int32_t rtmp_proto_impl = 0; // 0 - auto, 1 - native, 2 - librtmp
@@ -688,6 +691,22 @@ void opus_software_decoder_set(const int32_t val)
 void stereo_software_decoder_set(const int32_t val)
 {
     stereo_software_decoder = val;
+}
+
+void pcm_audio_channel_set(const int32_t val)
+{
+    pcm_audio_channel = val;
+}
+
+/* Interleaved S16 stereo: the left or the right channel on both. */
+static void pcm_select_channel(int16_t *samples, int32_t frames, int32_t channel)
+{
+    int32_t from = 0 == channel ? 0 : 1;
+    int32_t i;
+    if (1 == channel || 0 > channel || 2 < channel)
+        return;
+    for (i = 0; i < frames; i++)
+        samples[2 * i + 1 - from] = samples[2 * i + from];
 }
 
 void insert_pcm_as_lpcm_set(const int32_t val)
@@ -3628,7 +3647,13 @@ static void FFMPEGThread(Context_t *context)
                             av_freep(&output[0]);
                             continue;
                         }
-                        
+                        /* dual mono: the decoder of the box may not get the
+                         * PCM channel selection, so it is made here */
+                        if (2 == out_channels)
+                        {
+                            pcm_select_channel((int16_t *)output[0], out_samples, pcm_audio_channel);
+                        }
+
                         //////////////////////////////////////////////////////////////////////
                         // Update pcmExtradata according to decode parameters
 #if HAVE_CH_LAYOUT

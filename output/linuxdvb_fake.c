@@ -528,6 +528,12 @@ static int Command(void  *_context, OutputCmd_t command, void * argument) {
         *((uint32_t*)argument) = LinuxDvbBuffGetSize();
         break;
     }
+    case OUTPUT_AUDIO_CHANNEL: {
+        /* no decoder here: software decoded audio takes it in the container */
+        int channel = *((int*)argument);
+        ret = (channel >= OUTPUT_AUDIO_CHANNEL_LEFT && channel <= OUTPUT_AUDIO_CHANNEL_RIGHT) ? cERR_LINUXDVB_NO_ERROR : cERR_LINUXDVB_ERROR;
+        break;
+    }
     default:
         linuxdvb_err("ContainerCmd %d not supported!\n", command);
         ret = cERR_LINUXDVB_ERROR;
