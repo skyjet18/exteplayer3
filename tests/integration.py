@@ -574,6 +574,22 @@ def main():
                 player.stop()
             print("PASS .ac4 file: opened like the other audio extensions")
 
+            # The other file extensions of FFmpeg demuxers for raw Dolby, DTS and
+            # TrueHD/MLP, Matroska audio, MP4 audio books, AIFF and Monkey's Audio:
+            # the same AAC content, only the extension selects the container.
+            for extension in ("ac3", "eac3", "ec3", "dts", "dtshd", "thd", "mlp",
+                              "mka", "m4b", "aif", "aiff", "ape"):
+                raw = root / f"sound.{extension}"
+                raw.write_bytes(radio.read_bytes())
+                player = Player(args.player, str(raw))
+                try:
+                    assert player.wait("PLAYBACK_OPEN")["sts"] == 0, extension
+                    assert player.wait("PLAYBACK_PLAY")["sts"] == 0, extension
+                finally:
+                    player.stop()
+                raw.unlink()
+            print("PASS raw audio, .mka, .m4b, AIFF and APE files: opened by their extension")
+
             missing = subprocess.run([args.player, "iptv://" + str(root / "missing")],
                                      capture_output=True, timeout=5)
             assert missing.returncode == 1 and b"cannot be read" in missing.stdout, missing
