@@ -90,29 +90,26 @@ static int writeData(void *_call)
     
     amr_printf(10, "AudioPts %lld\n", call->Pts);
 
-    size_t payload_len = call->len;
-    bool hasCodecData = true;
-    if(NULL != call->private_data && call->private_size >= 17)
+    /* The AMR decoder specific box (size, 'damr', 9 bytes of data) goes in
+     * front of each frame behind a 4 byte length that counts the box and the
+     * frame, as gstdvbaudiosink does; without it the frames go alone. */
+    bool hasCodecData = call->private_data != NULL && call->private_size >= 17;
+    if (call->private_data != NULL && !hasCodecData)
     {
-        amr_err("wrong private_data. ignoring ...\n");
-        hasCodecData = false;
+        amr_printf(10, "codec data of %u bytes ignored\n", call->private_size);
     }
 
-    if(hasCodecData) {
-        payload_len += 9;
-    }
-
-    payload_len += 4;
-
-    uint32_t headerSize = InsertPesHeader(PesHeader, payload_len, MPEG_AUDIO_PES_START_CODE, call->Pts, 0);
-
-    PesHeader[headerSize++] = (payload_len >> 24) & 0xff;
-    PesHeader[headerSize++] = (payload_len >> 16) & 0xff;
-    PesHeader[headerSize++] = (payload_len >> 8)  & 0xff;
-    PesHeader[headerSize++] = payload_len & 0xff;
+    uint32_t headerSize = InsertPesHeader(PesHeader, call->len + (hasCodecData ? 4 + 9 : 0),
+                                          MPEG_AUDIO_PES_START_CODE, call->Pts, 0);
 
     if (hasCodecData) {
+        size_t payload_len = call->len + 17;
+        PesHeader[headerSize++] = (payload_len >> 24) & 0xff;
+        PesHeader[headerSize++] = (payload_len >> 16) & 0xff;
+        PesHeader[headerSize++] = (payload_len >> 8)  & 0xff;
+        PesHeader[headerSize++] = payload_len & 0xff;
         memcpy(&PesHeader[headerSize], call->private_data + 8, 9);
+        headerSize += 9;
     }
 
     struct iovec iov[2];
