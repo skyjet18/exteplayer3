@@ -161,6 +161,11 @@ $cc -g -fsanitize=undefined -ffunction-sections -fdata-sections -Iinclude -Iexte
     -I"$FFMPEG_BUILD" -I"$FFMPEG_SOURCE" tests/pacing_test.c tools/debug.c \
     -Wl,--gc-sections -pthread -o "$tmp/pacing"
 timeout 20 "$tmp/pacing"
+# The fallback frame rate of the video decoder, with a node of the test.
+$cc -g -fsanitize=undefined -ffunction-sections -fdata-sections \
+    -Wno-deprecated-declarations -Iinclude -Iexternal -I"$FFMPEG_BUILD" -I"$FFMPEG_SOURCE" \
+    tests/fallback_framerate_test.c tools/debug.c -Wl,--gc-sections -pthread -o "$tmp/fallback_framerate"
+timeout 20 "$tmp/fallback_framerate"
 for test in subtitle writers buffering_chunk progressive; do
     sources="tests/${test}_test.c tools/debug.c"
     sanitizers=undefined
