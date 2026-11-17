@@ -285,7 +285,7 @@ $cc -g -Werror=implicit-function-declaration -Werror=int-conversion \
     -Dff_mpeg4audio_channels=exteplayer3_mpeg4audio_channels \
     -Wno-deprecated-declarations -Iinclude -Iexternal -Iexternal/flv2mpeg4 \
     -I"$FFMPEG_SOURCE" -I"$FFMPEG_BUILD" \
-    main/exteplayer.c tools/debug.c tools/strbuffer.c tools/pcm_export.c tools/hevc_hdr.c \
+    main/exteplayer.c tools/debug.c tools/strbuffer.c tools/pcm_export.c tools/hevc_hdr.c tools/ca_bundle.c \
     container/container.c container/container_ffmpeg.c \
     manager/manager.c manager/audio.c manager/video.c manager/subtitle.c \
     playback/playback.c output/output.c output/output_subtitle.c output/graphic_subtitle.c \
@@ -298,3 +298,8 @@ $cc -g -Werror=implicit-function-declaration -Werror=int-conversion \
     "$FFMPEG_BUILD/libswresample/libswresample.a" "$FFMPEG_BUILD/libswscale/libswscale.a" \
     "$FFMPEG_BUILD/libavutil/libavutil.a" \
     ${FFMPEG_EXTRA_LIBS:-} -pthread -lm -ldl -o "$tmp/dreamnextgen"
+# The CA bundle of https inputs: when SSL_CERT_FILE is set at startup and
+# to which file, with directories and bundles of the test.
+$cc -g -fsanitize=address,undefined -Iinclude tests/ca_bundle_test.c tools/ca_bundle.c \
+    -ldl -o "$tmp/ca_bundle"
+ASAN_OPTIONS=detect_leaks=1 timeout 20 "$tmp/ca_bundle"
