@@ -52,6 +52,7 @@
 
 extern int ffmpeg_av_dict_set(const char *key, const char *value, int flags);
 extern int  container_ffmpeg_audio_info_gen(void);
+extern int  container_ffmpeg_subtitle_info_gen(void);
 extern int  container_ffmpeg_audio_live_info(int32_t track_id, int *channels, const char **description);
 extern void       aac_software_decoder_set(const int32_t val);
 extern void pcm_audio_export_set(int enabled);
@@ -829,6 +830,19 @@ static int HandleTracks(Manager_t *ptrManager, const PlaybackCmd_t playbackSwitc
                 }
                 audioInfoGenSeen = audioInfoGen;
             }
+            /* the closed captions of the video stream are listed once they come */
+            if ('s' == argvBuff[0])
+            {
+                static int subtitleInfoGenSeen = 0;
+                int subtitleInfoGen = container_ffmpeg_subtitle_info_gen();
+
+                if (ptrManager->tracks_cache && subtitleInfoGenSeen != subtitleInfoGen)
+                {
+                    strbuffer_free( ptrManager->tracks_cache );
+                    ptrManager->tracks_cache = NULL;
+                }
+                subtitleInfoGenSeen = subtitleInfoGen;
+            }
         	if( ptrManager->tracks_cache == NULL )
         	{
         		/* read tracks info into cache */
@@ -1426,6 +1440,7 @@ int main(int argc, char* argv[])
     int audioTrackIdx = -1;
     int subtitleTrackIdx = -1;
     int pts_check_nr = 0;
+    int subtitleListGen = 0;
     
     uint32_t linuxDvbBufferSizeMB = 0; 
     
@@ -1721,6 +1736,14 @@ int main(int argc, char* argv[])
             if( NULL == ReadCommand(argvBuff, sizeof(argvBuff)-1) )
             {
                 int eac3Restart = LinuxDvbEac3RestartState();
+                int subtitleInfoGen = container_ffmpeg_subtitle_info_gen();
+
+                /* a track has been added while playing: the list again */
+                if (subtitleInfoGen != subtitleListGen)
+                {
+                    subtitleListGen = subtitleInfoGen;
+                    HandleTracks(g_player->manager->subtitle, (PlaybackCmd_t)-1, "sl");
+                }
                 if (2 == eac3Restart)
                 {
                     Eac3PassthroughRestart();

@@ -294,6 +294,19 @@ static int32_t Write(Write_FN WriteFun, void *context, void *privateData, int64_
 #include "flv2mpeg4_ffmpeg.c"
 #endif
 
+/* changes when a closed caption track is added, read by the command thread */
+static int ccTrackGen = 0;
+
+int container_ffmpeg_subtitle_info_gen(void)
+{
+    return __atomic_load_n(&ccTrackGen, __ATOMIC_RELAXED);
+}
+
+#if LIBAVCODEC_VERSION_INT >= AV_VERSION_INT(57, 64, 101)
+#define HAVE_CLOSED_CAPTIONS 1
+#include "cc_ffmpeg.c"
+#endif
+
 /* This is also bad solution 
  * such configuration should passed maybe 
  * via struct 
@@ -950,6 +963,8 @@ static char* Codec2Encoding(int32_t codec_id, int32_t media_type, uint8_t *extra
         return "S_GRAPHIC/DVB";
     case AV_CODEC_ID_XSUB:
         return "S_GRAPHIC/XSUB";
+    case AV_CODEC_ID_EIA_608:
+        return "S_TEXT/EIA608";
     default:
         ffmpeg_err("Codec ID %d (%.8x) not found\n", codec_id, codec_id);
         // Default to injected-pcm for unhandled audio types.
@@ -2929,6 +2944,9 @@ static void FFMPEGThread(Context_t *context)
 #ifdef HAVE_FLV2MPEG4_CONVERTER
             flv2mpeg4_context_reset(&flv2mpeg4_context);
 #endif
+#ifdef HAVE_CLOSED_CAPTIONS
+            cc_reset();
+#endif
         }
 
 #ifdef HAVE_DREAMNEXTGEN
@@ -3268,6 +3286,9 @@ static void FFMPEGThread(Context_t *context)
                     {
                         ffmpeg_err("writing data to video device failed\n");
                     }
+#ifdef HAVE_CLOSED_CAPTIONS
+                    cc_video_packet(context, cAVIdx, stream, &packet, pts, dts);
+#endif
                 }
             }
             else if (packet_matches_track(audioTrack, cAVIdx,
@@ -3808,6 +3829,15 @@ static void FFMPEGThread(Context_t *context)
                     }
                 }
             }
+#ifdef HAVE_CLOSED_CAPTIONS
+            else if (packet_matches_track(subtitleTrack, cAVIdx,
+                                          avContextTab[cAVIdx]->streams[packet.stream_index]) &&
+                     get_codecpar(subtitleTrack->stream)->codec_id == AV_CODEC_ID_EIA_608)
+            {
+                cc_stream_packet(context, pid, &packet,
+                                 calcPts(cAVIdx, subtitleTrack->stream, packet.pts));
+            }
+#endif
             else if (packet_matches_track(subtitleTrack, cAVIdx,
                                           avContextTab[cAVIdx]->streams[packet.stream_index]))
             {
@@ -3994,6 +4024,9 @@ static void FFMPEGThread(Context_t *context)
     }
     hevc_hdr_detector_reset(&hevcHdrDetector);
     hevcHdrStream = NULL;
+#ifdef HAVE_CLOSED_CAPTIONS
+    cc_close();
+#endif
     if (pcm_audio_export_enabled)
     {
         ffmpeg_printf(0, "PCM export dropped %"PRIu64" chunks\n", pcmExport.dropped_chunks);
@@ -5517,6 +5550,9 @@ int32_t container_ffmpeg_update_tracks(Context_t *context, char *filename, int32
                     get_codecpar(stream)->codec_id != AV_CODEC_ID_SRT &&
                     get_codecpar(stream)->codec_id != AV_CODEC_ID_WEBVTT &&
                     get_codecpar(stream)->codec_id != AV_CODEC_ID_MOV_TEXT &&
+#ifdef HAVE_CLOSED_CAPTIONS
+                    (get_codecpar(stream)->codec_id != AV_CODEC_ID_EIA_608 || !cc_decoder_available()) &&
+#endif
                     ((get_codecpar(stream)->codec_id != AV_CODEC_ID_HDMV_PGS_SUBTITLE &&
                       get_codecpar(stream)->codec_id != AV_CODEC_ID_DVB_SUBTITLE &&
                       get_codecpar(stream)->codec_id != AV_CODEC_ID_XSUB) ||
@@ -5575,6 +5611,9 @@ int32_t container_ffmpeg_update_tracks(Context_t *context, char *filename, int32
         } /* for */
     
     }
+#ifdef HAVE_CLOSED_CAPTIONS
+    cc_add_track(context);
+#endif
     
     if (context->manager->audio)
     {

@@ -250,6 +250,18 @@ no rectangles and `{"e_plugin":["png","init",...]}` reports the failure.
 `-L PLUGIN_SILENT:0` logs why the plugin was not loaded and whether the
 encoder takes its place.
 
+Closed captions carried in the video stream (CEA-608 in ATSC A/53
+`cc_data()`: H.264 and HEVC SEI, MPEG-2 user data) become the text track
+`{"id":65536,"e":"S_TEXT/EIA608","n":"und","f":0,"t":"CC1"}` once the first
+caption has come; the player then sends `s_l` again by itself. Only field 1
+(CC1) is decoded, by the ccaption decoder of libavcodec; CEA-708 services are
+not. EIA-608 subtitle streams of the demuxers (MOV `c608`, SCC) are listed as
+`S_TEXT/EIA608` too. The end of a caption is known only when the next one is
+decoded, so a caption is sent in `s_a` cues of up to 500 ms that end at the
+time read so far; they meet without a gap and are shown as long as the
+receiver buffers more than that. Without the ccaption decoder nothing is
+listed.
+
 The current video track is reported as
 `{"v_c":{"id":2,"e":"V_MPEG4/ISO/AVC","n":"und","w":1280,"h":720,"f":25000,"p":1,"an":1,"ad":1}}`:
 picture size, frame rate in frames per 1000 seconds and the progressive flag
@@ -728,6 +740,8 @@ segments, an explicit `SSL_CERT_FILE` kept, verification kept) need an FFmpeg
 with the `https` protocol over OpenSSL that verifies by default (FFmpeg 9) and
 the `openssl` command; otherwise they are reported as `SKIP`. `tests/ca_bundle_test.c` (in `tests/run.sh`)
 checks the choice of the file on its own.
+The closed caption cases also need the MPEG video, H.264 and SCC demuxers, the
+lavfi device with the `movie` filter, the ccaption decoder and the SRT encoder.
 
 The companion HTTP fixture additionally needs DASH demuxing/muxing and libxml2.
 It verifies exact fragment retry counts, delay/cancellation bounds, shared media
@@ -961,6 +975,8 @@ provider/SSAI behavior. Before deployment, check on representative receivers:
   unchanged output for DTS-HD tracks.
 - MP4/MKV/adaptive subtitle selection and disabling, forced flags, ICY and
   metadata clearing across stations; retained DRM/MOV_TEXT behavior.
+- Closed captions (CC1) on a receiver: whether its decoder buffer always
+  holds more than the 500 ms pieces of a caption, and real live channels.
 - The H.264 level limit has only been forced with `EP3_H264_LEVEL41=1` on an
   ARM box (VU+ Uno 4K SE, openATV 8.0.2, ffmpeg-ext 6.1.1): level 4.2 is
   written as 4.1 and the picture is unchanged. Still open: 1080p50/60
