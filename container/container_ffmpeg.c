@@ -1490,7 +1490,7 @@ static int64_t calcConvertedPts(AVStream *stream, AVRational time_base, int64_t 
     return corrected & (PTS_CLOCK_WRAP - 1);
 }
 
-/* Some muxers stamp AAC frames from a coarse clock, so PES PTS jitter
+/* Some muxers stamp AAC (and DTS) frames from a coarse clock, so PES PTS jitter
  * around the real sample position (e.g. +-15 ms sawtooth). HW decoders
  * (Broadcom) do TSM per PES and react to such jumps with gaps/drops,
  * which is audible as periodic stuttering. To avoid it, PTS of AAC
@@ -1535,6 +1535,20 @@ static int32_t aac_get_frame_samples(const AVPacket *packet, AVStream *stream, i
     if (*sampleRate <= 0)
     {
         return 0;
+    }
+
+    if (get_codecpar(stream)->codec_id == AV_CODEC_ID_DTS)
+    {
+        /* core frame: NBLKS (7 bits) after the sync word, 32 samples per block */
+        if (packet->size >= 6 && d[0] == 0x7F && d[1] == 0xFE && d[2] == 0x80 && d[3] == 0x01)
+        {
+            return ((((d[4] & 1) << 6) | (d[5] >> 2)) + 1) * 32;
+        }
+        if (packet->size >= 6 && d[0] == 0xFE && d[1] == 0x7F && d[2] == 0x01 && d[3] == 0x80)
+        {
+            return ((((d[5] & 1) << 6) | (d[4] >> 2)) + 1) * 32;
+        }
+        return get_codecpar(stream)->frame_size > 0 ? get_codecpar(stream)->frame_size : 0;
     }
 
     if (get_codecpar(stream)->frame_size > 0)
@@ -3084,7 +3098,8 @@ static void FFMPEGThread(Context_t *context)
 
                 if (audioTrack->inject_raw_pcm != 1 && audioTrack->inject_as_pcm != 1 &&
                     (get_codecpar(audioTrack->stream)->codec_id == AV_CODEC_ID_AAC ||
-                     get_codecpar(audioTrack->stream)->codec_id == AV_CODEC_ID_AAC_LATM))
+                     get_codecpar(audioTrack->stream)->codec_id == AV_CODEC_ID_AAC_LATM ||
+                     get_codecpar(audioTrack->stream)->codec_id == AV_CODEC_ID_DTS))
                 {
                     pts = aac_pts_dejitter(&aacPtsDejitter, &packet, audioTrack->stream, audioTrack->Id, cAVIdx, pts);
                 }
