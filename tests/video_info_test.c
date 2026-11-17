@@ -378,6 +378,7 @@ static void events_are_reported_once(void)
 /* FFmpeg knows the picture: the events change nothing but the progressive flag. */
 static void known_picture_is_left_alone(void)
 {
+    int asked;
     video_track(1280, 720, 25000);
     driver_answers(1920, 1080, 50000, "0\n");
     size_event(1920, 1080);
@@ -387,13 +388,76 @@ static void known_picture_is_left_alone(void)
     assert(!strcmp(frame(1280, 720, 25000, 738000), ""));
     assert(!strcmp(frame(1280, 720, 25000, 742000), VC(1280, 720, 25000, 0)
                    "{\"v_e\":{\"w\":1920,\"h\":1080,\"a\":1,\"f\":50000,\"p\":0}}\n"));
+    /* with the flag the decoder is not asked any more */
+    asked = pts_requests;
     assert(!strcmp(frame(1280, 720, 25000, 800000), ""));
     assert(!strcmp(frame(1280, 720, 25000, 900000), ""));
-    assert(!pts_requests);
+    assert(pts_requests == asked);
     size_event(1920, 1080);
     assert(!strcmp(position(950000), ""));
-    assert(pts_requests == 1 && event_next == 3);
+    assert(pts_requests == asked + 1 && event_next == 3);
     assert(!size_requests && !frame_rate_requests && !progressive_reads);
+}
+
+/*
+ * 1920x1080 interlaced after a 1920x1080 interlaced playback: FFmpeg knows the
+ * picture, but the driver sends no progressive event for the same flag. Once
+ * the decoder has settled the flag it shows is reported, once.
+ */
+static void known_picture_gets_the_progressive_flag_of_the_decoder(void)
+{
+    video_track(1920, 1080, 25000);
+    driver_answers(1920, 1080, 25000, "0\n");
+    assert(!strcmp(frame(1920, 1080, 25000, 575550), ""));
+    assert(!strcmp(frame(1920, 1080, 25000, 738000), ""));
+    assert(!strcmp(frame(1920, 1080, 25000, 742000), ""));
+    assert(!strcmp(frame(1920, 1080, 25000, 748000), ""));
+    assert(progressive_reads == 1);
+    assert(!strcmp(frame(1920, 1080, 25000, 780000), ""));
+    assert(!strcmp(frame(1920, 1080, 25000, 793000), VC(1920, 1080, 25000, 0)));
+    assert(progressive_reads == 2);
+    assert(!strcmp(frame(1920, 1080, 25000, 900000), ""));
+    assert(!strcmp(position(950000), ""));
+    assert(progressive_reads == 2);
+}
+
+/* The same when the file has been written to the end: the position requests go on with it. */
+static void known_picture_gets_the_flag_on_position_requests(void)
+{
+    video_track(1920, 1080, 25000);
+    driver_answers(1920, 1080, 25000, "1\n");
+    assert(!strcmp(frame(1920, 1080, 25000, 575550), ""));
+    assert(!strcmp(frame(1920, 1080, 25000, 738000), ""));
+    assert(!strcmp(position(750000), ""));
+    assert(progressive_reads == 1);
+    assert(!strcmp(position(780000), ""));
+    assert(!strcmp(position(800000), VC(1920, 1080, 25000, 1)));
+    assert(!strcmp(position(900000), ""));
+    assert(progressive_reads == 2);
+}
+
+/* A progressive event read on a position request reports the known picture too. */
+static void known_picture_gets_the_event_on_position_requests(void)
+{
+    video_track(1920, 1080, 25000);
+    driver_answers(1920, 1080, 25000, "1\n");
+    assert(!strcmp(frame(1920, 1080, 25000, 575550), ""));
+    value_event(16, 0);
+    assert(!strcmp(position(600000), VC(1920, 1080, 25000, 0)));
+    assert(!strcmp(position(800000), ""));
+    assert(!strcmp(position(900000), ""));
+    assert(!progressive_reads);
+}
+
+/* Without the progressive file nothing is sent for a known picture. */
+static void known_picture_without_a_flag_sends_nothing(void)
+{
+    unsigned long long pts;
+    video_track(1920, 1080, 25000);
+    driver_answers(1920, 1080, 25000, NULL);
+    for (pts = 575550; pts < 1000000; pts += 4000)
+        assert(!strcmp(frame(1920, 1080, 25000, pts), ""));
+    assert(progressive_reads == 2);
 }
 
 /* Only the frame rate differs from the previous playback; no progressive file. */
@@ -464,6 +528,10 @@ int main(void)
     failures += failed("size_is_asked_again_when_the_driver_has_none", size_is_asked_again_when_the_driver_has_none);
     failures += failed("events_are_reported_once", events_are_reported_once);
     failures += failed("known_picture_is_left_alone", known_picture_is_left_alone);
+    failures += failed("known_picture_gets_the_progressive_flag_of_the_decoder", known_picture_gets_the_progressive_flag_of_the_decoder);
+    failures += failed("known_picture_gets_the_flag_on_position_requests", known_picture_gets_the_flag_on_position_requests);
+    failures += failed("known_picture_gets_the_event_on_position_requests", known_picture_gets_the_event_on_position_requests);
+    failures += failed("known_picture_without_a_flag_sends_nothing", known_picture_without_a_flag_sends_nothing);
     failures += failed("event_and_decoder_values_are_combined", event_and_decoder_values_are_combined);
     failures += failed("silent_decoder_sends_nothing", silent_decoder_sends_nothing);
     failures += failed("decoder_without_pts_is_not_asked", decoder_without_pts_is_not_asked);
