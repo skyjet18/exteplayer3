@@ -860,6 +860,24 @@ Native FATE, actual HTTP fixtures, all six player UBSan harnesses and the comple
 ASan/UBSan player integration suite pass with the updated libraries. Receiver
 and cross-toolchain limitations below still apply.
 
+## Stop on signals and on the end of the parent
+
+`SIGINT`, `SIGTERM` and `SIGHUP` stop the player the way the `q` command
+does: `PLAYBACK_STOP` (reported as `{"PLAYBACK_STOP":{"sts":0}}`), the stop
+of the decoders, `OUTPUT_CLOSE`, exit code 0. Before, the signals ended the
+process at once, with the decoders still running. The signals are blocked in
+all threads and taken by one thread with `sigtimedwait()`; the command loop
+reads the request as `q`. During the open of the input that is the `q` of that
+phase as well (exit code 11). A second signal, or a stop that takes more than
+5 s, ends the process at once (exit code 128 + signal). `SIGPIPE` is ignored:
+a front end that is gone is found through the end of the command pipe.
+
+The parent death signal (`PR_SET_PDEATHSIG`) was `SIGKILL`. It belongs to the
+thread that started the player, not to its process (see prctl(2)), so it also
+killed the player when only that thread ended. It is `SIGUSR2` now, which
+stops the player only when `getppid()` has changed. The parent is also checked
+every second, which finds a parent that ended before the signal was set up.
+
 ## HiSilicon receivers
 
 A receiver counts as HiSilicon (`STB_HISILICON`) when, after the Dreambox and

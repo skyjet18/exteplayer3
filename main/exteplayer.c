@@ -330,6 +330,89 @@ static void TerminateWakeUp()
     }
 }
 
+/* SIGINT, SIGTERM and SIGHUP stop the player the way the q command does:
+ * PLAYBACK_STOP, then OUTPUT_CLOSE, so the decoders are stopped and the
+ * devices released. The signals are blocked in every thread and taken by
+ * this one; the command loop reads the request as q. A second signal, or a
+ * stop that takes longer than STOP_SIGNAL_TIMEOUT seconds, ends the process
+ * at once.
+ * PR_SET_PDEATHSIG belongs to the thread that started the player, not to its
+ * process: it comes when that thread ends, while the process that reads the
+ * player may still be there. So the parent death signal is SIGUSR2, which
+ * stops only when getppid() has changed, and getppid() is also checked every
+ * second, which finds a parent that is gone without a signal as well. */
+#define PARENT_DEATH_SIGNAL SIGUSR2
+#define STOP_SIGNAL_TIMEOUT 5
+
+static volatile sig_atomic_t g_stopSignal = 0;
+static pid_t g_parentPid = 0;
+static sigset_t g_stopSignals;
+
+static void StopSignalsBlock(void)
+{
+    sigemptyset(&g_stopSignals);
+    sigaddset(&g_stopSignals, SIGINT);
+    sigaddset(&g_stopSignals, SIGTERM);
+    sigaddset(&g_stopSignals, SIGHUP);
+    sigaddset(&g_stopSignals, PARENT_DEATH_SIGNAL);
+    pthread_sigmask(SIG_BLOCK, &g_stopSignals, NULL);
+    /* a front end that is gone is found through the end of stdin */
+    signal(SIGPIPE, SIG_IGN);
+    g_parentPid = getppid();
+}
+
+static void *StopSignalThreadFun(void *arg)
+{
+    struct timespec second = {1, 0};
+    int waited = 0;
+    (void)arg;
+
+    for (;;)
+    {
+        int sig = sigtimedwait(&g_stopSignals, NULL, &second);
+        if (sig < 0)
+        {
+            if (errno != EAGAIN)
+                continue;
+            if (g_stopSignal)
+            {
+                if (++waited >= STOP_SIGNAL_TIMEOUT)
+                {
+                    printf("Stop after signal %d takes too long, exit now\n", (int)g_stopSignal);
+                    _exit(128 + g_stopSignal);
+                }
+                continue;
+            }
+            if (getppid() == g_parentPid)
+                continue;
+            printf("Parent process is gone, stopping\n");
+            sig = SIGTERM;
+        }
+        else if (sig == PARENT_DEATH_SIGNAL)
+        {
+            if (getppid() == g_parentPid)
+                continue; /* only the thread that started the player has ended */
+            printf("Parent process is gone, stopping\n");
+            sig = SIGTERM;
+        }
+        else if (g_stopSignal)
+        {
+            printf("Second signal %d, exit now\n", sig);
+            _exit(128 + sig);
+        }
+        else
+        {
+            printf("Signal %d, stopping\n", sig);
+        }
+        if (!g_stopSignal)
+        {
+            g_stopSignal = sig;
+            TerminateWakeUp();
+        }
+    }
+    return NULL;
+}
+
 static void *TermThreadFun(void *arg)
 {
 #ifndef EXTEPLAYER_TERM_SOCKET
@@ -563,11 +646,17 @@ static void Eac3PassthroughRestart(void)
 /* Non-blocking read of a command. The end of a command pipe (or socket)
  * means the front end that wrote to it is gone: read it as the stop
  * command. A terminal, /dev/null or a file on stdin keep the old
- * behaviour, so a player without a command pipe still plays to the end. */
+ * behaviour, so a player without a command pipe still plays to the end.
+ * A stop signal is read as the stop command as well. */
 static char *ReadCommand(char *buff, int size)
 {
     struct stat st;
 
+    if (g_stopSignal)
+    {
+        strcpy(buff, "q\n");
+        return buff;
+    }
     if (fgets(buff, size, stdin))
     {
         return buff;
@@ -1321,6 +1410,9 @@ int main(int argc, char* argv[])
     memset(argvBuff, '\0', sizeof(argvBuff));
     int commandRetVal = -1;
 
+    /* before any thread is started, so that every thread inherits the mask */
+    StopSignalsBlock();
+
     /* inform client that we can handle additional commands */
     /* xcode: the audio transcoding this build can do, 1: to AC3 (-Z, -X), 2: to AAC-LC (-Y), 4: to E-AC-3 (-E) */
     /* achannel: the stdin command am<n> (left/stereo/right of dual mono) is known */
@@ -1455,14 +1547,20 @@ int main(int argc, char* argv[])
         if(0 == pthread_create(&termThread, NULL, TermThreadFun, NULL))
             isTermThreadStarted = 1;
     } while(0);
+
+    {
+        pthread_t signalThread;
+        if (0 == pthread_create(&signalThread, NULL, StopSignalThreadFun, NULL))
+            pthread_detach(signalThread);
+    }
     
     g_player->playback    = &PlaybackHandler;
     g_player->output      = &OutputHandler;
     g_player->container   = &ContainerHandler;
     g_player->manager     = &ManagerHandler;
 
-    // make sure to kill myself when parent dies
-    prctl(PR_SET_PDEATHSIG, SIGKILL);
+    // make sure to stop when the parent dies (see StopSignalThreadFun)
+    prctl(PR_SET_PDEATHSIG, PARENT_DEATH_SIGNAL);
 
     SetBuffering();
 
