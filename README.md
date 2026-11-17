@@ -308,6 +308,12 @@ the input is still opening. A terminal, `/dev/null` or a regular file on
 stdin keeps the old behaviour: the end of input is not a command, and
 playback goes on until it ends by itself.
 
+The input is opened in a thread of its own while the main thread waits for
+`q`. The end of the open wakes that wait through a pipe of its own, so
+`PLAYBACK_OPEN` follows the open at once, also when it fails. Before, it came
+only when the 1 s timeout of the wait ran out or a command arrived, which
+added up to a second to every start.
+
 ## FFmpeg companions
 
 These backports target the local FFmpeg 6.1-derived tree, not an unmodified
