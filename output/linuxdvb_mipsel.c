@@ -129,8 +129,15 @@ static volatile int videoPtsWritten;
  * POS_BOUND_TOLERANCE after the highest PTS written, that PTS plus the
  * tolerance is reported, until the decoder shows data again and has come up
  * to that value. Only after the decoder was seen within the data: right
- * after a start or a clear it can still report the PTS of an earlier
- * playback, which is left as it is. PTS are compared as 33 bit values.
+ * after a clear it can still report the PTS of an earlier playback, which
+ * is left as it is. After a start (OUTPUT_PLAY) a decoder that has not yet
+ * shown any of the data may still count on with the clock of the earlier
+ * playback: an audio-only DTS file on VTi (Uno 4K SE, AV receiver) reported
+ * 9.5 s two seconds after the start with 3.9 s of data written, and its
+ * clock ran on for good. A value more than POS_BOUND_TOLERANCE after all
+ * data written since the start is no position of it, so until the decoder
+ * is seen within the data the lowest PTS written since the start is
+ * reported instead. PTS are compared as 33 bit values.
  * A decoder restarted by OUTPUT_SWITCH (the video output after a long gap,
  * an audio track switch) reports stale or unrelated values until it shows
  * what is written after the restart: until then, at most for
@@ -153,9 +160,12 @@ typedef struct
     bool restarting;            /* restarted, not seen within the new data yet */
     bool have_min;              /* min holds a PTS written since the restart */
     bool have_reported;
+    bool started;               /* reset by OUTPUT_PLAY, not by a clear */
+    bool have_first;
     unsigned long long max;     /* highest PTS written, 33 bit */
     unsigned long long latch;
     unsigned long long min;     /* lowest PTS written since the restart */
+    unsigned long long first;   /* lowest PTS written since the reset */
     unsigned long long reported;
     struct timespec restart_time;
 } PosBound_t;
@@ -186,6 +196,11 @@ static void PosBoundWritten(PosBound_t *bound, unsigned long long pts)
     {
         bound->max = pts;
         bound->have_max = true;
+    }
+    if (!bound->have_first || !PosBoundNotBefore(pts, bound->first))
+    {
+        bound->first = pts;
+        bound->have_first = true;
     }
     if (bound->restarting && (!bound->have_min || !PosBoundNotBefore(pts, bound->min)))
     {
@@ -218,6 +233,23 @@ static void PosBoundReset(const char *type)
     pthread_mutex_unlock(&posBoundMutex);
 }
 
+/* A start: the reset, and a value after all the data written since is no
+ * position of this playback until the decoder was seen within the data. */
+static void PosBoundStart(const char *type)
+{
+    int i;
+
+    PosBoundReset(type);
+    pthread_mutex_lock(&posBoundMutex);
+    for (i = 0; i < 2; i++)
+    {
+        PosBound_t *bound = PosBoundOf(type, i);
+        if (bound)
+            bound->started = true;
+    }
+    pthread_mutex_unlock(&posBoundMutex);
+}
+
 /* The decoder starts again with the data written from now on, which goes
  * on from the data before. */
 static void PosBoundRestart(const char *type)
@@ -232,7 +264,9 @@ static void PosBoundRestart(const char *type)
             continue;
         if (!bound->have_reported || !bound->inside)
         {
+            bool started = bound->started;
             memset(bound, 0, sizeof(*bound));
+            bound->started = started;
             continue;
         }
         /* one more restart before the decoder is back does not extend the wait */
@@ -282,6 +316,9 @@ static unsigned long long PosBoundApply(PosBound_t *bound, unsigned long long pt
         /* past the data */
         if (!bound->latched)
         {
+            /* not seen within the data since the start: nothing of it shown */
+            if (!bound->inside && bound->started && bound->have_first)
+                reported = bound->first;
             if (!bound->inside)
                 goto out;
             bound->latched = true;
@@ -1995,7 +2032,7 @@ static int Command(void  *_context, OutputCmd_t command, void * argument) {
         break;
     }
     case OUTPUT_PLAY: {	// 4
-        PosBoundReset((char*)argument);
+        PosBoundStart((char*)argument);
         sCURRENT_PTS = 0;
         videoPtsWritten = 0;
         ret = LinuxDvbPlay(context, (char*)argument);
