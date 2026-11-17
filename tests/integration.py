@@ -728,6 +728,38 @@ def main():
             assert missing.returncode == 1 and b"cannot be read" in missing.stdout, missing
             print("PASS unreadable iptv:// file: parameter error instead of a crash")
 
+            # The open runs in a thread of its own; its end wakes the wait
+            # for commands at once instead of after its 1 s timeout.
+            for target, status in ((media, 0), (root / "missing.ts", -1)):
+                started = time.monotonic()
+                opener = subprocess.Popen([args.player, str(target)], stdin=subprocess.PIPE,
+                                          stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
+                                          text=True)
+                try:
+                    opened = None
+                    for line in opener.stderr:
+                        if '"PLAYBACK_OPEN"' in line:
+                            opened = time.monotonic() - started
+                            assert json.loads(line)["PLAYBACK_OPEN"]["sts"] == status, line
+                            break
+                    assert opened is not None and opened < 0.5, (target, opened)
+                    try:
+                        opener.stdin.write("q\n")
+                        opener.stdin.flush()
+                    except BrokenPipeError:
+                        pass  # a failed open ends the player by itself
+                    assert opener.wait(timeout=5) == (0 if status == 0 else 10)
+                finally:
+                    if opener.poll() is None:
+                        opener.kill()
+                        opener.wait()
+                    try:
+                        opener.stdin.close()
+                    except BrokenPipeError:
+                        pass
+                    opener.stderr.close()
+            print("PASS open: PLAYBACK_OPEN right after the open, not after the 1 s command wait")
+
             for target, language in named:
                 player = Player(args.player, str(target))
                 try:
