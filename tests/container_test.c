@@ -77,10 +77,57 @@ static int subtitle_playback(void *opaque, PlaybackCmd_t command, void *argument
     return 0;
 }
 
+/* The audio PTS dejitter with DTS core frames of 512 samples (NBLKS 15) at a
+ * core rate of 48 kHz (SFREQ 13), 10.667 ms or 960 ticks apart, stamped with
+ * up to 5 ms of jitter. The stream has the rate of the decoder output: 96 kHz
+ * for DTS 96/24 and DTS-HD over that core, 192 kHz for DTS-HD MA 192 kHz.
+ * The PTS that go out are the frame positions; with the stream rate they
+ * advanced by 480 (or 240) ticks a frame and jumped back to the stream PTS
+ * every 200 ms. */
+static void dts_dejitter_case(int little_endian, int stream_rate, uint8_t sfreq, int smoothed)
+{
+    AacPtsDejitter_t dejitter;
+    AVStream stream = {0};
+    uint8_t frame[32] = {0x7F, 0xFE, 0x80, 0x01, 0xFC, 0x3C, 0x00, 0x00};
+    AVPacket packet = {0};
+    int i;
+
+    frame[8] = (uint8_t)(sfreq << 2);
+    if (little_endian) {
+        for (i = 0; i < (int)sizeof(frame); i += 2) {
+            uint8_t byte = frame[i];
+            frame[i] = frame[i + 1];
+            frame[i + 1] = byte;
+        }
+    }
+    stream.codecpar = avcodec_parameters_alloc();
+    assert(stream.codecpar);
+    stream.codecpar->codec_type = AVMEDIA_TYPE_AUDIO;
+    stream.codecpar->codec_id = AV_CODEC_ID_DTS;
+    stream.codecpar->sample_rate = stream_rate;
+    packet.data = frame;
+    packet.size = sizeof(frame);
+    aac_pts_dejitter_ms = 200;
+    aac_pts_dejitter_reset(&dejitter);
+    for (i = 0; i < 300; i++) {
+        int64_t position = 900000 + (int64_t)i * 960;
+        int64_t stamped = position + (i % 2) * 450;
+        int64_t pts = aac_pts_dejitter(&dejitter, &packet, &stream, 1, 0, stamped);
+        assert(pts == (smoothed ? position : stamped));
+    }
+    avcodec_parameters_free(&stream.codecpar);
+}
+
 int main(void)
 {
     CustomIOCtx_t io = {0};
     uint8_t bytes[8];
+    dts_dejitter_case(0, 48000, 13, 1);
+    dts_dejitter_case(0, 96000, 13, 1);
+    dts_dejitter_case(1, 96000, 13, 1);
+    dts_dejitter_case(0, 192000, 13, 1);
+    /* no valid core rate: the stream PTS go out as they are */
+    dts_dejitter_case(0, 96000, 0, 0);
     {
         AVStream video = {.id = 11}, audio = {.id = 11};
         Track_t selected_video = {.Id = 11, .AVIdx = 0, .stream = &video};
