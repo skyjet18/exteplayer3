@@ -60,6 +60,23 @@ static int seek_playback(void *opaque, PlaybackCmd_t command, void *argument)
     return 0;
 }
 
+static Track_t *subtitle_selected;
+static int subtitle_seeks;
+
+static int subtitle_manager(void *opaque, ManagerCmd_t command, void *argument)
+{
+    assert(command == MANAGER_GET_TRACK);
+    *(Track_t **)argument = subtitle_selected;
+    return 0;
+}
+
+static int subtitle_playback(void *opaque, PlaybackCmd_t command, void *argument)
+{
+    assert(command == PLAYBACK_SEEK && *(int64_t *)argument == 0);
+    subtitle_seeks++;
+    return 0;
+}
+
 int main(void)
 {
     CustomIOCtx_t io = {0};
@@ -167,6 +184,36 @@ int main(void)
         one->discard = two->discard = AVDISCARD_DEFAULT;
         select_subtitle_stream(av, -1);
         assert(one->discard == AVDISCARD_DEFAULT && two->discard == AVDISCARD_DEFAULT);
+        av->iformat = NULL;
+        avformat_free_context(av);
+    }
+    {
+        /* Switching subtitles on seeks by 0 to read the cues again; off
+         * still reaches the streams, but reads nothing again: no seek. */
+        AVFormatContext *av = avformat_alloc_context();
+        AVInputFormat adaptive = {.name = "dash"};
+        AVStream *stream;
+        Track_t track = {.Id = 1, .AVIdx = 0};
+        PlaybackHandler_t playback = {.Command = subtitle_playback, .isPlaying = 1};
+        Manager_t subtitles = {.Command = subtitle_manager};
+        ManagerHandler_t managers = {.subtitle = &subtitles};
+        Context_t context = {.playback = &playback, .manager = &managers};
+        int32_t id = 1;
+        assert(av);
+        stream = avformat_new_stream(av, NULL);
+        assert(stream);
+        stream->codecpar->codec_type = AVMEDIA_TYPE_SUBTITLE;
+        stream->id = 1;
+        av->iformat = &adaptive;
+        avContextTab[0] = av;
+        subtitle_selected = &track;
+        assert(!container_ffmpeg_switch_subtitle(&context, &id));
+        assert(stream->discard == AVDISCARD_DEFAULT && subtitle_seeks == 1);
+        subtitle_selected = NULL;
+        id = -1;
+        assert(!container_ffmpeg_switch_subtitle(&context, &id));
+        assert(stream->discard == AVDISCARD_ALL && subtitle_seeks == 1);
+        avContextTab[0] = NULL;
         av->iformat = NULL;
         avformat_free_context(av);
     }
