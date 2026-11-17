@@ -707,6 +707,59 @@ def main():
                 player.stop()
             print("PASS audio switch while paused: the track changes and the switch succeeds")
 
+            # --start: the seek comes before the first packet. The fake output
+            # logs the PTS of every packet it gets (LINUXDVB debug level 20).
+            run(args.ffmpeg, "-y", "-i", str(media), "-c", "copy", "-f", "hls", "-hls_time", "1",
+                "-hls_list_size", "0", "-hls_playlist_type", "vod",
+                "-hls_segment_filename", str(root / "vod%d.ts"), str(root / "vod.m3u8"))
+            for segment in [root / "vod.m3u8", *root.glob("vod*.ts")]:
+                resources["/" + segment.name] = segment.read_bytes()
+
+            def start_case(target, *options):
+                """Capabilities, first position (ms) and lowest PTS written (90 kHz).
+
+                The fake output paces video from PTS 0 on, so the first packet
+                of a later start comes late: the position is polled until set."""
+                player = Player(args.player, "-L", "LINUXDVB_DEBUG_LEVEL:20", *options, target)
+                try:
+                    caps = player.wait("EPLAYER3_EXTENDED")
+                    assert player.wait("PLAYBACK_PLAY")["sts"] == 0
+                    position, deadline = 0, time.monotonic() + 15
+                    while not position and time.monotonic() < deadline:
+                        time.sleep(0.25)
+                        player.command("j")
+                        position = player.wait("J")["ms"]
+                    assert position, target
+                    player.command("q")
+                    player.process.wait(timeout=5)
+                    size = os.fstat(player.log.fileno()).st_size
+                    log = os.pread(player.log.fileno(), size, 0).decode(errors="replace")
+                finally:
+                    player.stop()
+                written = [int(line.split("Pts=")[1].split()[0]) for line in log.splitlines()
+                           if "DataLength=" in line and "Pts=" in line]
+                written = [pts for pts in written if pts < 0x200000000]
+                assert written, log[-3000:]
+                return caps, position, min(written)
+
+            for target in (str(media), base + "/media.ts", base + "/vod.m3u8"):
+                _, origin, first = start_case(target)
+                caps, position, lowest = start_case(target, "--start", "5")
+                assert caps["start"] == 1, caps
+                assert 4000 <= position - origin < 7000, (target, origin, position)
+                assert lowest >= first + 4 * 90000, (target, first, lowest)
+                # at or behind the end (12 s): from the start
+                _, position, lowest = start_case(target, "--start", "100")
+                assert position - origin < 1000 and lowest < first + 90000, (
+                    target, origin, position, first, lowest)
+            for value in ("abc", "-1", "nan", "5s", ""):
+                invalid = subprocess.run([args.player, "--start", value, str(media)],
+                                         capture_output=True, timeout=5)
+                assert invalid.returncode != 0, value
+                assert b"Invalid --start value" in invalid.stdout, (value, invalid.stdout[-500:])
+            print("PASS --start: file, HTTP and HLS VOD start at 5 s without a packet before it, "
+                  "ignored behind the end, invalid values rejected")
+
             # Follow-up fixes of main and of the container.
             for option in ("-x", "-F"):
                 unreadable = subprocess.run(
