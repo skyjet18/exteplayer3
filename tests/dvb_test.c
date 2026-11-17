@@ -285,6 +285,43 @@ static void position_within_the_written_data(Context_t *context, ManagerHandler_
     assert(reported_position(context, wrap - TICKS(0.5)) == wrap - TICKS(0.5));
     assert(reported_position(context, TICKS(0.3)) == TICKS(0.3));
     assert(reported_position(context, TICKS(3)) == TICKS(0.78));
+    /* after a start: the decoder has shown nothing of the data yet and still
+     * counts on with the clock of an earlier playback (audio-only DTS on
+     * VTi: 9.5 s reported two seconds after the start, data written up to
+     * 3.92 s, the clock running on) */
+    request_count = 0;
+    assert(!Command(context, OUTPUT_PLAY, "audio"));
+    assert(reported_position(context, TICKS(7.5)) == TICKS(7.5));
+    written(context, "audio", 0, TICKS(3.92));
+    assert(reported_position(context, TICKS(9.5)) == 0);
+    assert(reported_position(context, TICKS(12.5)) == 0);
+    /* within the data: the decoder is taken, and from then on its clock
+     * after the data stands at the data as before */
+    assert(reported_position(context, TICKS(4.2)) == TICKS(4.2));
+    assert(reported_position(context, TICKS(9.5)) == TICKS(4.22));
+    /* a start at a later PTS, the earlier clock far after the data */
+    request_count = 0;
+    assert(!Command(context, OUTPUT_PLAY, "audio"));
+    written(context, "audio", TICKS(3600), TICKS(3602));
+    assert(reported_position(context, TICKS(3700)) == TICKS(3600));
+    /* a track switch before the decoder showed the data: the data written
+     * after it */
+    request_count = 0;
+    context->playback->isAudioSwitching = 1;
+    assert(!Command(context, OUTPUT_SWITCH, "audio"));
+    context->playback->isAudioSwitching = 0;
+    written(context, "audio", TICKS(3602.04), TICKS(3603));
+    assert(reported_position(context, TICKS(3700)) == TICKS(3602.04));
+    assert(reported_position(context, TICKS(3602.5)) == TICKS(3602.5));
+    /* the clock of the earlier playback before the data is left as it is,
+     * and a clear keeps the earlier-playback value as before */
+    request_count = 0;
+    assert(!Command(context, OUTPUT_PLAY, "audio"));
+    written(context, "audio", TICKS(50), TICKS(52));
+    assert(reported_position(context, TICKS(20)) == TICKS(20));
+    cleared(context, "audio");
+    written(context, "audio", TICKS(10), TICKS(12));
+    assert(reported_position(context, TICKS(40)) == TICKS(40));
     /* video: the video data bounds the position of the video decoder */
     videofd = 2;
     managers->video = managers->audio;
