@@ -2730,6 +2730,10 @@ static void FFMPEGThread(Context_t *context)
     int64_t readErrorSince[IPTV_AV_CONTEXT_MAX_NUM] = {0, 0};
     /* TS live mode: the read error that has been reported, 0 after a packet */
     int liveReadError = 0;
+    /* why reading has stopped, when it is not the end of the input: the
+     * stall limit or a network error that outlasted its retries; sent as
+     * FF_ERROR when playback ends on it, 0 after a packet */
+    int endError = 0;
 
     // for seek
     int64_t seek_target_seconds = 0;
@@ -3078,6 +3082,7 @@ static void FFMPEGThread(Context_t *context)
                 &lastRadioMessage[cAVIdx], context->playback->isVideo);
             readErrorSince[cAVIdx] = 0;
             liveReadError = 0;
+            endError = 0;
             int64_t pts = 0;
             int64_t dts = 0;
             Track_t *videoTrack = NULL;
@@ -3936,6 +3941,14 @@ static void FFMPEGThread(Context_t *context)
                     usleep(100000);
                     continue;
                 }
+                endError = ffmpegStatus;
+            }
+            if (readStallFired)
+            {
+                /* the read was ended by the stall limit, whatever the
+                 * demuxer has made of the interruption */
+                readStallFired = 0;
+                endError = AVERROR(ETIMEDOUT);
             }
             if( 0 != ffmpegStatus )
             {
@@ -4005,6 +4018,14 @@ static void FFMPEGThread(Context_t *context)
                 releaseMutex(__FILE__, __FUNCTION__,__LINE__);
                 if( bEndProcess )
                 {
+                    if (endError && !PlaybackDieNow(0))
+                    {
+                        /* not the end of the input: the front end can tell
+                         * a lost connection from a stream that has ended */
+                        char error[512];
+                        av_strerror(endError, error, sizeof(error));
+                        E2iSendMsg("{\"FF_ERROR\":{\"msg\":\"%s\",\"code\":%i}}\n", error, endError);
+                    }
                     break; // while
                 }
                 else
@@ -4419,6 +4440,7 @@ int32_t container_ffmpeg_init_av_context(Context_t *context, char *filename, uin
         custom_io_tab[AVIdx]->szMoovAtomFile = moovAtomFile;
         custom_io_tab[AVIdx]->iMoovAtomOffset = moovAtomOffset;
         
+        errno = 0;
         avio_ctx = container_ffmpeg_get_avio_context(custom_io_tab[AVIdx], 4096);
         if(avio_ctx)
         {
@@ -4428,6 +4450,12 @@ int32_t container_ffmpeg_init_av_context(Context_t *context, char *filename, uin
         }
         else
         {
+            /* reported like an input that FFmpeg cannot open */
+            char error[512];
+            int32_t ioErr = AVERROR(errno ? errno : EIO);
+            ffmpeg_err("cannot open %s (%d)\n", filename, ioErr);
+            av_strerror(ioErr, error, sizeof(error));
+            E2iSendMsg("{\"FF_ERROR\":{\"msg\":\"%s\",\"code\":%i}}\n", error, ioErr);
             free(custom_io_tab[AVIdx]);
             custom_io_tab[AVIdx] = NULL;
             avformat_free_context(avContextTab[AVIdx]);
