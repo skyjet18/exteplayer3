@@ -382,6 +382,21 @@ errors enter the existing 10-second network read retry. Name resolution
 cannot be interrupted and is not covered, nor is a server that keeps sending
 a few bytes within every limit during stream probing.
 
+When playback ends because a read hit the stall limit, or because an HTTP(S)
+read error lasted through the 10-second retry, the player sends
+`{"FF_ERROR":{"msg":"Connection timed out","code":-110}}` (stall limit) or
+the error of the read before it ends, so a front end can tell a lost
+connection from the end of the stream. The end of the input itself sends no
+`FF_ERROR`, as before; neither does the `-v` live TS mode, which restarts the
+source, nor a stop by `q`.
+
+A local input that cannot be opened sends `FF_ERROR` with the error of
+`fopen()` (for example `{"FF_ERROR":{"msg":"No such file or directory","code":-2}}`)
+before `PLAYBACK_OPEN` with a negative `sts` and exit code 10, as inputs that
+FFmpeg opens itself already did. A `-x` file given as `iptv://path` that
+cannot be read is opened as `file://path` and fails the same way, instead of
+the usage text and exit code 1 without any JSON.
+
 Without `-u`, the player opens `http://` and `https://` inputs (the playback
 uri and the `-x` file, with their HLS/DASH playlists and segments) with the
 User-Agent `Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36

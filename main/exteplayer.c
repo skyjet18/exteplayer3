@@ -1172,6 +1172,14 @@ static int ParseParams(int argc,char* argv[], PlayFiles_t *playbackFiles, int *p
             if (optarg[0] != '\0')
             {
                 playbackFiles->szSecondFile = map_inter_file_path(optarg);
+                if (NULL == playbackFiles->szSecondFile && 0 == strncmp(optarg, "iptv://", 7))
+                {
+                    /* the iptv:// file itself is opened as the input: its
+                     * open fails as for any input that cannot be opened,
+                     * with FF_ERROR, PLAYBACK_OPEN sts -1 and exit code 10 */
+                    printf("file: [%s] cannot be read\n", optarg);
+                    playbackFiles->szSecondFile = map_inter_file_path(optarg + 7);
+                }
                 if (NULL == playbackFiles->szSecondFile)
                 {
                     printf("file: [%s] cannot be read\n", optarg);
