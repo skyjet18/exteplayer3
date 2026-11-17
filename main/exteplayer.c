@@ -75,6 +75,7 @@ extern void        flv2mpeg4_converter_set(const int32_t val);
 extern void        sel_program_id_set(const int32_t val);
 extern void adaptive_quality_set(int32_t mode, int32_t default_audio);
 extern void h264_resolution_limit_set(int32_t width, int32_t height);
+extern void start_position_set(int64_t us);
 
 extern void pcm_resampling_set(int32_t val);
 extern void stereo_software_decoder_set(int32_t val);
@@ -986,6 +987,7 @@ static int ParseParams(int argc,char* argv[], PlayFiles_t *playbackFiles, int *p
     /* the long names of the transcoding options, values above every character */
     enum
     {
+        OPT_START = 0x200, /* --start, not a transcoding option */
         OPT_DTS_AC3 = 0x100,
         OPT_TRUEHD_AC3,
         OPT_DTS_EAC3,
@@ -995,6 +997,7 @@ static int ParseParams(int argc,char* argv[], PlayFiles_t *playbackFiles, int *p
     };
     static const struct option long_options[] =
     {
+        {"start",       required_argument, NULL, OPT_START},
         {"dts-ac3",     no_argument, NULL, OPT_DTS_AC3},
         {"truehd-ac3",  no_argument, NULL, OPT_TRUEHD_AC3},
         {"dts-eac3",    no_argument, NULL, OPT_DTS_EAC3},
@@ -1266,6 +1269,26 @@ static int ParseParams(int argc,char* argv[], PlayFiles_t *playbackFiles, int *p
             }
             break;
 
+        case OPT_START:
+        {
+            char *end;
+            double seconds;
+            errno = 0;
+            seconds = strtod(optarg, &end);
+            /* !(x >= 0) is true for NaN as well */
+            if (errno || end == optarg || *end || !(seconds >= 0) || seconds > 1e9)
+            {
+                printf("Invalid --start value (seconds): %s\n", optarg);
+                ret = -1;
+            }
+            else
+            {
+                printf("Start at %.3f s\n", seconds);
+                start_position_set((int64_t)(seconds * 1000000));
+            }
+            break;
+        }
+
         case 'T':
         	PlaybackHandler.httpTimeout = (uint32_t) strtoul(optarg, NULL, 10);
             printf("Setting http timeout to %u ms\n", PlaybackHandler.httpTimeout);
@@ -1414,9 +1437,11 @@ int main(int argc, char* argv[])
     StopSignalsBlock();
 
     /* inform client that we can handle additional commands */
+    /* start: the option --start <seconds> is known */
     /* xcode: the audio transcoding this build can do, 1: to AC3 (-Z, -X), 2: to AAC-LC (-Y), 4: to E-AC-3 (-E) */
     /* achannel: the stdin command am<n> (left/stereo/right of dual mono) is known */
     E2iSendMsg("{\"EPLAYER3_EXTENDED\":{\"version\":%d"
+               ",\"start\":1"
                ",\"xcode\":%d"
 #ifdef HAVE_DREAMNEXTGEN
                /* winds on keyframes with f<speed> and b<speed> */
@@ -1471,6 +1496,7 @@ int main(int argc, char* argv[])
         printf("[-P value] select Program ID from multi-service stream\n");
         printf("[-t id] audio track ID switched on at start\n");
         printf("[-9 id] subtitle track ID switched on at start\n");
+        printf("[--start seconds] start position, before the first packet (not for live streams; \"start\" in EPLAYER3_EXTENDED)\n");
         printf("[-h headers] set custom HTTP headers \"Name: value\\r\\nName: value\\r\\n\"\n");
         printf("[-u user-agent] set custom http User-Agent header\n");
         printf("[-c cookies] set cookies - not working at now, please use -h instead\n");

@@ -478,6 +478,19 @@ stopping playback. Initialization errors fail playback initialization.
 The FIFO remains on disk across sessions for reconnecting readers. Close
 descriptors on stop; never replace the FIFO while a session is active.
 
+## Start position
+
+`--start <seconds>` (a long option: `-s` is the stereo downmix) starts the
+playback at that position, for example to resume. The value may have a
+fraction (`--start 754.5`). The play thread does the seek of the seek commands
+before it reads the first packet, so nothing from the beginning is written
+or shown first; that works for local files, HTTP and HLS/DASH VOD. It is
+ignored for streams without a duration (live) and for a position at or
+behind the end, which start from the beginning. A loop restart (`-i`) starts
+at 0. `EPLAYER3_EXTENDED` carries `"start":1`, so a front end can test for the
+option instead of a version number. An invalid value (negative, not a number)
+is a parameter error.
+
 ## Optional audio transcoding
 
 - `-Z`: decode DTS and encode it to AC-3 5.1 (48 kHz, 640 kbit/s). It also

@@ -186,6 +186,15 @@ void progressive_playback_set(int32_t val)
     progressive_playback = val;
 }
 
+/* --start: the position the play thread seeks to before it reads the first
+ * packet, in us; 0 for none */
+static int64_t g_start_position_us = 0;
+
+void start_position_set(int64_t us)
+{
+    g_start_position_us = us;
+}
+
 #define getMutex(...) getMutex_uni(0, ##__VA_ARGS__)
 #define getMutex_wr(...) getMutex_uni(1, ##__VA_ARGS__)
 
@@ -2724,6 +2733,32 @@ static void FFMPEGThread(Context_t *context)
     uint32_t bufferSize = 0;
     context->output->Command(context, OUTPUT_GET_BUFFER_SIZE, &bufferSize);
     ffmpeg_printf(10, "bufferSize [%u]\n", bufferSize);
+
+    /* The start position goes through the seek of the loop below before the
+     * first packet is read, so nothing from 0 is written. Not for live
+     * streams (no duration) and not at or behind the end. Once only, a loop
+     * restart starts at 0. */
+    if (g_start_position_us > 0)
+    {
+        int64_t duration = avContextTab[0] ? avContextTab[0]->duration : AV_NOPTS_VALUE;
+        if (context->playback->isTSLiveMode || duration == AV_NOPTS_VALUE || duration <= 0)
+        {
+            ffmpeg_err("start position ignored: the stream has no duration\n");
+        }
+        else if (g_start_position_us >= duration)
+        {
+            ffmpeg_err("start position ignored: %"PRId64" us is not before the end (%"PRId64" us)\n",
+                       g_start_position_us, duration);
+        }
+        else
+        {
+            ffmpeg_printf(10, "start at %"PRId64" us\n", g_start_position_us);
+            do_seek_target_seconds = true;
+            seek_target_seconds = g_start_position_us;
+            seek_offset_us = g_start_position_us;
+        }
+        g_start_position_us = 0;
+    }
 
     int8_t isWaitingForFinish = 0;
     while ( context && context->playback && context->playback->isPlaying ) 
