@@ -19,7 +19,7 @@ ${CC:-cc} ${CFLAGS:-} -g -Werror=format -D_FILE_OFFSET_BITS=64 -D_LARGEFILE64_SO
     -DEXTEPLAYER_VIDEO_SOCKET="\"${HOST_VIDEO_SOCKET:-/tmp/exteplayer3-host-video.socket}\"" \
     -Wno-deprecated-declarations -Iinclude -Iexternal -Iexternal/flv2mpeg4 \
     -I"$FFMPEG_SOURCE" -I"$FFMPEG_BUILD" \
-    main/exteplayer.c tools/debug.c tools/strbuffer.c tools/pcm_export.c $alias_flags \
+    main/exteplayer.c tools/debug.c tools/strbuffer.c tools/pcm_export.c tools/ca_bundle.c $alias_flags \
     tools/hevc_hdr.c \
     container/container.c container/container_ffmpeg.c \
     manager/manager.c manager/audio.c manager/video.c manager/subtitle.c \

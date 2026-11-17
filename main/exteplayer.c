@@ -27,6 +27,7 @@
 #include <inttypes.h>
 #include <stdarg.h>
 #include "pcm_export.h"
+#include "ca_bundle.h"
 
 #include <sys/ioctl.h>
 #include <sys/prctl.h>
@@ -137,6 +138,7 @@ static int32_t g_windows_width = 1280;
 static int32_t g_windows_height = 720;
 static char *g_graphic_sub_path;
 static int tracks_cache_disabled = 0;
+static char *g_ca_file; /* -f ca_file=... */
 
 const char* GetGraphicSubPath()
 {
@@ -1145,6 +1147,11 @@ static int ParseParams(int argc,char* argv[], PlayFiles_t *playbackFiles, int *p
                 *ffval = '\0';
                 ffval += 1;
                 ffmpeg_av_dict_set(ffopt, ffval, 0);
+                if (!strcmp(ffopt, "ca_file") || !strcmp(ffopt, "cafile"))
+                {
+                    free(g_ca_file);
+                    g_ca_file = strdup(ffval);
+                }
             }
             free(ffopt);
             break;
@@ -1403,6 +1410,13 @@ int main(int argc, char* argv[])
 #endif
 
     ffmpeg_av_dict_set("fake_last_subtitle", "1", 0);
+
+    /* FFmpeg 9 verifies https certificates by default. Images
+     * whose CA bundle is not where the OpenSSL of the build looks (VTi:
+     * only /etc/ssl/certs/ca-certificates.crt, OPENSSLDIR /etc/ssl)
+     * would fail every https open; SSL_CERT_FILE reaches every
+     * connection, also those of HLS/DASH segments and keys. */
+    ca_bundle_setup(g_ca_file);
 
     process_suburi(&playbackFiles);
 

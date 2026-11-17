@@ -391,6 +391,51 @@ Chrome 106; a libavformat without that change would otherwise send
 `Lavf/<version>`, which some servers refuse. `-u` or `-f user_agent=...` replaces it, and a
 `User-Agent:` line given with `-h` takes precedence over both.
 
+### HTTPS: CA certificates
+
+FFmpeg 9 verifies the certificate of every `https://` server by default
+(`tls_verify=1`; FFmpeg 6.1 did not). Without `-f ca_file`, its OpenSSL backend
+takes the default locations of the OpenSSL it is linked with: the file
+`$OPENSSLDIR/cert.pem` (or `SSL_CERT_FILE`) and the hashed links
+`<hash>.0` in `$OPENSSLDIR/certs` (or `SSL_CERT_DIR`). Some images have
+neither where that OpenSSL looks: VTi ships only
+`/etc/ssl/certs/ca-certificates.crt`, without `cert.pem` and without hashed
+links, so with a bundled OpenSSL (`OPENSSLDIR=/etc/ssl`) every https open
+failed with `certificate verify failed`.
+
+At startup, before any connection, the player therefore sets `SSL_CERT_FILE`:
+
+1. `SSL_CERT_FILE` already set: nothing changes, it wins.
+2. `-f ca_file=<file>` (or `cafile`) names a readable file: `SSL_CERT_FILE` is
+   set to that file. FFmpeg uses the option itself only for the connection of
+   the playback uri: the HLS and DASH demuxers copy just a fixed list of
+   options (`headers`, `user_agent`, `cookies`, `tls_verify`, ...) to their own
+   connections, so variant playlists, segments and keys were opened without it
+   and failed. Through `SSL_CERT_FILE` they trust the same file, in addition
+   to the hashed links of the default directory.
+3. The default locations are usable (a readable `cert.pem` of the linked
+   OpenSSL, or at least one hashed link in its certificate directory or in
+   the directories of `SSL_CERT_DIR`): nothing changes. The player asks the
+   libcrypto loaded with FFmpeg (`X509_get_default_cert_file()`,
+   `X509_get_default_cert_dir()`); without one it assumes `/etc/ssl`.
+4. Otherwise the first readable, non-empty file of
+   `/etc/ssl/certs/ca-certificates.crt` (Debian, OE: openATV, OpenPLi, VTi,
+   DreamOS), `/etc/pki/tls/certs/ca-bundle.crt`, `/etc/ssl/ca-bundle.pem`,
+   `/etc/pki/tls/cacert.pem`, `/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem`
+   and `/etc/ssl/cert.pem`. stdout then has
+   `CA certificates for https: <file> (SSL_CERT_FILE)`.
+
+The variable reaches every TLS connection of the process: the playback uri, the
+`-x` file and the playlists, segments and keys of HLS and DASH. Verification
+stays on; a server whose CA is not in the file is still refused, and
+`-f tls_verify=0` still turns it off. Images whose OpenSSL finds its
+certificates (openATV, OpenPLi: hashed links in `/etc/ssl/certs`) keep the
+environment as it is, so OpenSSL does not parse a whole bundle for every
+connection there. GnuTLS and mbedTLS builds of FFmpeg do not read
+`SSL_CERT_FILE`; for them nothing changes. For tests, `EP3_CA_FILES` (a `:`
+separated list) replaces the list of step 4 and `EP3_CA_DEFAULT_FILE` the
+default file step 3 checks.
+
 ## Video track for enigma2
 
 Every `v_c` line of a video track (size, frame rate, progressive,
@@ -665,6 +710,11 @@ They verify actual aligned HTTP Range requests and approximate seek position,
 which HLS variant is fetched, strict CLI parsing, full radio JSON, embedded
 MP4/MKV forced-subtitle selection/disable, static single-file DASH startup and
 audio switching with live sync both off and on, and bounded host shutdown.
+The https cases (CA bundle fallback for HLS and `-x`, `-f ca_file` for HLS
+segments, an explicit `SSL_CERT_FILE` kept, verification kept) need an FFmpeg
+with the `https` protocol over OpenSSL that verifies by default (FFmpeg 9) and
+the `openssl` command; otherwise they are reported as `SKIP`. `tests/ca_bundle_test.c` (in `tests/run.sh`)
+checks the choice of the file on its own.
 
 The companion HTTP fixture additionally needs DASH demuxing/muxing and libxml2.
 It verifies exact fragment retry counts, delay/cancellation bounds, shared media
