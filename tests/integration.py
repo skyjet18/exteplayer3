@@ -483,6 +483,9 @@ def main():
         encodings, failures, content_types, compressed = [], {}, {}, set()
         # Paths whose answer waits: (set when it is asked for, set to answer).
         held = {}
+        # Paths whose body stops at byte n, the connection kept open without
+        # another byte until released (also for requests that start there).
+        stalls, stall_release = {}, threading.Event()
         payload = media.read_bytes()
         master = (b"#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=100000\nlow.m3u8\n"
                   b"#EXT-X-STREAM-INF:BANDWIDTH=900000\nhigh.m3u8\n")
@@ -535,6 +538,22 @@ def main():
                 if failures.get(self.path):
                     failures[self.path] -= 1
                     self.send_error(503)
+                    return
+                # requests behind the stall point (the duration probe at the
+                # end of a TS) are answered in full
+                if self.path in stalls and start <= stalls[self.path]:
+                    self.send_response(206 if header else 200)
+                    self.send_header("Content-Length", str(len(data) - start))
+                    self.send_header("Accept-Ranges", "bytes")
+                    if header:
+                        self.send_header("Content-Range", f"bytes {start}-{len(data)-1}/{len(data)}")
+                    self.end_headers()
+                    try:
+                        self.wfile.write(data[start:stalls[self.path]])
+                        self.wfile.flush()
+                    except (BrokenPipeError, ConnectionResetError):
+                        return
+                    stall_release.wait(150)
                     return
                 if self.path in held:
                     asked, answer = held[self.path]
@@ -1114,14 +1133,14 @@ def main():
             print("PASS --start: file, HTTP and HLS VOD start at 5 s without a packet before it, "
                   "ignored behind the end, invalid values rejected")
 
-            # Follow-up fixes of main and of the container.
-            for option in ("-x", "-F"):
+            # Follow-up fixes of main and of the container. -x: see "failed open" below.
+            for option in ("-F",):
                 unreadable = subprocess.run(
                     [args.player, option, "iptv://" + str(root / "missing"), str(media)],
                     input=b"q\n", capture_output=True, timeout=10)
                 assert unreadable.returncode == 1 and b"cannot be read" in unreadable.stdout, (
                     option, unreadable)
-            print("PASS unreadable iptv:// file for -x and -F: parameter error, not played without it")
+            print("PASS unreadable iptv:// file for -F: parameter error, not played without it")
 
             # A pipe has no size: ftell() fails on it.
             sizeless = subprocess.run([args.player, "iptv:///dev/stdin"], input=b"/missing\n",
@@ -1594,6 +1613,57 @@ def main():
                 player.stop()
             print("PASS closed command pipe: playback stops and the player exits")
 
+            # An input that cannot be opened is reported with FF_ERROR and
+            # PLAYBACK_OPEN sts -1, also a -x iptv:// file that cannot be read.
+            for options, target in (([], root / "missing.ts"),
+                                    (["-x", "iptv://" + str(root / "missing.iptv")], media)):
+                # stdin stays open: its end would be a q during the open (exit code 11)
+                opener = subprocess.Popen([args.player, *options, str(target)],
+                                          stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                          stderr=subprocess.PIPE, text=True)
+                try:
+                    opener.wait(timeout=10)
+                finally:
+                    if opener.poll() is None:
+                        opener.kill()
+                        opener.wait()
+                    opener.stdin.close()
+                    out, err = opener.stdout.read(), opener.stderr.read()
+                    opener.stdout.close()
+                    opener.stderr.close()
+                lines = [json.loads(line) for line in err.splitlines()]
+                errors = [line["FF_ERROR"] for line in lines if "FF_ERROR" in line]
+                opens = [line["PLAYBACK_OPEN"] for line in lines if "PLAYBACK_OPEN" in line]
+                assert opener.returncode == 10, (options, opener.returncode, out[-2000:])
+                assert errors and errors[0]["code"] < 0 and errors[0]["msg"], (options, lines)
+                assert len(opens) == 1 and opens[0]["sts"] < 0, (options, lines)
+                assert opens[0]["file"] == "file://" + str(target), (options, opens)
+                assert lines.index({"FF_ERROR": errors[0]}) < lines.index({"PLAYBACK_OPEN": opens[0]})
+            print("PASS failed open: FF_ERROR and PLAYBACK_OPEN sts -1, also for a missing -x iptv:// file")
+
+            # Playback that ends because no data comes any more (the stall
+            # limit, at least 60 s) is not the end of the stream: FF_ERROR
+            # comes before the player ends. The end of the input sends none.
+            resources["/stall.ts"] = long_media.read_bytes()
+            stalls["/stall.ts"] = len(resources["/stall.ts"]) // 4
+            started = time.monotonic()
+            player = Player(args.player, base + "/stall.ts")
+            try:
+                assert player.wait("PLAYBACK_PLAY")["sts"] == 0
+                player.process.wait(timeout=150)
+            finally:
+                player.stop()
+            errors = [message["FF_ERROR"] for message in player.messages if "FF_ERROR" in message]
+            assert errors and errors[-1]["code"] < 0, (time.monotonic() - started, player.messages[-8:])
+            player = Player(args.player, base + "/media.ts")
+            try:
+                assert player.wait("PLAYBACK_PLAY")["sts"] == 0
+                player.process.wait(timeout=60)
+            finally:
+                player.stop()
+            assert not any("FF_ERROR" in message for message in player.messages), player.messages
+            print("PASS end of playback: FF_ERROR after a read stall, none at the end of the stream")
+
             # The video track also goes to the video socket of enigma2.
             listener = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
             try:
@@ -1640,6 +1710,7 @@ def main():
 
             https_cases(args, root, Handler, requests, media)
         finally:
+            stall_release.set()
             server.shutdown()
             server.server_close()
             thread.join()
