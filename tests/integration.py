@@ -230,6 +230,173 @@ def hevc_stream(transfer, alternative=None, frames=60):
     return stream + idr.nal(19) * frames
 
 
+TLS_CONFIG = """[req]
+distinguished_name = dn
+prompt = no
+[dn]
+CN = exteplayer3 test CA
+[ca]
+basicConstraints = critical,CA:TRUE
+keyUsage = critical,keyCertSign,cRLSign
+subjectKeyIdentifier = hash
+[server]
+basicConstraints = CA:FALSE
+keyUsage = critical,digitalSignature,keyEncipherment
+extendedKeyUsage = serverAuth
+subjectAltName = IP:127.0.0.1,DNS:localhost
+subjectKeyIdentifier = hash
+authorityKeyIdentifier = keyid
+"""
+
+
+def https_cases(args, root, handler, requests, media):
+    """CA certificates of https inputs on an image whose OpenSSL finds none
+    by itself (VTi: no cert.pem, no hashed links), a loopback HTTPS server
+    with a CA of the test. EP3_CA_FILES replaces the list of CA bundles the
+    player tries, EP3_CA_DEFAULT_FILE the default file of OpenSSL the player
+    checks (a cert.pem of the host has the CAs of the host, not the one of
+    the test); SSL_CERT_DIR is an empty directory and SSL_CERT_FILE unset."""
+    import shutil
+    import ssl
+    if b"https" not in run(args.ffmpeg, "-hide_banner", "-protocols").stdout.split():
+        print("SKIP https CA bundle: this FFmpeg has no https protocol")
+        return
+    openssl = shutil.which("openssl")
+    if not openssl:
+        print("SKIP https CA bundle: no openssl command for the test certificates")
+        return
+    tls = root / "tls"
+    tls.mkdir()
+    config = tls / "openssl.cnf"
+    config.write_text(TLS_CONFIG)
+    for name in ("ca", "other"):
+        run(openssl, "req", "-x509", "-config", str(config), "-extensions", "ca",
+            "-newkey", "rsa:2048", "-nodes", "-days", "2", "-subj", f"/CN=exteplayer3 {name} CA",
+            "-keyout", str(tls / f"{name}.key"), "-out", str(tls / f"{name}.crt"))
+    run(openssl, "req", "-new", "-config", str(config), "-newkey", "rsa:2048", "-nodes",
+        "-subj", "/CN=127.0.0.1", "-keyout", str(tls / "server.key"), "-out", str(tls / "server.csr"))
+    run(openssl, "x509", "-req", "-in", str(tls / "server.csr"), "-CA", str(tls / "ca.crt"),
+        "-CAkey", str(tls / "ca.key"), "-set_serial", "2", "-days", "2", "-extfile", str(config),
+        "-extensions", "server", "-out", str(tls / "server.crt"))
+    bundle = tls / "ca-certificates.crt"  # the only CA file of a VTi image
+    bundle.write_bytes((tls / "other.crt").read_bytes() + (tls / "ca.crt").read_bytes())
+    empty = tls / "certs"
+    empty.mkdir()
+    missing = tls / "missing.crt"
+
+    context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    context.load_cert_chain(tls / "server.crt", tls / "server.key")
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), handler)
+    server.socket = context.wrap_socket(server.socket, server_side=True)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    base = f"https://127.0.0.1:{server.server_port}"
+
+    def environment(candidates, **extra):
+        env = {key: value for key, value in os.environ.items()
+               if key not in ("SSL_CERT_FILE", "SSL_CERT_DIR", "EP3_CA_FILES",
+                              "EP3_CA_DEFAULT_FILE")}
+        env.update(SSL_CERT_DIR=str(empty), EP3_CA_FILES=":".join(map(str, candidates)),
+                   EP3_CA_DEFAULT_FILE=str(tls / "cert.pem"), **extra)
+        return env
+
+    def opened(options, url, env):
+        """PLAYBACK_OPEN sts and the FF_ERROR messages; a player that opened plays."""
+        player = Player(args.player, *options, url, env=env)
+        status = None
+        try:
+            status = player.wait("PLAYBACK_OPEN")["sts"]
+            if status == 0:
+                assert player.wait("PLAYBACK_PLAY")["sts"] == 0
+        finally:
+            if status == 0:
+                player.stop()
+            else:
+                try:
+                    player.process.wait(timeout=10)
+                finally:
+                    if player.process.poll() is None:
+                        player.process.kill()
+                        player.process.wait()
+                    player.reader.join(timeout=2)
+                    player.process.stdin.close()
+                    player.process.stderr.close()
+                    player.log.close()
+        return status, [message["FF_ERROR"] for message in player.messages if "FF_ERROR" in message]
+
+    failed = []
+    try:
+        # Without a CA the open fails: this FFmpeg verifies by default.
+        status, errors = opened([], base + "/master.m3u8", environment([missing]))
+        if status == 0:
+            print("SKIP https CA bundle: this FFmpeg does not verify certificates by default")
+            return
+
+        def case(description, check):
+            requests.clear()
+            try:
+                check()
+            except Exception as error:
+                failed.append(description)
+                print(f"FAIL {description}: {error!r}"[:4000])
+            else:
+                print("PASS " + description)
+
+        def fallback_hls():
+            status, errors = opened([], base + "/master.m3u8", environment([missing, bundle]))
+            assert status == 0, errors
+            assert ("/high.m3u8", 0) in requests and ("/high.ts", 0) in requests, requests
+
+        case("https HLS without a CA of OpenSSL: the first CA bundle of the list that exists, "
+             "also for the variant playlist and the segment", fallback_hls)
+
+        def fallback_separate_audio():
+            status, errors = opened(["-x", base + "/sound.ts"], str(media),
+                                    environment([missing, bundle]))
+            assert status == 0, errors
+            assert any(path == "/sound.ts" for path, _ in requests), requests
+
+        case("https -x audio file: the same CA bundle", fallback_separate_audio)
+
+        def ca_file_hls():
+            status, errors = opened(["-f", f"ca_file={bundle}"], base + "/master.m3u8",
+                                    environment([missing]))
+            assert status == 0, errors
+            assert ("/high.ts", 0) in requests, requests
+
+        case("https HLS with -f ca_file: the variant playlist and the segment trust it too, "
+             "FFmpeg passes the option on to neither", ca_file_hls)
+
+        def ca_file_direct():
+            status, errors = opened(["-f", f"ca_file={bundle}"], base + "/media.ts",
+                                    environment([missing]))
+            assert status == 0, errors
+
+        case("https file with -f ca_file", ca_file_direct)
+
+        def explicit_wins():
+            status, errors = opened([], base + "/master.m3u8",
+                                    environment([bundle], SSL_CERT_FILE=str(tls / "other.crt")))
+            assert status != 0, "opened with the CA of another bundle"
+            assert errors, "no FF_ERROR"
+
+        case("https with SSL_CERT_FILE set: it is kept, the certificate of another CA is refused",
+             explicit_wins)
+
+        def self_signed_refused():
+            status, errors = opened([], base + "/master.m3u8",
+                                    environment([missing, tls / "other.crt"]))
+            assert status != 0, "opened without the CA of the server in the bundle"
+
+        case("https with a bundle that lacks the CA of the server: verification stays on",
+             self_signed_refused)
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join()
+    assert not failed, failed
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--player", required=True)
@@ -1282,6 +1449,8 @@ def main():
                 finally:
                     player.stop()
             print("PASS FLV Sorenson Spark after the audio: played on, with and without flv2mpeg4")
+
+            https_cases(args, root, Handler, requests, media)
         finally:
             server.shutdown()
             server.server_close()
