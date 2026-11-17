@@ -24,6 +24,12 @@
 #define FILLBUFPAKET 5120
 #define FILLBUFSEEKTIME 3 //sec
 #define TIMEOUT_MAX_ITERS 10
+/* After a seek the decoders start again with the new data, and their position
+ * can stand still for more than a second (seen 1.3 s with HE-AAC v2 on a
+ * Vu+ Uno 4K SE). Until the decoder is seen playing the data written since the
+ * seek, the end of the file waits up to 5 s for it. */
+#define SEEK_TIMEOUT_MAX_ITERS 50
+#define SEEK_POS_TOLERANCE 90000 /* 1 s */
 
 static int ffmpeg_buf_size = FILLBUFSIZE + FILLBUFDIFF;
 static int ffmpeg_buf_seek_time = FILLBUFSEEKTIME;
@@ -48,6 +54,10 @@ static int64_t playPts = -1;
 static int32_t finishTimeout = 0;
 static int8_t pauseTimeout = 0;
 static int64_t maxInjectedPTS = INVALID_PTS_VALUE;
+/* a seek, and the decoder has not been seen playing the data written since */
+static int8_t seekRestart = 0;
+static int64_t seekFirstPts = INVALID_PTS_VALUE; /* first PTS written since the seek */
+static int64_t seekLastPts = INVALID_PTS_VALUE;  /* decoder position at the last poll */
 
 static int64_t update_max_injected_pts(int64_t pts)
 {
@@ -57,8 +67,19 @@ static int64_t update_max_injected_pts(int64_t pts)
         {
             maxInjectedPTS = pts;
         }
+        if(seekRestart && seekFirstPts == INVALID_PTS_VALUE)
+        {
+            seekFirstPts = pts;
+        }
     }
     return maxInjectedPTS;
+}
+
+static void seek_finish_timeout()
+{
+    seekRestart = 1;
+    seekFirstPts = INVALID_PTS_VALUE;
+    seekLastPts = INVALID_PTS_VALUE;
 }
 
 int64_t get_play_pts()
@@ -80,7 +101,7 @@ void set_pause_timeout(uint8_t pause)
 
 static int8_t is_finish_timeout()
 {
-    if (finishTimeout > TIMEOUT_MAX_ITERS)
+    if (finishTimeout > (seekRestart ? SEEK_TIMEOUT_MAX_ITERS : TIMEOUT_MAX_ITERS))
     {
         return 1;
     }
@@ -102,11 +123,24 @@ static void update_finish_timeout()
         }
         
         //printf("ret[%d] playPts[%"PRId64"] currPts[%"PRId64"] maxInjectedPts[%"PRId64"]\n", ret, playPts, currPts, maxInjectedPts);
+
+        if (seekRestart && 0 == ret)
+        {
+            /* The position can still be the one from before the seek: the
+             * decoder plays the new data once its position moves on within
+             * what was written since. */
+            if (seekFirstPts != INVALID_PTS_VALUE && seekLastPts != INVALID_PTS_VALUE &&
+                seekLastPts + SEEK_POS_TOLERANCE >= seekFirstPts && currPts > seekLastPts)
+            {
+                seekRestart = 0;
+            }
+            seekLastPts = currPts;
+        }
         
         /* On some STBs PTS readed from decoder is invalid after seek or at start 
          * this is the reason for additional validation when we what to close immediately
          */
-        if( !progressive_playback && 0 == ret && currPts >= maxInjectedPts && 
+        if( !progressive_playback && !seekRestart && 0 == ret && currPts >= maxInjectedPts && 
             ((currPts - maxInjectedPts) / 90000) < 2 )
         {
             /* close immediately 

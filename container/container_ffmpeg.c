@@ -2793,6 +2793,7 @@ static void FFMPEGThread(Context_t *context)
             if (!zero_seek || do_seek_target_bytes)
                 pts_clock_reset(&ptsClock, 1);
             isWaitingForFinish = 0;
+            seek_finish_timeout();
             if (do_seek_target_seconds)
             {
                 /* A decoder that has not shown a frame of this playback yet can
