@@ -1216,7 +1216,7 @@ int main(int argc, char* argv[])
         printf("[-K] export decoded S16LE audio to " PCM_EXPORT_PATH " (forces software decoding)\n");
         printf("[-b size] Linux DVB output buffer size in MB\n");
         printf("[-a 0|1|2|3] AAC software decoding - 1 bit - AAC ADTS, 2 - bit AAC LATM\n");
-        printf("[-j ms] AAC PTS dejitter threshold in ms, 0 - disabled (default 60)\n");
+        printf("[-j ms] AAC/DTS PTS dejitter threshold in ms, 0 - disabled (default 200)\n");
         printf("[-Q 0|1|2] HLS/DASH quality: auto/highest (0 or 2), lowest (1)\n");
         printf("[-D 0|1] Keep only default HLS audio renditions (default 0)\n");
         printf("[-M WIDTHxHEIGHT] Automatic H.264 resolution limit (default 0x0: disabled)\n");

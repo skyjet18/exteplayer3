@@ -471,7 +471,7 @@ encoder setup.
 The encoder is rebuilt when the decoded channel count, sample rate or sample
 format changes or another track is selected, and dropped after a seek. Output
 timestamps follow the encoded sample count and restart from the stream when
-they differ by more than 60 ms. A failed setup or encoder is logged once
+they differ by more than 200 ms. A failed setup or encoder is logged once
 (`-L FFMPEG_SILENT:0`) and leaves that track silent until its format changes
 or a seek; playback continues. Stereo downmix (`-s`) is not applied to
 transcoded tracks.

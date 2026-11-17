@@ -272,10 +272,11 @@ static int32_t aac_latm_software_decode = 1;
 static int32_t aac_latm_software_decode = 0;
 #endif
 
-/* Max. allowed difference (ms) between stream and smoothed AAC PTS,
+/* Max. allowed difference (ms) between stream and smoothed AAC/DTS PTS
+ * (a DASH remux can leave the stream PTS 80 ms off the sample count),
  * 0 - smoothing disabled.
  */
-static int32_t aac_pts_dejitter_ms = 60;
+static int32_t aac_pts_dejitter_ms = 200;
 
 static int32_t ac3_software_decode = 0;
 static int32_t eac3_software_decode = 0;
@@ -2040,7 +2041,7 @@ static void ls_on_video(Context_t *context, int64_t pts)
 #define HAVE_AUDIO_XCODE (LIBAVCODEC_VERSION_MAJOR >= 58)
 /* the timestamps of the stream may differ this much (90 kHz) from the
  * count of the samples before the count starts again from the stream */
-#define AUDIO_XCODE_MAX_DRIFT (60 * 90)
+#define AUDIO_XCODE_MAX_DRIFT (200 * 90)
 
 /* per codec of the stream: 0 off, 1 to AC3, 2 to E-AC-3 */
 static int32_t dts_ac3_transcode = 0;
