@@ -478,9 +478,15 @@ static int Write(void *_context, void *data)
         subCodecId = SUBTITLE_CODEC_ID_XSUB;
     else if (!strncmp("S_TEXT/MOV", Encoding, 10))
         subCodecId = SUBTITLE_CODEC_ID_MOV_TEXT;
+    else if (!strcmp("S_TEXT/EIA608", Encoding))
+        subCodecId = SUBTITLE_CODEC_ID_EIA608;
 
     switch (subCodecId)
     {
+        case SUBTITLE_CODEC_ID_EIA608:
+            /* plain text from the closed caption decoder of the container */
+            E2iSendMsg("{\"s_a\":{\"id\":%d,\"s\":%"PRId64",\"e\":%"PRId64",\"t\":\"%s\"}}\n", out->trackId, out->pts / 90, out->pts / 90 + out->durationMS, json_string_escape((char *)out->data));
+        break;
         case SUBTITLE_CODEC_ID_SUBRIP:
         case SUBTITLE_CODEC_ID_WEBVTT:
             E2iSendMsg("{\"s_a\":{\"id\":%d,\"s\":%"PRId64",\"e\":%"PRId64",\"t\":\"%s\"}}\n", out->trackId, out->pts / 90, out->pts / 90 + out->durationMS, json_string_escape( remove_ass_formating((char *)out->data) ));
