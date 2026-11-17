@@ -1,0 +1,138 @@
+name: Tests
+
+# Builds the host player of tests/build.sh and runs the host tests that the
+# README describes under "Native validation", on a normal x86-64 runner,
+# against a native build of the patched FFmpeg of skyjet18/FFmpeg:
+#   - tests/run.sh             the small test programs (ASan / UBSan)
+#   - tests/integration.py     with the normal and with the ASan player
+#   - tests/hls_switch.py      PCM export, compressed, software, timing mode
+#   - the companion tests of the FFmpeg tree (fate-hls-selection,
+#     fate-mpegts-probe, fate-dash-live, tests/dash_http.py, hls_http.py)
+#
+# Every test runs twice, once per FFmpeg below (two parallel jobs). The
+# FFmpeg branches are followed by name: each run asks GitHub for the current
+# commit of the branch and builds it once; the build is kept in the Actions
+# cache under that commit, so later runs reuse it until the branch moves.
+#
+# Results: the "Summary" page of a run has one table per job; the logs of
+# every test are attached to the run as artifacts ("logs-ffmpeg-...").
+# The scripts are in .github/tests/.
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+
+# read access to the repository is all this needs
+permissions:
+  contents: read
+
+# a newer push to the same branch / pull request cancels the older run
+concurrency:
+  group: tests-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  host-tests:
+    name: FFmpeg ${{ matrix.ffmpeg }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    strategy:
+      # one FFmpeg failing does not cancel the other job
+      fail-fast: false
+      matrix:
+        include:
+          # the FFmpeg of the prebuilt ipks in ipk/
+          - ffmpeg: '6.1'
+            branch: release/6.1-patched
+            configure: --enable-libxml2 --enable-zlib
+            libs: -lxml2 -lz
+          # with OpenSSL, so the HTTPS tests run as well
+          - ffmpeg: '9'
+            branch: release/9.0-patched
+            configure: --enable-libxml2 --enable-zlib --enable-openssl
+            libs: -lxml2 -lz -lssl -lcrypto
+    env:
+      FFMPEG_REPO: skyjet18/FFmpeg
+      FFMPEG_BRANCH: ${{ matrix.branch }}
+      # static libraries, the ffmpeg tool for the generated test media; no
+      # library is picked up from the runner by chance (--disable-autodetect)
+      FFMPEG_CONFIGURE: --disable-autodetect --disable-doc --disable-ffplay --disable-debug ${{ matrix.configure }}
+      FFMPEG_EXTRA_LIBS: ${{ matrix.libs }}
+      # the test programs of the FFmpeg tree the tests use
+      FFMPEG_TEST_PROGRAMS: >-
+        libavformat/tests/hls_http libavformat/tests/dash_http
+        libavformat/tests/hls_selection libavformat/tests/dash_live libavformat/tests/mpegts_probe
+      FFMPEG_SOURCE: /home/runner/ffmpeg-${{ matrix.ffmpeg }}/src
+      FFMPEG_BUILD: /home/runner/ffmpeg-${{ matrix.ffmpeg }}/build
+    steps:
+    - name: Check out this repository
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+    # The cache key contains the commit of the FFmpeg branch and a hash of
+    # the build settings: a new commit or other settings = a new build.
+    - name: Current commit of ${{ matrix.branch }}
+      id: ffmpeg
+      run: |
+        sha=$(git ls-remote "https://github.com/$FFMPEG_REPO" "refs/heads/$FFMPEG_BRANCH" | cut -f1)
+        if [ -z "$sha" ]; then
+          echo "::error::branch $FFMPEG_BRANCH not found in $FFMPEG_REPO"
+          exit 1
+        fi
+        sum=$(printf '%s\n' "$FFMPEG_CONFIGURE" "$FFMPEG_TEST_PROGRAMS" "$ImageOS" | sha256sum | cut -c1-16)
+        echo "sha=$sha" >> "$GITHUB_OUTPUT"
+        echo "key=ffmpeg-${{ matrix.ffmpeg }}-$sha-$sum" >> "$GITHUB_OUTPUT"
+        echo "$FFMPEG_REPO $FFMPEG_BRANCH: $sha"
+
+    - name: Install packages
+      run: |
+        sudo apt-get update -q
+        sudo apt-get install -y -q build-essential pkg-config nasm libxml2-dev zlib1g-dev libssl-dev
+
+    - name: FFmpeg from the cache
+      id: cache
+      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: /home/runner/ffmpeg-${{ matrix.ffmpeg }}
+        key: ${{ steps.ffmpeg.outputs.key }}
+
+    # only when the cache has no build of this commit yet (about 10 minutes);
+    # out of tree, because the tests want the source and the build directory
+    - name: Build FFmpeg
+      if: steps.cache.outputs.cache-hit != 'true'
+      env:
+        SHA: ${{ steps.ffmpeg.outputs.sha }}
+      run: |
+        mkdir -p "$FFMPEG_SOURCE" "$FFMPEG_BUILD"
+        curl -sSL --retry 5 --retry-all-errors "https://github.com/$FFMPEG_REPO/archive/$SHA.tar.gz" -o "$RUNNER_TEMP/ffmpeg.tar.gz"
+        tar -xzf "$RUNNER_TEMP/ffmpeg.tar.gz" --strip-components=1 -C "$FFMPEG_SOURCE"
+        cd "$FFMPEG_BUILD"
+        "$FFMPEG_SOURCE/configure" $FFMPEG_CONFIGURE
+        make -j$(nproc)
+        make -j$(nproc) $FFMPEG_TEST_PROGRAMS
+
+    - name: FFmpeg used
+      env:
+        SHA: ${{ steps.ffmpeg.outputs.sha }}
+        HIT: ${{ steps.cache.outputs.cache-hit == 'true' && 'from the cache' || 'built in this run' }}
+      run: |
+        "$FFMPEG_BUILD/ffmpeg" -hide_banner -version | head -1
+        echo "FFmpeg ${{ matrix.ffmpeg }}: \`$FFMPEG_REPO\` \`$FFMPEG_BRANCH\` at \`$SHA\` ($HIT), configure \`$FFMPEG_CONFIGURE\`" >> "$GITHUB_STEP_SUMMARY"
+
+    - name: Host tests of exteplayer3
+      run: bash .github/tests/run-host-tests.sh . "$RUNNER_TEMP/host-tests" "FFmpeg ${{ matrix.ffmpeg }}"
+
+    # also when the player tests failed
+    - name: Companion tests of the FFmpeg tree
+      if: ${{ !cancelled() }}
+      run: bash .github/tests/run-ffmpeg-tests.sh "$RUNNER_TEMP/host-tests/logs/ffmpeg" "FFmpeg ${{ matrix.ffmpeg }}"
+
+    - name: Keep the logs
+      if: ${{ !cancelled() }}
+      uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+      with:
+        name: logs-ffmpeg-${{ matrix.ffmpeg }}
+        path: ${{ runner.temp }}/host-tests/logs
+        if-no-files-found: ignore
+        retention-days: 14
