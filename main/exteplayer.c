@@ -511,10 +511,17 @@ static void process_suburi(PlayFiles_t *play_files)
     }
 }
 
-static int kbhit(int ms)
+/* Written once by the open thread when PLAYBACK_OPEN has returned, so the
+ * wait in front of it ends at once and not after its timeout. A pipe of its
+ * own: g_pfd also ends the TermThread. */
+static int g_openDonePfd[2] = {-1, -1};
+
+/* Waits for stdin, g_pfd and, when it is not -1, fd for at most ms. */
+static int kbhit_fd(int ms, int fd)
 {
     struct timeval tv;
     fd_set readfds;
+    int maxfd = g_pfd[0];
 
     tv.tv_sec = ms / 1000;
     tv.tv_usec = (ms % 1000) * 1000;
@@ -522,8 +529,14 @@ static int kbhit(int ms)
     FD_ZERO(&readfds);
     FD_SET(0,&readfds);
     FD_SET(g_pfd[0], &readfds);
+    if (fd >= 0)
+    {
+        FD_SET(fd, &readfds);
+        if (fd > maxfd)
+            maxfd = fd;
+    }
 
-    if(-1 == select(g_pfd[0] + 1, &readfds, NULL, NULL, &tv))
+    if(-1 == select(maxfd + 1, &readfds, NULL, NULL, &tv))
     {
         return 0;
     }
@@ -534,6 +547,11 @@ static int kbhit(int ms)
     }
 
     return 0;
+}
+
+static int kbhit(int ms)
+{
+    return kbhit_fd(ms, -1);
 }
 
 extern int LinuxDvbEac3RestartState(void);
@@ -1284,7 +1302,8 @@ typedef struct
 {
 	PlayFiles_t *playbackFiles;
 	int ret;
-	int init_finished;
+	/* set by the open thread with release order, after ret */
+	volatile int init_finished;
 } PlaybackInitParams_t;
 
 static void *PlaybackInitThread(PlaybackInitParams_t *params)
@@ -1295,7 +1314,13 @@ static void *PlaybackInitThread(PlaybackInitParams_t *params)
     prctl (PR_SET_NAME, (unsigned long)&threadname);
 
 	params->ret = g_player->playback->Command(g_player, PLAYBACK_OPEN, params->playbackFiles);
-	params->init_finished = 1;
+	__atomic_store_n(&params->init_finished, 1, __ATOMIC_RELEASE);
+	/* params is not touched after the flag: main may leave its block now.
+	 * Without the pipe the wait ends after at most 1 s, as before. */
+	if (g_openDonePfd[1] >= 0 && 1 != write(g_openDonePfd[1], "x", 1))
+	{
+	    printf("PlaybackInitThread wake-up write failed\n");
+	}
 	return NULL;
 }
 
@@ -1489,16 +1514,20 @@ int main(int argc, char* argv[])
 
     	memset( &params, 0, sizeof( PlaybackInitParams_t ));
     	params.playbackFiles = &playbackFiles;
+        if (pipe(g_openDonePfd) == -1)
+        {
+            g_openDonePfd[0] = g_openDonePfd[1] = -1;
+        }
     	pthread_attr_init(&tattr);
     	pthread_attr_setdetachstate(&tattr, 1);
     	pthread_create(&itid, &tattr, (void * (*)(void *)) PlaybackInitThread, (void *) &params);
 
-    	while( params.init_finished == 0 )
+    	while( __atomic_load_n(&params.init_finished, __ATOMIC_ACQUIRE) == 0 )
     	{
             if( NULL == ReadCommand(argvBuff, sizeof(argvBuff)-1) )
             {
-                /* wait for data - max 1s */
-                kbhit(1000);
+                /* wait for data or the end of the open - max 1s */
+                kbhit_fd(1000, g_openDonePfd[0]);
                 continue;
             }
 
