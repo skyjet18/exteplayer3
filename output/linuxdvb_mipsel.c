@@ -84,7 +84,8 @@ static struct DVBApiVideoInfo_s videoInfo = {-1,-1,-1,-1,-1};
 static const char VIDEO_PROGRESSIVE_FILE[] = "/proc/stb/vmpeg/0/progressive";
 
 /*
- * Completing a video track FFmpeg has no picture size of. videoInfo holds
+ * Completing a video track FFmpeg has no picture size of, and the
+ * progressive flag of every video track. videoInfo holds
  * what the video events delivered, videoInfoAsked what the driver answered
  * for the values no event came for.
  */
@@ -99,8 +100,9 @@ enum
 };
 static int videoInfoPhase = VIDEO_INFO_START;
 static bool videoInfoReported;
-/* the current video track has no picture size */
+/* the current video track has no picture size, or no progressive flag yet */
 static bool videoInfoWanted;
+static bool videoInfoNoSize;
 static int videoInfoRetries;
 #define VIDEO_INFO_MAX_RETRIES 10
 /* video data and the position requests both read the video events */
@@ -1690,8 +1692,9 @@ static void LinuxDvbAskVideoInfo(void)
 }
 
 /*
- * Called for every video frame of a track FFmpeg has no picture size of and
- * for every position request while it plays; the caller holds
+ * Called for every video frame of a track FFmpeg has no picture size of, or
+ * whose progressive flag no event has brought yet, and for every position
+ * request while it plays; the caller holds
  * videoInfoMutex. event tells that a video event has been read just now,
  * pts is the decoder PTS when the caller has read it. Returns true when the
  * track is to be reported with the values of the decoder.
@@ -1707,7 +1710,9 @@ static void LinuxDvbAskVideoInfo(void)
  *   answer is never used;
  * - once no event has come for VIDEO_INFO_SETTLE_PTS, the values the events
  *   left open are asked again and the track is reported once, with the final
- *   values. Without a picture size the driver is asked again later.
+ *   values. Without a picture size the driver is asked again later. For a
+ *   picture FFmpeg knows only the progressive flag is used, and the track is
+ *   reported only when the driver has one.
  * The periods are measured with the decoder PTS; the first step of it, from
  * the value the previous playback left, does not count. A file is often
  * written to the end before that, so the position requests of the front end
@@ -1792,6 +1797,17 @@ static bool LinuxDvbUpdateVideoInfo(bool event, const unsigned long long *knownP
 
     LinuxDvbAskVideoInfo();
     videoInfoProgress = 0;
+    if (!videoInfoNoSize)
+    {
+        /* FFmpeg knows the picture: only the progressive flag was missing */
+        videoInfoPhase = VIDEO_INFO_DONE;
+        if (videoInfo.progressive != -1 || videoInfoAsked.progressive == -1)
+        {
+            return false;
+        }
+        videoInfoReported = true;
+        return true;
+    }
     if ((videoInfo.width <= 0 || videoInfo.height <= 0) &&
         (videoInfoAsked.width <= 0 || videoInfoAsked.height <= 0))
     {
@@ -1810,8 +1826,9 @@ static bool LinuxDvbUpdateVideoInfo(bool event, const unsigned long long *knownP
 }
 
 /*
- * A position request: for a track without a picture size the video events
- * are read and the periods go on, also when no more data is written.
+ * A position request: for a track without a picture size or progressive flag
+ * the video events are read and the periods go on, also when no more data is
+ * written.
  */
 static void LinuxDvbVideoInfoPoll(Context_t *context, unsigned long long pts)
 {
@@ -1831,7 +1848,16 @@ static void LinuxDvbVideoInfoPoll(Context_t *context, unsigned long long pts)
     }
     now = videoInfo;
     event = memcmp(&known, &now, sizeof(known)) != 0;
-    report = LinuxDvbUpdateVideoInfo(event, &pts);
+    if (!videoInfoNoSize && progressive)
+    {
+        /* the event has brought the flag a known picture was waiting for */
+        videoInfoWanted = false;
+        report = true;
+    }
+    else
+    {
+        report = LinuxDvbUpdateVideoInfo(event, &pts);
+    }
     pthread_mutex_unlock(&videoInfoMutex);
 
     if (report)
@@ -1899,8 +1925,10 @@ static int Write(void  *_context, void *_out)
             known = videoInfo;
             LinuxDvbReadVideoEvent(&progressive, &values);
             now = videoInfo;
-            videoInfoWanted = complete;
-            if (complete)
+            /* a known picture still waits for the progressive flag */
+            videoInfoNoSize = complete;
+            videoInfoWanted = complete || videoInfo.progressive == -1;
+            if (videoInfoWanted)
             {
                 report = LinuxDvbUpdateVideoInfo(memcmp(&known, &now, sizeof(known)) != 0, NULL);
             }
@@ -1908,7 +1936,9 @@ static int Write(void  *_context, void *_out)
 
             /*
              * A track without a picture size is reported once, after the
-             * last event, also for a progressive event.
+             * last event, also for a progressive event. A track with one is
+             * reported for a progressive event, or once with the flag the
+             * decoder shows when no event brings it.
              */
             if ((progressive && !complete) || report)
             {
@@ -2156,8 +2186,15 @@ static int Command(void  *_context, OutputCmd_t command, void * argument) {
         break;
     }
     case OUTPUT_GET_PROGRESSIVE: {
+        int progressive;
         ret = cERR_LINUXDVB_NO_ERROR;
-        *((int*)argument) = videoInfo.progressive;
+        pthread_mutex_lock(&videoInfoMutex);
+        progressive = videoInfo.progressive;
+        /* no event brought it: the flag the decoder showed once it had settled */
+        if (progressive == -1 && videoInfoReported)
+            progressive = videoInfoAsked.progressive;
+        pthread_mutex_unlock(&videoInfoMutex);
+        *((int*)argument) = progressive;
         break;
     }
     case OUTPUT_GET_VIDEO_INFO: {
