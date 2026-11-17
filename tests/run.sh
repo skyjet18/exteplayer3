@@ -108,6 +108,11 @@ $cc -g -fsanitize=address,undefined -ffunction-sections -fdata-sections -Iinclud
     tests/hevc_hdr_test.c tools/hevc_hdr.c -Wl,--gc-sections -o "$tmp/hevc_hdr"
 ASAN_OPTIONS=detect_leaks=1 timeout 20 "$tmp/hevc_hdr"
 rm -f "$tmp/hevc_hdr"
+# Closed captions in the video stream: A/53 cc_data() in H.264 and HEVC SEI
+# and in MPEG-2 user data, cut and random input, the presentation order queue.
+$cc -g -fsanitize=address,undefined -Wall -Iinclude tests/cc_data_test.c -o "$tmp/cc_data"
+ASAN_OPTIONS=detect_leaks=1 timeout 20 "$tmp/cc_data"
+rm -f "$tmp/cc_data"
 # The subtitle and writer programs link no command table, so ASan checks them too.
 trap 'rm -rf "$tmp"' EXIT HUP INT TERM
 # DTS core frames padded to a multiple of four bytes: the writer with the box
