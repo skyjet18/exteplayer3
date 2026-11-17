@@ -38,6 +38,7 @@
 #include <pthread.h>
 #include <errno.h>
 #include <poll.h>
+#include <time.h>
 
 #include "common.h"
 #include "debug.h"
@@ -80,6 +81,77 @@ bool isBufferedOutput = false;
 pthread_mutex_t LinuxDVBmutex;
 
 static int64_t last_pts = 0;
+
+/* With EP3_FAKE_AUDIO_CLOCK=<ms> a stream without video has the position of an
+ * audio decoder that plays in real time from the first audio written after the
+ * start or a clear. After a clear the old position stays for <ms> before the
+ * new data plays, as on receivers whose decoders start again after a seek. */
+static int audioClockStallMs = -2; /* -2 = not read yet, -1 = off */
+static pthread_mutex_t audioClockMutex = PTHREAD_MUTEX_INITIALIZER;
+static int64_t audioClockBase = INVALID_PTS_VALUE; /* first PTS since the start or clear */
+static int64_t audioClockMax = INVALID_PTS_VALUE;  /* highest PTS since then */
+static int64_t audioClockStartUs;                  /* when audioClockBase plays */
+static int64_t audioClockClearUs = -1;             /* time of the clear, -1 = start */
+static int64_t audioClockShown = 0;
+
+static int64_t AudioClockNowUs(void)
+{
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (int64_t)ts.tv_sec * 1000000 + ts.tv_nsec / 1000;
+}
+
+static bool AudioClockOn(void)
+{
+    if (audioClockStallMs == -2)
+    {
+        const char *env = getenv("EP3_FAKE_AUDIO_CLOCK");
+        audioClockStallMs = env && *env ? atoi(env) : -1;
+        if (audioClockStallMs < 0)
+            audioClockStallMs = -1;
+    }
+    return audioClockStallMs >= 0;
+}
+
+static void AudioClockReset(bool clear)
+{
+    pthread_mutex_lock(&audioClockMutex);
+    audioClockBase = INVALID_PTS_VALUE;
+    audioClockMax = INVALID_PTS_VALUE;
+    audioClockClearUs = clear ? AudioClockNowUs() : -1;
+    if (!clear)
+        audioClockShown = 0;
+    pthread_mutex_unlock(&audioClockMutex);
+}
+
+static void AudioClockWritten(int64_t pts)
+{
+    pthread_mutex_lock(&audioClockMutex);
+    if (audioClockBase == INVALID_PTS_VALUE)
+    {
+        audioClockBase = pts;
+        audioClockStartUs = AudioClockNowUs();
+        if (audioClockClearUs >= 0 && audioClockClearUs + audioClockStallMs * 1000LL > audioClockStartUs)
+            audioClockStartUs = audioClockClearUs + audioClockStallMs * 1000LL;
+    }
+    if (audioClockMax == INVALID_PTS_VALUE || pts > audioClockMax)
+        audioClockMax = pts;
+    pthread_mutex_unlock(&audioClockMutex);
+}
+
+static int64_t AudioClockPosition(void)
+{
+    int64_t now = AudioClockNowUs();
+    pthread_mutex_lock(&audioClockMutex);
+    if (audioClockBase != INVALID_PTS_VALUE && now >= audioClockStartUs)
+    {
+        int64_t pos = audioClockBase + (now - audioClockStartUs) * 9 / 100;
+        audioClockShown = pos < audioClockMax ? pos : audioClockMax;
+    }
+    int64_t shown = audioClockShown;
+    pthread_mutex_unlock(&audioClockMutex);
+    return shown;
+}
 
 /* ***************************** */
 /* Prototypes                    */
@@ -213,6 +285,12 @@ int LinuxDvbClear(Context_t  *context __attribute__((unused)), char *type)
 
 int LinuxDvbPts(Context_t  *context __attribute__((unused)), unsigned long long int* pts)
 {
+    if (last_pts == 0 && AudioClockOn())
+    {
+        /* no video written: the position of the audio decoder */
+        *pts = (unsigned long long int)AudioClockPosition();
+        return 0;
+    }
     *((unsigned long long int *)pts)=(unsigned long long int)last_pts;
     return 0;
 }
@@ -386,6 +464,9 @@ static int Write(void  *_context, void *_out)
         } 
         else
         {
+            if (out->pts != INVALID_PTS_VALUE && AudioClockOn())
+                AudioClockWritten(out->pts);
+
             call.fd             = audiofd;
             call.data           = out->data;
             call.len            = out->len;
@@ -441,6 +522,8 @@ static int Command(void  *_context, OutputCmd_t command, void * argument) {
         break;
     }
     case OUTPUT_PLAY: {	// 4
+        if (argument && !strcmp("audio", (char*)argument))
+            AudioClockReset(false);
         sCURRENT_PTS = 0;
         ret = LinuxDvbPlay(context, (char*)argument);
         break;
@@ -471,6 +554,8 @@ static int Command(void  *_context, OutputCmd_t command, void * argument) {
     }
     case OUTPUT_CLEAR: {
         ret = LinuxDvbClear(context, (char*)argument);
+        if (argument && !strcmp("audio", (char*)argument))
+            AudioClockReset(true);
         reset(context);
         sCURRENT_PTS = 0;
         break;

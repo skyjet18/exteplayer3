@@ -752,6 +752,33 @@ def main():
                 player.stop()
             print("PASS radio: full-player metadata JSON with quotes, backslashes and control bytes")
 
+            # Audio only: the rest of the file is read at once after a seek. The
+            # fake decoder plays in real time and keeps its old position for 1.5 s
+            # after the clear of the seek, as receiver decoders do while they
+            # start again. The end of the file waits until it has played the rest.
+            player = Player(args.player, str(radio),
+                            env=dict(os.environ, EP3_FAKE_AUDIO_CLOCK="1500"))
+            try:
+                assert player.wait("PLAYBACK_PLAY")["sts"] == 0
+                time.sleep(1)
+                player.command("j")
+                assert 300 <= player.wait("J")["ms"] < 3000
+                player.command("gf 6")
+                assert player.wait("PLAYBACK_SEEK_ABS")["sts"] == 0
+                sought = time.monotonic()
+                time.sleep(3)
+                assert player.process.poll() is None, "ended while the decoder starts again"
+                player.command("j")
+                position = player.wait("J")["ms"]
+                assert 6500 <= position < 9500, position
+                player.process.wait(timeout=10)
+                ended = time.monotonic() - sought
+                # 1.5 s, then the 6 s from 6 s to the end at 12 s
+                assert 6.5 <= ended < 9.5, ended
+            finally:
+                player.stop()
+            print("PASS audio only: a seek near the end plays to the end, also when the decoder starts late")
+
             if args.pcm_fifo:
                 fifo = Path(args.pcm_fifo)
                 assert not fifo.exists(), "Use a new isolated FIFO path, never a production endpoint"
