@@ -1608,24 +1608,43 @@ static int32_t aac_get_frame_samples(const AVPacket *packet, AVStream *stream, i
         return 0;
     }
 
+    if (get_codecpar(stream)->codec_id == AV_CODEC_ID_DTS)
+    {
+        /* Core frame: NBLKS (7 bits) after the sync word, 32 samples per
+         * block, at the core rate SFREQ (4 bits, 66 bits in). The rate of the
+         * stream is the one of the decoder output: 96 kHz for DTS 96/24 and
+         * DTS-HD over a 48 kHz core, whose frames still have the 512 samples
+         * of the core. */
+        static const int32_t dtsCoreSampleRates[16] = {0, 8000, 16000, 32000, 0, 0, 11025, 22050,
+                                                       44100, 0, 0, 12000, 24000, 48000, 96000, 192000};
+        int32_t blocks = -1;
+        uint32_t sfreq = 0;
+
+        if (d && packet->size >= 10 && d[0] == 0x7F && d[1] == 0xFE && d[2] == 0x80 && d[3] == 0x01)
+        {
+            blocks = ((d[4] & 1) << 6) | (d[5] >> 2);
+            sfreq = (d[8] >> 2) & 0x0F;
+        }
+        else if (d && packet->size >= 10 && d[0] == 0xFE && d[1] == 0x7F && d[2] == 0x01 && d[3] == 0x80)
+        {
+            blocks = ((d[5] & 1) << 6) | (d[4] >> 2);
+            sfreq = (d[9] >> 2) & 0x0F;
+        }
+
+        if (blocks >= 0)
+        {
+            *sampleRate = dtsCoreSampleRates[sfreq];
+            return *sampleRate > 0 ? (blocks + 1) * 32 : 0;
+        }
+
+        *sampleRate = get_codecpar(stream)->sample_rate;
+        return *sampleRate > 0 && get_codecpar(stream)->frame_size > 0 ? get_codecpar(stream)->frame_size : 0;
+    }
+
     *sampleRate = get_codecpar(stream)->sample_rate;
     if (*sampleRate <= 0)
     {
         return 0;
-    }
-
-    if (get_codecpar(stream)->codec_id == AV_CODEC_ID_DTS)
-    {
-        /* core frame: NBLKS (7 bits) after the sync word, 32 samples per block */
-        if (packet->size >= 6 && d[0] == 0x7F && d[1] == 0xFE && d[2] == 0x80 && d[3] == 0x01)
-        {
-            return ((((d[4] & 1) << 6) | (d[5] >> 2)) + 1) * 32;
-        }
-        if (packet->size >= 6 && d[0] == 0xFE && d[1] == 0x7F && d[2] == 0x01 && d[3] == 0x80)
-        {
-            return ((((d[5] & 1) << 6) | (d[4] >> 2)) + 1) * 32;
-        }
-        return get_codecpar(stream)->frame_size > 0 ? get_codecpar(stream)->frame_size : 0;
     }
 
     if (get_codecpar(stream)->frame_size > 0)
