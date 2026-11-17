@@ -400,6 +400,205 @@ def https_cases(args, root, handler, requests, media):
     assert not failed, failed
 
 
+# Closed captions: CEA-608 byte pairs (odd parity, control codes sent twice)
+# for CC1, carried as ATSC A/53 cc_data() in the video stream or as an SCC file.
+CC_RCL, CC_ENM, CC_EOC, CC_EDM, CC_RU2 = (0x14, 0x20), (0x14, 0x2E), (0x14, 0x2F), (0x14, 0x2C), (0x14, 0x25)
+CC_PAC15 = (0x14, 0x70)  # row 15, white, column 0
+# (seconds, what is sent from then on): a pop-on caption to be seen early, the
+# pop-on caption of the test from 4 s to 6 s, a roll-up line from 7 s to 9 s
+CC_EVENTS = [(0.4, [CC_RCL, CC_ENM, CC_PAC15, "READY", CC_EOC]), (1.0, [CC_EDM]),
+             (3.0, [CC_RCL, CC_ENM, CC_PAC15, "HELLO WORLD"]), (4.0, [CC_EOC]), (6.0, [CC_EDM]),
+             (7.0, [CC_RU2, CC_PAC15, "SECOND LINE"]), (9.0, [CC_EDM])]
+
+
+def cc_byte(value):
+    return value | (0 if bin(value).count("1") % 2 else 0x80)
+
+
+def cc_pairs(items):
+    pairs = []
+    for item in items:
+        if isinstance(item, str):
+            for i in range(0, len(item), 2):
+                chunk = item[i:i + 2].ljust(2, "\0")
+                pairs.append((cc_byte(ord(chunk[0])), cc_byte(ord(chunk[1]))))
+        else:
+            pairs += [(cc_byte(item[0]), cc_byte(item[1]))] * 2
+    return pairs
+
+
+def cc_frames(count, rate=25, per_frame=2):
+    """The byte pairs of each frame in display order, padding where nothing is sent."""
+    events = {round(seconds * rate): cc_pairs(items) for seconds, items in CC_EVENTS}
+    queue, frames = [], []
+    for number in range(count):
+        queue += events.get(number, [])
+        frames.append(queue[:per_frame] + [(0x80, 0x80)] * (per_frame - len(queue[:per_frame])))
+        queue = queue[per_frame:]
+    return frames
+
+
+def cc_ga94(pairs):
+    """ATSC_user_data() from the user_identifier on, field 1 triplets."""
+    return (b"GA94\x03" + bytes([0x40 | len(pairs), 0xFF])
+            + b"".join(bytes([0xFC, hi, lo]) for hi, lo in pairs) + b"\xFF")
+
+
+def cc_mpeg2(es, frames):
+    """MPEG-2 video with the pairs of each picture as user data, by display order."""
+    codes, pos = [], es.find(b"\0\0\1")
+    while 0 <= pos < len(es) - 3:
+        codes.append((pos, es[pos + 3]))
+        pos = es.find(b"\0\0\1", pos + 3)
+    out, last, base, in_gop, picture, count = bytearray(), 0, 0, 0, None, 0
+    for pos, code in codes:
+        if code == 0xB8:  # GOP: temporal_reference starts again
+            base, in_gop = base + in_gop, 0
+        elif code == 0x00:
+            picture = base + ((es[pos + 4] << 2) | (es[pos + 5] >> 6))
+            in_gop += 1
+        elif 0x01 <= code <= 0xAF and picture is not None:
+            pairs = frames[picture] if picture < len(frames) else [(0x80, 0x80)]
+            out += es[last:pos] + b"\0\0\1\xB2" + cc_ga94(pairs)
+            last, picture, count = pos, None, count + 1
+    assert count > 200, count
+    return bytes(out + es[last:])
+
+
+def cc_h264(frames):
+    """16x16 H.264, one IDR I_PCM picture per frame with its pairs in an SEI."""
+    def rbsp(bits):
+        bits.put(1, 1)
+        bits.put(0, -len(bits.bits) % 8)
+        return bytes(int("".join(map(str, bits.bits[i:i + 8])), 2) for i in range(0, len(bits.bits), 8))
+
+    def unit(header, payload):
+        out, zeros = bytearray(b"\0\0\0\1" + header), 0
+        for byte in payload:
+            if zeros >= 2 and byte <= 3:
+                out.append(3)
+                zeros = 0
+            out.append(byte)
+            zeros = zeros + 1 if byte == 0 else 0
+        return bytes(out)
+
+    sps = HevcBits()
+    sps.put(66, 8)  # Baseline
+    sps.put(0xC0, 8)
+    sps.put(30, 8)
+    for value in (0, 0, 2, 1):  # SPS id, frame_num 4 bits, POC type 2, one reference
+        sps.ue(value)
+    sps.put(0, 1)
+    sps.ue(0)  # one macroblock wide
+    sps.ue(0)  # and high
+    sps.put(0b1100, 4)  # frame_mbs_only, direct_8x8_inference, no cropping, no VUI
+    pps = HevcBits()
+    for value in (0, 0):
+        pps.ue(value)
+    pps.put(0, 2)  # CAVLC
+    for value in (0, 0, 0):
+        pps.ue(value)
+    pps.put(0, 3)
+    for value in (0, 0, 0):  # QP, QS, chroma QP offset
+        pps.ue(value)
+    pps.put(0, 3)
+    parameter_sets = unit(b"\x67", rbsp(sps)) + unit(b"\x68", rbsp(pps))
+    stream = b""
+    for number, pairs in enumerate(frames):
+        t35 = b"\xB5\x00\x31" + cc_ga94(pairs)
+        idr = HevcBits()
+        for value in (0, 7, 0):  # first macroblock, I slice, PPS 0
+            idr.ue(value)
+        idr.put(0, 4)  # frame_num
+        idr.ue(number % 2)  # idr_pic_id
+        idr.put(0, 2)  # no_output_of_prior_pics, long_term_reference
+        idr.ue(0)  # slice_qp_delta
+        idr.ue(25)  # I_PCM
+        idr.put(0, -len(idr.bits) % 8)
+        for _ in range(384):
+            idr.put(0x80, 8)
+        stream += (unit(b"\x09", b"\xF0") + parameter_sets
+                   + unit(b"\x06", bytes([4, len(t35)]) + t35 + b"\x80") + unit(b"\x65", rbsp(idr)))
+    return stream
+
+
+def cc_scc():
+    """The same captions as a Scenarist SCC file: one line per event, 30 frames a second."""
+    lines = ["Scenarist_SCC V1.0", ""]
+    for seconds, items in CC_EVENTS:
+        frames = round(seconds * 30)
+        words = " ".join(f"{hi:02x}{lo:02x}" for hi, lo in cc_pairs(items))
+        lines += [f"00:00:{frames // 30:02}:{frames % 30:02}\t{words}", ""]
+    # the MOV track made from it loses its last sample: padding after the end
+    lines += ["00:00:10:00\t8080 8080", ""]
+    return "\n".join(lines)
+
+
+def cc_check(cues, tolerance=40):
+    """The pop-on caption from 4 s to 6 s, the roll-up line from 7 s to 9 s,
+    written in pieces that meet and never overlap."""
+    cues = sorted(cues, key=lambda cue: cue["s"])
+    for before, after in zip(cues, cues[1:]):
+        assert after["s"] >= before["e"], ("overlap", before, after, cues)
+    for cue in cues:
+        assert 0 < cue["e"] - cue["s"] <= 540 + tolerance, ("piece", cue, cues)
+        assert cue["t"] in ("READY", "HELLO WORLD") or "SECOND LINE".startswith(cue["t"]), cues
+    hello = [cue for cue in cues if cue["t"] == "HELLO WORLD"]
+    assert hello, cues
+    for before, after in zip(hello, hello[1:]):
+        assert after["s"] == before["e"], ("gap", before, after, cues)
+    end = hello[-1]["e"]
+    assert abs(end - hello[0]["s"] - 2000) <= tolerance, cues
+    roll = [cue for cue in cues if cue["s"] >= end]
+    assert roll and roll[-1]["t"] == "SECOND LINE", cues
+    assert 1000 - tolerance <= roll[0]["s"] - end <= 1300, cues
+    assert abs(roll[-1]["e"] - end - 3000) <= tolerance, cues
+
+
+def cc_play(player_path, target, from_video):
+    """Plays target, selects its caption track, returns the subtitle track and the cues."""
+    player = Player(player_path, str(target))
+    try:
+        track = None
+        while track is None:
+            # the captions of the video stream are listed once they come
+            tracks = player.wait("s_l")
+            track = next((track for track in tracks if track["e"] == "S_TEXT/EIA608"), None)
+            assert track is not None or from_video, tracks
+        player.command(f"s{track['id']}")  # by id
+        assert player.wait("s_s")["sts"] == 0
+        player.process.wait(timeout=30)
+    finally:
+        player.stop()
+    return track, [message["s_a"] for message in player.messages
+                   if "s_a" in message and message["s_a"]["id"] == track["id"]]
+
+
+def cc_seek_back(player_path, target):
+    """Once the end of the roll-up line (9 s) has been read, a seek back to 5 s
+    (between the end of the pop-on caption and the roll-up line): the line must
+    come again. A flushed ccaption decoder would keep the time of 9 s and hold
+    the line back. Returns the cues sent after the seek."""
+    player = Player(player_path, str(target))
+    try:
+        while not any(track["e"] == "S_TEXT/EIA608" for track in player.wait("s_l")):
+            pass
+        player.command("s65536")
+        assert player.wait("s_s")["sts"] == 0
+        deadline = time.monotonic() + 20
+        while not any(message.get("s_a", {}).get("t") == "SECOND LINE" and message["s_a"]["e"] >= 8960
+                      for message in player.messages):
+            assert time.monotonic() < deadline, player.messages
+            time.sleep(0.05)
+        player.command("gf 5")
+        assert player.wait("PLAYBACK_SEEK_ABS")["sts"] == 0
+        mark = len(player.messages)
+        player.process.wait(timeout=30)
+    finally:
+        player.stop()
+    return [message["s_a"] for message in player.messages[mark:] if "s_a" in message]
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--player", required=True)
@@ -477,6 +676,37 @@ def main():
         codecs = root / "codecs.mkv"
         run(args.ffmpeg, "-y", "-i", str(media), "-map", "0:v", "-map", "0:a", "-map", "0:a",
             "-c:v", "copy", "-c:a:0", "opus", "-c:a:1", "vorbis", "-strict", "-2", str(codecs))
+        # Closed captions: MPEG-2 with B-frames and H.264 (Annex B in TS, avcC
+        # in MP4) carrying them in the video stream, an SCC file in a MOV track.
+        caption_frames = cc_frames(260)
+        plain_m2v = root / "plain.m2v"
+        run(args.ffmpeg, "-y", "-f", "rawvideo", "-pixel_format", "yuv420p",
+            "-video_size", "64x64", "-framerate", "25", "-i", str(video), "-frames:v", "260",
+            "-c:v", "mpeg2video", "-g", "12", "-bf", "2", "-f", "mpeg2video", str(plain_m2v))
+        (root / "cc.m2v").write_bytes(cc_mpeg2(plain_m2v.read_bytes(), caption_frames))
+        (root / "cc.h264").write_bytes(cc_h264(caption_frames))
+        captioned = []
+        # raw video has no timestamps: the demuxer makes them for the B-frames
+        # of MPEG-2, the H.264 frames are counted
+        frame_times = ["-bsf:v", "setts=ts=N/(25*TB)"]
+        for source, demuxer, name, options in (
+                ("cc.m2v", "mpegvideo", "cc-mpeg2.ts", ["-fflags", "+genpts"]),
+                ("cc.h264", "h264", "cc-h264.ts", []), ("cc.h264", "h264", "cc-h264.mp4", [])):
+            run(args.ffmpeg, "-y", *options, "-f", demuxer, "-framerate", "25",
+                "-i", str(root / source), "-c", "copy",
+                *(frame_times if demuxer == "h264" else []), str(root / name))
+            captioned.append(root / name)
+        (root / "cc.scc").write_text(cc_scc(), encoding="ascii")
+        caption_mov = root / "cc.mov"
+        run(args.ffmpeg, "-y", "-i", str(media), "-f", "scc", "-i", str(root / "cc.scc"),
+            "-map", "0:v", "-map", "1", "-c", "copy", str(caption_mov))
+        # what libavcodec makes of them on its own: the test media are right
+        for target in captioned[:2]:
+            text = subprocess.run(
+                [args.ffmpeg, "-v", "error", "-f", "lavfi", "-i", f"movie={target.name}[out0+subcc]",
+                 "-map", "0:1", "-f", "srt", "-"], cwd=root, stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE, timeout=60).stdout.decode()
+            assert "HELLO WORLD" in text and "SECOND LINE" in text, (target.name, text)
 
         requests = []
         agents = []  # (path, User-Agent) of every request
@@ -686,6 +916,20 @@ def main():
             finally:
                 player.stop()
             print("PASS MP4 subtitles: mov_text cues arrive with their whole text and nothing else")
+
+            for target in captioned:
+                track, cues = cc_play(args.player, target, True)
+                assert track["id"] == 0x10000 and track["t"] == "CC1" and track["n"] == "und", track
+                cc_check(cues)
+            print("PASS closed captions in MPEG-2 (B-frames) and H.264 (TS, MP4): CC1 listed "
+                  "when they come, cues in pieces at the times of the caption")
+            # every frame of the H.264 stream is a key frame: the seek lands at 5 s
+            cues = cc_seek_back(args.player, captioned[1])
+            assert any(cue["t"] == "SECOND LINE" and 7000 <= cue["s"] < 9000 for cue in cues), cues
+            print("PASS closed captions after a seek back: the roll-up line comes again")
+            track, cues = cc_play(args.player, caption_mov, False)
+            cc_check(cues, tolerance=80)
+            print("PASS closed captions of an EIA-608 track (MOV c608)")
 
             # Graphic subtitles with -G; exteplayer3png.so is not installed here.
             sup = root / "cues.sup"
