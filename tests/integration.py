@@ -10,6 +10,7 @@ from pathlib import Path
 import queue
 import struct
 import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -721,6 +722,140 @@ def main():
                                       capture_output=True, timeout=10)
             assert sizeless.returncode == 1 and b"cannot be read" in sizeless.stdout, sizeless
             print("PASS iptv:// file without a size: parameter error, nothing read into one byte")
+
+            import signal
+            signal_media = root / "signal.ts"
+            run(args.ffmpeg, "-y", "-stream_loop", "-1", "-i", str(media), "-c", "copy",
+                "-t", "60", str(signal_media))
+
+            # SIGTERM, SIGINT and SIGHUP stop the player the way "q" does, also
+            # while it is paused; the command pipe stays open meanwhile.
+            for number, paused in ((signal.SIGTERM, False), (signal.SIGINT, False),
+                                   (signal.SIGHUP, False), (signal.SIGTERM, True)):
+                player = Player(args.player, str(signal_media))
+                try:
+                    assert player.wait("PLAYBACK_PLAY")["sts"] == 0
+                    if paused:
+                        player.command("p")
+                        assert player.wait("PLAYBACK_PAUSE")["sts"] == 0
+                    started = time.monotonic()
+                    player.process.send_signal(number)
+                    assert player.wait("PLAYBACK_STOP")["sts"] == 0, number
+                    player.process.wait(timeout=5)
+                    assert time.monotonic() - started < 5, number
+                finally:
+                    if player.process.poll() is None:
+                        player.process.kill()
+                        player.process.wait()
+                    player.stop()
+            print("PASS stop signals: PLAYBACK_STOP and exit code 0 on SIGTERM, SIGINT, SIGHUP, also paused")
+
+            # A signal while the input is still being opened: a FIFO without a
+            # writer blocks the open. The player ends as on "q" at that point.
+            blocked = root / "blocked.ts"
+            os.mkfifo(blocked)
+            player = Player(args.player, str(blocked))
+            try:
+                time.sleep(1)
+                assert player.process.poll() is None
+                player.process.send_signal(signal.SIGTERM)
+                player.process.wait(timeout=5)
+                assert player.process.returncode == 11, player.process.returncode
+            finally:
+                if player.process.poll() is None:
+                    player.process.kill()
+                    player.process.wait()
+                player.reader.join(timeout=2)
+                player.process.stdin.close()
+                player.process.stderr.close()
+                player.log.close()
+                blocked.unlink()
+            assert not any("PLAYBACK_OPEN" in message for message in player.messages), player.messages
+            print("PASS stop signal during the open: the player ends as on q")
+
+            # The player started by a thread of a helper process: the end of
+            # that thread is no reason to stop, the end of the process is.
+            helper = (
+                "import os, subprocess, sys, threading\n"
+                "player, media, stdin, out, err = sys.argv[1:]\n"
+                "def spawn():\n"
+                "    with open(out, 'wb') as o, open(err, 'wb') as e:\n"
+                "        started = subprocess.Popen([player, media], stdin=int(stdin),\n"
+                "                                   stdout=o, stderr=e)\n"
+                "    print(started.pid, flush=True)\n"
+                "    sys.stdin.readline()\n"
+                "thread = threading.Thread(target=spawn)\n"
+                "thread.start()\n"
+                "thread.join()\n"
+                "print('thread ended', flush=True)\n"
+                "sys.stdin.readline()\n"
+                "os._exit(0)\n")
+            out, err = root / "orphan.log", root / "orphan.err"
+            commands_read, commands = os.pipe()
+            parent = subprocess.Popen(
+                [sys.executable, "-c", helper, args.player, str(signal_media), str(commands_read),
+                 str(out), str(err)], stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True,
+                pass_fds=(commands_read,))
+            os.close(commands_read)
+            orphan = int(parent.stdout.readline())
+
+            def orphan_events():
+                events = []
+                for line in err.read_text(errors="replace").splitlines():
+                    if not line.startswith("{"):
+                        continue
+                    try:
+                        events.append(json.loads(line))
+                    except json.JSONDecodeError:
+                        pass  # a line the player is still writing
+                return events
+
+            def orphan_running():
+                try:
+                    stat = Path(f"/proc/{orphan}/stat").read_text()
+                except (FileNotFoundError, ProcessLookupError):
+                    return False
+                return stat.rsplit(")", 1)[1].split()[0] != "Z"
+
+            def orphan_wait(name, seconds=10):
+                deadline = time.monotonic() + seconds
+                while time.monotonic() < deadline:
+                    if any(name in event for event in orphan_events()):
+                        return
+                    time.sleep(0.1)
+                raise AssertionError(f"Missing event {name}: {orphan_events()}\n"
+                                     + out.read_text(errors="replace")[-3000:])
+
+            try:
+                orphan_wait("PLAYBACK_PLAY")
+                # the thread ends while the player plays, after its prctl()
+                parent.stdin.write("thread\n")
+                parent.stdin.flush()
+                assert parent.stdout.readline().strip() == "thread ended"
+                time.sleep(2)
+                assert orphan_running(), "killed when the starting thread ended"
+                os.write(commands, b"j\n")
+                orphan_wait("J")
+                assert not any("PLAYBACK_STOP" in event for event in orphan_events())
+                parent.stdin.write("exit\n")
+                parent.stdin.flush()
+                assert parent.wait(timeout=5) == 0
+                orphan_wait("PLAYBACK_STOP", 5)
+                deadline = time.monotonic() + 5
+                while orphan_running() and time.monotonic() < deadline:
+                    time.sleep(0.1)
+                assert not orphan_running()
+                assert "Parent process is gone" in out.read_text(errors="replace")
+            finally:
+                if orphan_running():
+                    os.kill(orphan, signal.SIGKILL)
+                if parent.poll() is None:
+                    parent.kill()
+                    parent.wait()
+                parent.stdin.close()
+                parent.stdout.close()
+                os.close(commands)
+            print("PASS parent: the end of the starting thread is ignored, the end of the process stops")
 
             # Variant selection: the top variant has Dirac video, for which there
             # is no writer; the lower one has MPEG-2 video.
