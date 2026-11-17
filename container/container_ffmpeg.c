@@ -5723,8 +5723,13 @@ static int32_t container_ffmpeg_switch_subtitle(Context_t *context, int32_t *arg
                     selected && selected->AVIdx == i ? selected->Id : -1);
     }
     releaseMutex(__FILE__, __FUNCTION__,__LINE__);
-    
-    /* This is made to flush inside the buffer because 
+
+    /* subtitles off: nothing has to be read again, a seek would only
+     * clear the audio and video buffers */
+    if (*arg < 0)
+        return cERR_CONTAINER_FFMPEG_NO_ERROR;
+
+    /* This is made to flush inside the buffer because
      * subtitles frame was already read and ignored
      * we seek to force ffmpeg to read once again the same data
      * but now we will not ignore subtitle frame
