@@ -1537,12 +1537,30 @@ static int32_t aac_get_frame_samples(const AVPacket *packet, AVStream *stream, i
         return 0;
     }
 
-    if (packet->duration > 0)
+    if (get_codecpar(stream)->frame_size > 0)
     {
-        return (int32_t)av_rescale_q(packet->duration, stream->time_base, (AVRational){1, *sampleRate});
+        return get_codecpar(stream)->frame_size;
     }
 
-    return get_codecpar(stream)->frame_size > 0 ? get_codecpar(stream)->frame_size : 0;
+    if (packet->duration > 0)
+    {
+        int32_t samples = (int32_t)av_rescale_q(packet->duration, stream->time_base, (AVRational){1, *sampleRate});
+        int32_t profile = get_codecpar(stream)->profile;
+
+        /* A coarse container clock (e.g. 1 ms in mkv) gives 2016 instead of 2048 samples,
+         * so the generated PTS would drift. AAC frames are 1024 samples, 2048 with SBR. */
+        if (profile != AV_PROFILE_AAC_LD && profile != AV_PROFILE_AAC_ELD && samples >= 512)
+        {
+            int32_t snapped = ((samples + 512) / 1024) * 1024;
+            if (FFABS(snapped - samples) * 20 <= snapped)
+            {
+                return snapped;
+            }
+        }
+        return samples;
+    }
+
+    return 0;
 }
 
 static int64_t aac_pts_dejitter(AacPtsDejitter_t *s, const AVPacket *packet, AVStream *stream, int32_t trackId, uint32_t avIdx, int64_t pts)
