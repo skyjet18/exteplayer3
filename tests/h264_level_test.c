@@ -42,8 +42,9 @@ static ssize_t capture(int fd, const struct iovec *iov, int count)
  * that the codec data of the caller is not changed. */
 static void write_level(uint8_t profile, uint8_t level, uint8_t expected)
 {
+    /* two different SPS: the writer sends a repeated one only once */
     uint8_t avcc[] = {1, profile, 0, level, 255, 226, 0, 4, 103, profile, 0, level,
-                      0, 4, 103, profile, 0, level, 2, 0, 2, 104, 1, 0, 2, 104, 2};
+                      0, 5, 103, profile, 0, level, 1, 2, 0, 2, 104, 1, 0, 2, 104, 2};
     uint8_t frame[] = {0, 0, 0, 2, 101, 136};
     WriterAVCallData_t call = {.fd = 1, .data = frame, .len = sizeof(frame), .Pts = 90000,
                                .Dts = 86400, .private_data = avcc,

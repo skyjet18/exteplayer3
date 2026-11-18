@@ -229,6 +229,19 @@ $cc -g -fsanitize=undefined -ffunction-sections -fdata-sections -DH264_LEVEL41_D
     -Iinclude -Iexternal -I"$FFMPEG_BUILD" -I"$FFMPEG_SOURCE" $sources \
     -Wl,--gc-sections -pthread -o "$tmp/h264_level"
 timeout 20 "$tmp/h264_level"
+# MP4 files with the avcC of replay clips (SPS and PPS twice, a zero at the
+# end of a PPS; a zero between two PPS) through the H.264 writer: each set
+# once and without trailing zeros, every frame decodes from what it wrote.
+python3 tests/h264_avcc_mp4.py "$FFMPEG_BUILD/ffmpeg" "$tmp" > /dev/null
+sources="tests/h264_avcc_test.c tools/debug.c output/writer/common/pes.c output/writer/common/misc.c"
+sources="$sources output/writer/mipsel/h264.c output/writer/mipsel/writer.c"
+$cc -g -fsanitize=undefined -ffunction-sections -fdata-sections -Wno-deprecated-declarations \
+    -Iinclude -Iexternal -I"$FFMPEG_BUILD" -I"$FFMPEG_SOURCE" $sources \
+    -Wl,--gc-sections -pthread "$FFMPEG_BUILD/libavformat/libavformat.a" \
+    "$FFMPEG_BUILD/libavcodec/libavcodec.a" "$FFMPEG_BUILD/libswresample/libswresample.a" \
+    "$FFMPEG_BUILD/libavutil/libavutil.a" -lm ${FFMPEG_EXTRA_LIBS:-} -o "$tmp/h264_avcc"
+timeout 20 "$tmp/h264_avcc" "$tmp/avcc-repeated.mp4" 1 1 10
+timeout 20 "$tmp/h264_avcc" "$tmp/avcc-stray.mp4" 1 2 10
 # The sh4 output is built only for sh4 receivers: compile its sources here as
 # the recipe lists them, so that they keep compiling.
 for f in output/linuxdvb_sh4.c output/writer/sh4/writer.c output/writer/sh4/aac.c \

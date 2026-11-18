@@ -16,6 +16,8 @@ import threading
 import time
 import xml.etree.ElementTree as ET
 
+import h264_avcc_mp4
+
 
 def run(*args):
     result = subprocess.run(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=30)
@@ -861,6 +863,19 @@ def main():
                 finally:
                     player.stop()
             print("PASS HEVC HDR: HDR10 from the SPS, HLG from an SEI after a BT.2020 SPS")
+
+            # The avcC of replay clips: SPS and PPS twice with a zero at the
+            # end of a PPS, a zero between two PPS (tests/run.sh checks what
+            # the writer makes of them). The player opens and plays both.
+            for target in h264_avcc_mp4.write(args.ffmpeg, root):
+                player = Player(args.player, str(target))
+                try:
+                    assert player.wait("PLAYBACK_PLAY")["sts"] == 0
+                    video = player.wait("v_c")
+                    assert video["e"] == "V_MPEG4/ISO/AVC" and video["w"] == 64, video
+                finally:
+                    player.stop()
+            print("PASS H.264 avcC with repeated sets and stray zeros: played")
 
             player = Player(args.player, "-U", "0", str(codecs))
             try:

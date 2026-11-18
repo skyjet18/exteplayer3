@@ -457,8 +457,168 @@ static void h264_long_parameter_sets(void)
     h264_sets_from_the_stream(4, two, sizeof(two), 4);
 }
 
+/* avcC parameter sets: the SPS and PPS of a replay clip whose avcC made the
+ * boxes show no picture. */
+static const uint8_t clip_sps[] = {0x67, 0x4d, 0x40, 0x20, 0xe8, 0x80, 0x28, 0x02, 0xdd, 0x80,
+                                   0xb5, 0x01, 0x01, 0x01, 0x40, 0x00, 0x00, 0x03, 0x00, 0x40,
+                                   0x00, 0x00, 0x19, 0x03, 0xc6, 0x0c, 0x44, 0x80};
+static const uint8_t clip_pps[] = {0x68, 0xeb, 0xaf, 0x20};
+
+/* Appends a 16 bit length and the set. */
+static size_t avcc_set(uint8_t *avcc, size_t pos, const uint8_t *set, size_t size)
+{
+    avcc[pos++] = size >> 8;
+    avcc[pos++] = size & 255;
+    memcpy(avcc + pos, set, size);
+    return pos + size;
+}
+
+/* Writes a frame without parameter sets with the avcC and checks that the
+ * sets went out as "expected" (Annex B) in front of the frame. */
+static void h264_avcc_sets(const uint8_t *avcc, size_t size, const uint8_t *expected, size_t expected_size)
+{
+    uint8_t frame[] = {0, 0, 0, 2, 0x65, 0x88};
+    /* exactly as long as the avcC, so that ASan sees a read beyond it */
+    uint8_t *copy = malloc(size);
+    WriterAVCallData_t call;
+    assert(copy);
+    memcpy(copy, avcc, size);
+    call = packet(frame, sizeof(frame), copy, size, capture);
+    WriterVideoH264.reset();
+    assert(WriterVideoH264.writeData(&call) == (int)(14 + expected_size + 4 + 2));
+    assert(written_size == 14 + expected_size + 6);
+    assert(!memcmp(written + 14, expected, expected_size));
+    assert(!memcmp(written + 14 + expected_size, "\0\0\0\1\x65\x88", 6));
+    WriterVideoH264.reset();
+    free(copy);
+}
+
+static size_t annexb(uint8_t *out, const uint8_t *sps, size_t sps_size, const uint8_t *pps, size_t pps_size)
+{
+    memcpy(out, "\0\0\0\1", 4);
+    memcpy(out + 4, sps, sps_size);
+    memcpy(out + 4 + sps_size, "\0\0\0\1", 4);
+    memcpy(out + 8 + sps_size, pps, pps_size);
+    return 8 + sps_size + pps_size;
+}
+
+/* SPS and PPS twice, the second PPS with a zero byte counted into its
+ * length: each set once, without the zero. */
+static void h264_repeated_sets_with_a_trailing_zero(void)
+{
+    static const uint8_t pps_zero[] = {0x68, 0xeb, 0xaf, 0x20, 0};
+    uint8_t avcc[128] = {1, 0x4d, 0x40, 0x20, 0xff, 0xe2};
+    uint8_t expected[64];
+    size_t pos = 6;
+    pos = avcc_set(avcc, pos, clip_sps, sizeof(clip_sps));
+    pos = avcc_set(avcc, pos, clip_sps, sizeof(clip_sps));
+    avcc[pos++] = 2;
+    pos = avcc_set(avcc, pos, clip_pps, sizeof(clip_pps));
+    pos = avcc_set(avcc, pos, pps_zero, sizeof(pps_zero));
+    h264_avcc_sets(avcc, pos, expected, annexb(expected, clip_sps, sizeof(clip_sps), clip_pps, sizeof(clip_pps)));
+}
+
+/* A zero byte between two PPS that no length counts: both PPS. The old
+ * parser read a length of 0 there and then one beyond the avcC, took no
+ * parameter set at all and dropped every frame. */
+static void h264_stray_zero_between_sets(void)
+{
+    static const uint8_t pps1[] = {0x68, 0xce, 0x3c, 0x80};
+    uint8_t avcc[128] = {1, 0x4d, 0x40, 0x20, 0xff, 0xe1};
+    uint8_t expected[64];
+    size_t pos = 6, size;
+    pos = avcc_set(avcc, pos, clip_sps, sizeof(clip_sps));
+    avcc[pos++] = 2;
+    pos = avcc_set(avcc, pos, clip_pps, sizeof(clip_pps));
+    avcc[pos++] = 0;
+    pos = avcc_set(avcc, pos, pps1, sizeof(pps1));
+    size = annexb(expected, clip_sps, sizeof(clip_sps), clip_pps, sizeof(clip_pps));
+    memcpy(expected + size, "\0\0\0\1", 4);
+    memcpy(expected + size + 4, pps1, sizeof(pps1));
+    h264_avcc_sets(avcc, pos, expected, size + 4 + sizeof(pps1));
+    /* a zero byte in front of the PPS count */
+    pos = 6;
+    pos = avcc_set(avcc, pos, clip_sps, sizeof(clip_sps));
+    avcc[pos++] = 0;
+    avcc[pos++] = 1;
+    pos = avcc_set(avcc, pos, clip_pps, sizeof(clip_pps));
+    h264_avcc_sets(avcc, pos, expected, size);
+}
+
+/* Two PPS announced, one there, then the four bytes of the high profile
+ * fields: the PPS that is there is taken. */
+static void h264_pps_count_beyond_the_avcc(void)
+{
+    uint8_t avcc[128] = {1, 0x4d, 0x40, 0x20, 0xff, 0xe1};
+    uint8_t expected[64];
+    size_t pos = 6;
+    pos = avcc_set(avcc, pos, clip_sps, sizeof(clip_sps));
+    avcc[pos++] = 2;
+    pos = avcc_set(avcc, pos, clip_pps, sizeof(clip_pps));
+    memcpy(avcc + pos, "\xfd\xf8\xf8\x00", 4);
+    pos += 4;
+    h264_avcc_sets(avcc, pos, expected, annexb(expected, clip_sps, sizeof(clip_sps), clip_pps, sizeof(clip_pps)));
+}
+
+/* An avcC cut within its SPS: nothing beyond it is read (ASan), the frame
+ * waits for parameter sets. */
+static void h264_cut_avcc(void)
+{
+    uint8_t avcc[] = {1, 0x4d, 0x40, 0x20, 0xff, 0xe1, 0, 28, 0x67, 0x4d, 0x40, 0x20};
+    uint8_t frame[] = {0, 0, 0, 2, 0x65, 0x88};
+    size_t cut;
+    for (cut = 8; cut <= sizeof(avcc); cut++)
+    {
+        uint8_t *copy = malloc(cut);
+        WriterAVCallData_t call;
+        assert(copy);
+        memcpy(copy, avcc, cut);
+        call = packet(frame, sizeof(frame), copy, cut, record);
+        WriterVideoH264.reset();
+        assert(!WriterVideoH264.writeData(&call) && !calls);
+        WriterVideoH264.reset();
+        free(copy);
+    }
+}
+
+/* An empty NAL in front of the parameter sets of the stream: they are
+ * found, the avcC ones are not sent, and no empty start code goes out. */
+static void h264_empty_nal_in_front_of_the_stream_sets(void)
+{
+    uint8_t avcc[] = {1, 100, 0, 42, 255, 225, 0, 4, 103, 100, 0, 41, 1, 0, 2, 104, 2};
+    uint8_t key[] = {0, 0, 0, 0, 0, 0, 0, 4, 103, 100, 0, 42, 0, 0, 0, 3, 104, 1, 0,
+                     0, 0, 0, 2, 101, 136};
+    WriterAVCallData_t call = packet(key, sizeof(key), avcc, sizeof(avcc), capture);
+    WriterVideoH264.reset();
+    /* the zero at the end of the PPS of the stream is not written either */
+    assert(WriterVideoH264.writeData(&call) == 14 + 3 * 4 + 4 + 2 + 2 && part_count == 7);
+    assert(!memcmp(written + 14, "\0\0\0\1\x67\x64\0\x2a\0\0\0\1\x68\1\0\0\0\1\x65\x88", 20));
+    WriterVideoH264.reset();
+}
+
+/* hvcC with the SPS twice and a PPS with a zero byte at its end. */
+static void h265_repeated_sets_with_a_trailing_zero(void)
+{
+    uint8_t extra[23 + 3 + 4 + 4 + 3 + 5] = {[0] = 1, [21] = 3, [22] = 2,
+                                             [23] = 0x21, [25] = 2, [27] = 2, [28] = 0x42, [29] = 1,
+                                             [31] = 2, [32] = 0x42, [33] = 1,
+                                             [34] = 0x22, [36] = 1, [38] = 3, [39] = 0x44, [40] = 1};
+    uint8_t frame[] = {0, 0, 0, 2, 0x26, 1};
+    WriterAVCallData_t call = packet(frame, sizeof(frame), extra, sizeof(extra), record);
+    WriterVideoH265.reset();
+    assert(WriterVideoH265.writeData(&call) == 14 + 12 + 4 + 2 && part_count == 4);
+    assert(parts[1].iov_len == 12 && !memcmp(parts[1].iov_base, "\0\0\0\1\x42\1\0\0\0\1\x44\1", 12));
+    WriterVideoH265.reset();
+}
+
 int main(void)
 {
+    h264_repeated_sets_with_a_trailing_zero();
+    h264_stray_zero_between_sets();
+    h264_pps_count_beyond_the_avcc();
+    h264_cut_avcc();
+    h264_empty_nal_in_front_of_the_stream_sets();
+    h265_repeated_sets_with_a_trailing_zero();
     h264_nal_lengths();
     h264_parameter_sets_in_a_later_packet();
     h265_nal_lengths();

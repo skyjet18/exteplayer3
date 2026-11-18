@@ -52,6 +52,7 @@
 #include "misc.h"
 #include "pes.h"
 #include "writer.h"
+#include "avcc.h"
 
 /* ***************************** */
 /* Makros/Constants              */
@@ -283,48 +284,14 @@ static void LimitSpsLevel(unsigned char *sps, unsigned int len)
     }
 }
 
-/* Append "count" parameter sets (16 bit length + data each) from avcC
- * to "out" as Annex B NAL units. Returns 0, or -1 if the data is truncated. */
-static int AppendParamSets(const unsigned char *data, unsigned int cd_len, unsigned int *cd_pos,
-                           unsigned int count, unsigned char *out, unsigned int *out_len, int is_sps)
-{
-    unsigned int n;
-    for (n = 0; n < count; ++n)
-    {
-        unsigned int pos = *cd_pos;
-        unsigned int len;
-
-        if (cd_len < pos + 2)
-        {
-            return -1;
-        }
-        len = (data[pos] << 8) | data[pos + 1];
-        pos += 2;
-        if (cd_len < pos + len || *out_len + sizeof(Head) + len > AVCC_TMP_SIZE)
-        {
-            return -1;
-        }
-        memcpy(out + *out_len, Head, sizeof(Head));
-        *out_len += sizeof(Head);
-        memcpy(out + *out_len, data + pos, len);
-        if (is_sps)
-        {
-            LimitSpsLevel(out + *out_len, len);
-        }
-        *out_len += len;
-        *cd_pos = pos + len;
-    }
-    return 0;
-}
-
 static int32_t PreparCodecData(unsigned char *data, unsigned int cd_len, unsigned int *NalLength)
 {
     unsigned char tmp[AVCC_TMP_SIZE];
-    unsigned int tmp_len = 0;
-    unsigned int cd_pos = 6;
+    AnnexBSets_t sets = {.buf = tmp, .size = sizeof(tmp)};
     unsigned int num_sps = 0;
     unsigned int num_pps = 0;
-    int32_t ret = 0;
+    unsigned int i;
+    int length_size;
 
     h264_printf(10, "H264 check codec data..!\n");
     if (!data)
@@ -346,48 +313,35 @@ static int32_t PreparCodecData(unsigned char *data, unsigned int cd_len, unsigne
 
     /* Pass on all SPS and all PPS from avcC, not only the first ones.
      * Some live streams use a second PPS (e.g. weighted bi-prediction
-     * for B slices) and never repeat it in-band. */
-    num_sps = data[5] & 0x1f;
-    if (AppendParamSets(data, cd_len, &cd_pos, num_sps, tmp, &tmp_len, 1) != 0)
+     * for B slices) and never repeat it in-band. Each set goes once and
+     * without trailing zeros: replay clips have SPS and PPS twice in
+     * the avcC, one PPS with a zero byte at its end, and the decoders
+     * of the boxes showed no picture with them. */
+    length_size = AvccToAnnexB(data, cd_len, &sets, &num_sps, &num_pps);
+    if (!length_size)
     {
-        h264_printf(10, "codec_data too short(2)");
-        ret = -2;
+        h264_printf(10, "codec_data without usable SPS/PPS (%u SPS, %u PPS)", num_sps, num_pps);
+        return -2;
     }
-    else if (cd_len < cd_pos + 1)
+    for (i = 0; i < sets.count; i++)
     {
-        h264_printf(10, "codec_data too short(3)");
-        ret = -3;
-    }
-    else
-    {
-        num_pps = data[cd_pos];
-        cd_pos += 1;
-        if (AppendParamSets(data, cd_len, &cd_pos, num_pps, tmp, &tmp_len, 0) != 0)
+        if ((tmp[sets.at[i]] & 0x1f) == 7)
         {
-            h264_printf(10, "codec_data too short(4)");
-            ret = -4;
-        }
-        else if (num_sps == 0 || num_pps == 0)
-        {
-            h264_printf(10, "codec_data without SPS/PPS");
-            ret = -3;
+            LimitSpsLevel(tmp + sets.at[i], sets.length[i]);
         }
     }
 
-    if (ret == 0)
+    CodecData = malloc(sets.len);
+    if (!CodecData)
     {
-        CodecData = malloc(tmp_len);
-        if (!CodecData)
-        {
-            h264_err("allocating codec data failed\n");
-            return -1;
-        }
-        memcpy(CodecData, tmp, tmp_len);
-        CodecDataLen = tmp_len;
-        *NalLength = (data[4] & 0x03) + 1;
-        h264_printf(10, "H264 codec data: %u SPS, %u PPS, %u bytes", num_sps, num_pps, tmp_len);
+        h264_err("allocating codec data failed\n");
+        return -1;
     }
-    return ret;
+    memcpy(CodecData, tmp, sets.len);
+    CodecDataLen = sets.len;
+    *NalLength = length_size;
+    h264_printf(10, "H264 codec data: %u SPS, %u PPS, %u bytes", num_sps, num_pps, sets.len);
+    return 0;
 }
 
 /* reset() is called from the command thread while the demuxer thread can be
@@ -554,10 +508,12 @@ static int writeData(void* _call)
             {
                 uint32_t nl = 0, k;
                 for (k = 0; k < NalLengthBytes; k++) nl = (nl << 8) | call->data[p + k];
+                /* an empty NAL has no type, the byte belongs to the next length */
+                if (nl == 0) { p += NalLengthBytes; continue; }
                 uint8_t t = call->data[p + NalLengthBytes] & 0x1f;
                 if (t == 7 || t == 8) { sps_pps_in_stream = 1; break; }
-                /* zero or corrupt NAL length */
-                if (nl == 0 || nl > (uint32_t)call->len - p - NalLengthBytes) break;
+                /* corrupt NAL length */
+                if (nl > (uint32_t)call->len - p - NalLengthBytes) break;
                 p += NalLengthBytes + nl;
             }
         }
@@ -599,14 +555,28 @@ static int writeData(void* _call)
             {
                 pack_len = call->len - pos;
             }
+
+            /* parameter sets of the stream without trailing zeros, see
+             * PreparCodecData() */
+            uint32_t nal_len = pack_len;
+            if (pack_len && ((call->data[pos] & 0x1f) == 7 || (call->data[pos] & 0x1f) == 8))
+            {
+                nal_len = NalTrim(call->data + pos, pack_len);
+            }
+            /* an empty NAL would be a start code without a NAL unit */
+            if (!nal_len)
+            {
+                pos += pack_len;
+                continue;
+            }
             
             iov[ic].iov_base  = Head;
             iov[ic++].iov_len = sizeof(Head);
             PacketLength += sizeof(Head);
             
             iov[ic].iov_base  = call->data + pos;
-            iov[ic++].iov_len = pack_len;
-            PacketLength     += pack_len;
+            iov[ic++].iov_len = nal_len;
+            PacketLength     += nal_len;
     
             pos += pack_len;
             

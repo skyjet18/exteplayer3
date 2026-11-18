@@ -49,6 +49,7 @@
 #include "misc.h"
 #include "pes.h"
 #include "writer.h"
+#include "avcc.h"
 
 /* ***************************** */
 /* Makros/Constants              */
@@ -59,16 +60,6 @@
 /* ***************************** */
 /* Types                         */
 /* ***************************** */
-typedef struct avcC_s
-{
-    unsigned char       Version;                /* configurationVersion        */
-    unsigned char       Profile;                /* AVCProfileIndication        */
-    unsigned char       Compatibility;          /* profile_compatibility       */
-    unsigned char       Level;                  /* AVCLevelIndication          */
-    unsigned char       NalLengthMinusOne;      /* held in bottom two bits     */
-    unsigned char       NumParamSets;           /* held in bottom 5 bits       */
-    unsigned char       Params[1];              /* {length,params}{length,params}...sequence then picture*/
-} avcC_t;
 
 
 /* ***************************** */
@@ -295,27 +286,32 @@ static int32_t writeData(void* _call)
     {
         uint8_t  *private_data = call->private_data;
         uint32_t  private_size = call->private_size;
-        avcC_t*         avcCHeader          = (avcC_t*)private_data;
-        unsigned int    i;
-        unsigned int    ParamSets;
-        unsigned int    ParamOffset;
         unsigned int    InitialHeaderLength = 0;
         unsigned int    ParametersLength;
+        uint8_t         SetsData[2048];
+        AnnexBSets_t    Sets = {.buf = SetsData, .size = sizeof(SetsData)};
+        unsigned int    NumSps = 0;
+        unsigned int    NumPps = 0;
+        int             LengthSize;
 
         ParametersLength                      = 0;
 
         unsigned char  HeaderData[19];
-        
-        if (private_size <= sizeof(avcC_t))
+
+        /* the SPS and PPS of the avcC, each once and without trailing
+         * zeros; without any the ones of the packet, as an avcC */
+        LengthSize = private_size > 7 ? AvccToAnnexB(private_data, private_size, &Sets, &NumSps, &NumPps) : 0;
+        if (!LengthSize)
         {
             UpdateExtraData(&private_data, &private_size, call->data, call->len);
             if (private_data != call->private_data)
             {
                 avc3 = 1;
-                avcCHeader          = (avcC_t*)private_data;
+                Sets.len = Sets.count = 0;
+                LengthSize = AvccToAnnexB(private_data, private_size, &Sets, &NumSps, &NumPps);
             }
         }
-        
+
         HeaderData[ParametersLength++]        = 0x00;                                         // Start code
         HeaderData[ParametersLength++]        = 0x00;
         HeaderData[ParametersLength++]        = 0x01;
@@ -359,53 +355,28 @@ static int32_t writeData(void* _call)
             return len;
         }
 
-        NalLengthBytes  = (avcCHeader->NalLengthMinusOne & 0x03) + 1;
-        ParamSets       = avcCHeader->NumParamSets & 0x1f;
+        NalLengthBytes  = LengthSize ? (unsigned int)LengthSize : (private_data[4] & 0x03) + 1;
 
         h264_printf(20, "avcC contents:\n");
-        h264_printf(20, "    version:                       %d\n", avcCHeader->Version);
-        h264_printf(20, "    profile:                       %d\n", avcCHeader->Profile);
-        h264_printf(20, "    profile compatibility:         %d\n", avcCHeader->Compatibility);
-        h264_printf(20, "    level:                         %d\n", avcCHeader->Level);
+        h264_printf(20, "    version:                       %d\n", private_data[0]);
+        h264_printf(20, "    profile:                       %d\n", private_data[1]);
+        h264_printf(20, "    profile compatibility:         %d\n", private_data[2]);
+        h264_printf(20, "    level:                         %d\n", private_data[3]);
         h264_printf(20, "    nal length bytes:              %d\n", NalLengthBytes);
-        h264_printf(20, "    number of sequence param sets: %d\n", ParamSets);
-
-        ParamOffset     = 0;
-        ic = 0;
-        iov[ic++].iov_base = PesHeader;
-        for (i = 0; i < ParamSets; i++) 
+        h264_printf(20, "    sequence param sets:           %u\n", NumSps);
+        h264_printf(20, "    picture param sets:            %u\n", NumPps);
+        if (!LengthSize)
         {
-            unsigned int  PsLength = (avcCHeader->Params[ParamOffset] << 8) + avcCHeader->Params[ParamOffset+1];
-
-            h264_printf(20, "        sps %d has length           %d\n", i, PsLength);
-
-            iov[ic].iov_base = (char *)Head;
-            iov[ic++].iov_len = sizeof(Head);
-                InitialHeaderLength        += sizeof(Head);
-            iov[ic].iov_base = &avcCHeader->Params[ParamOffset+2];
-            iov[ic++].iov_len = PsLength;
-            InitialHeaderLength        += PsLength;
-            ParamOffset                += PsLength+2;
+            h264_err("no usable SPS/PPS in the avcC\n");
         }
 
-        ParamSets = avcCHeader->Params[ParamOffset];
-
-        h264_printf(20,  "    number of picture param sets:  %d\n", ParamSets);
-
-        ParamOffset++;
-        for (i = 0; i < ParamSets; i++) 
+        ic = 0;
+        iov[ic++].iov_base = PesHeader;
+        if (Sets.len)
         {
-            unsigned int  PsLength      = (avcCHeader->Params[ParamOffset] << 8) + avcCHeader->Params[ParamOffset+1];
-
-            h264_printf (20, "        pps %d has length           %d\n", i, PsLength);
-
-            iov[ic].iov_base = (char *) Head;
-            iov[ic++].iov_len = sizeof(Head);
-                InitialHeaderLength        += sizeof(Head);
-            iov[ic].iov_base = &avcCHeader->Params[ParamOffset+2];
-            iov[ic++].iov_len = PsLength;
-            InitialHeaderLength        += PsLength;
-            ParamOffset                += PsLength+2;
+            iov[ic].iov_base = SetsData;
+            iov[ic++].iov_len = Sets.len;
+            InitialHeaderLength = Sets.len;
         }
 
         iov[0].iov_len = InsertPesHeader (PesHeader, InitialHeaderLength, MPEG_VIDEO_PES_START_CODE, INVALID_PTS_VALUE, 0);
@@ -435,6 +406,11 @@ static int32_t writeData(void* _call)
         unsigned char  NalData[4];
         int NalPresent = 1;
 
+        /* trailing bytes too short for a length field */
+        if (SampleSize - NalStart < NalLengthBytes)
+        {
+            break;
+        }
         memcpy (NalData, call->data + VideoPosition, NalLengthBytes);
         VideoPosition += NalLengthBytes;
         NalStart += NalLengthBytes;
@@ -448,7 +424,12 @@ static int32_t writeData(void* _call)
 
         h264_printf(20, "NalStart = %u + NalLength = %u > SampleSize = %u\n", NalStart, NalLength, SampleSize);
 
-        if (NalStart + NalLength > SampleSize) 
+        /* an empty NAL would be a start code without a NAL unit */
+        if (!NalLength)
+        {
+            continue;
+        }
+        if (NalLength > SampleSize - NalStart)
         {
             h264_printf(20, "nal length past end of buffer - size %u frame offset %u left %u\n",
                 NalLength, NalStart , SampleSize - NalStart );

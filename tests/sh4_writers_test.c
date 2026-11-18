@@ -122,6 +122,55 @@ static void h264_failed_header_write_frees_the_codec_data(void)
     fail_write = 0;
 }
 
+static uint8_t sets_written[128];
+static size_t sets_size;
+
+/* The second write of the first frame carries the parameter sets. */
+static ssize_t sets_writev(int fd, const struct iovec *iov, int ic)
+{
+    if (writes == 1)
+    {
+        sets_size = 0;
+        for (int i = 1; i < ic; i++)
+        {
+            assert(sets_size + iov[i].iov_len <= sizeof(sets_written));
+            memcpy(sets_written + sets_size, iov[i].iov_base, iov[i].iov_len);
+            sets_size += iov[i].iov_len;
+        }
+    }
+    return count_writev(fd, iov, ic);
+}
+
+/* SPS and PPS twice in the avcC, the second PPS with a zero byte at its
+ * end, as the replay clips that showed no picture: each set once, without
+ * the zero. A frame that ends in two bytes is not read beyond. */
+static void h264_repeated_avcc_sets(void)
+{
+    static uint8_t avcc[] = {1, 0x4d, 0x40, 0x1f, 0xff, 0xe2,
+                             0, 4, 0x67, 0x4d, 0x40, 0x1f, 0, 4, 0x67, 0x4d, 0x40, 0x1f,
+                             2, 0, 4, 0x68, 0xeb, 0xaf, 0x20, 0, 5, 0x68, 0xeb, 0xaf, 0x20, 0};
+    static const uint8_t expected[] = {0, 0, 0, 1, 0x67, 0x4d, 0x40, 0x1f, 0, 0, 0, 1, 0x68, 0xeb, 0xaf, 0x20};
+    static const uint8_t frame[] = {0, 0, 0, 2, 0x65, 0x88, 0, 0};
+    uint8_t *data = malloc(sizeof(frame));
+    assert(data);
+    memcpy(data, frame, sizeof(frame));
+    WriterAVCallData_t call = {
+        .fd = 1,
+        .data = data,
+        .len = sizeof(frame),
+        .private_data = avcc,
+        .private_size = sizeof(avcc),
+        .FrameRate = 1001,
+        .FrameScale = 24000,
+        .WriteV = sets_writev,
+    };
+    writes = 0;
+    WriterVideoH264.reset();
+    assert(WriterVideoH264.writeData(&call) > 0 && writes == 3);
+    assert(sets_size == sizeof(expected) && !memcmp(sets_written, expected, sizeof(expected)));
+    free(data);
+}
+
 int main(void)
 {
     pcm_48khz_is_written();
@@ -129,5 +178,6 @@ int main(void)
     pcm_subframe_larger_than_pes_is_not_written();
     h264_sps_beyond_the_packet_is_not_read();
     h264_failed_header_write_frees_the_codec_data();
+    h264_repeated_avcc_sets();
     return 0;
 }
