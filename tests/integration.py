@@ -1,6 +1,8 @@
 """Native-player and loopback HTTP regression fixtures; no receiver required."""
 
 import argparse
+import base64
+import copy
 import gzip
 import http.server
 import json
@@ -120,6 +122,333 @@ class Player:
             self.log.close()
         assert self.process.returncode == 0, (
             self.process.returncode, self.messages, output[-6000:], "".join(self.raw_stderr)[-6000:])
+
+
+drm_last_log = ""
+drm_last_rc = (None, False)
+drm_last_end = None  # seconds from the start until the player ended by itself
+
+
+def video_ms(messages):
+    """the largest video position the player reported (j)"""
+    return max((m["J"]["ms"] for m in messages if "J" in m), default=0)
+
+
+def drm_play(args, player_args, answers=None, seconds=8):
+    """Plays with -K and the front end answering DRM_KEY_REQ from answers
+    (kid -> "key" or "-"; a missing kid is not answered). Returns the
+    messages and the left channel of the exported PCM."""
+    fifo = Path(args.pcm_fifo)
+    os.mkfifo(fifo, 0o600)
+    reader = os.open(fifo, os.O_RDONLY | os.O_NONBLOCK)
+    pcm = bytearray()
+    player = Player(args.player, "-K", *player_args)
+    answered = 0
+    asked_j = 0
+    started = time.monotonic()
+    global drm_last_end
+    drm_last_end = None
+    try:
+        deadline = time.monotonic() + seconds
+        while time.monotonic() < deadline and len(pcm) < 300000:
+            pcm.extend(read_fifo(reader))
+            if time.monotonic() - asked_j > 0.5 and player.process.poll() is None:
+                try:
+                    player.command("j")
+                except BrokenPipeError:
+                    pass
+                asked_j = time.monotonic()
+            while answered < len(player.messages):
+                request = player.messages[answered].get("DRM_KEY_REQ")
+                answered += 1
+                if request and answers is not None and request["kid"] in answers:
+                    player.command(f"dk {request['kid']}:{answers[request['kid']]}")
+            if player.process.poll() is not None:
+                drm_last_end = time.monotonic() - started
+                pcm.extend(read_fifo(reader))
+                break
+            time.sleep(0.005)
+    finally:
+        global drm_last_log, drm_last_rc
+        player.log.seek(0)
+        drm_last_log = player.log.read().decode(errors="replace")[-4000:]
+        stopped_by_itself = player.process.poll() is not None
+        try:
+            player.stop()
+        except AssertionError:
+            pass  # checked by the caller with drm_last_rc
+        drm_last_rc = (player.process.returncode, stopped_by_itself)
+        os.close(reader)
+        fifo.unlink()
+    lefts, offset = [], 0
+    while offset + 16 <= len(pcm):
+        _, _, channels, _, size = struct.unpack_from("<IIHHI", pcm, offset)
+        frame = pcm[offset + 16:offset + 16 + size]
+        count = len(frame) // 4 * 2
+        lefts.extend(struct.unpack(f"<{count}h", frame[:count * 2])[0::2])
+        offset += 16 + size
+    return player.messages, lefts
+
+
+def sine_played(lefts):
+    """the 500 Hz sine of the test audio (peak 8000) and not noise: about
+    two zero crossings every 96 samples"""
+    if len(lefts) < 8192:
+        return False
+    part = lefts[len(lefts) // 2 - 2400:][:4800]
+    crossings = sum(1 for a, b in zip(part, part[1:]) if (a < 0) != (b < 0))
+    return 4000 < max(abs(value) for value in part) < 12000 and 80 <= crossings <= 120
+
+
+def check_drm_keys(args, root, audio, video, resources, base):
+    """--key, --key-request (DRM_KEY_REQ / dk), with a front end simulator."""
+    caps = json.loads(subprocess.run(
+        [args.player], capture_output=True, timeout=5).stderr.splitlines()[0])["EPLAYER3_EXTENDED"]
+    assert caps.get("drmkey") in (1, 3), caps
+    kid_a, key_a = "00112233445566778899aabbccddeeff", "0f1e2d3c4b5a69788796a5b4c3d2e1f0"
+    kid_v, key_v = "ffeeddccbbaa99887766554433221100", "a0b1c2d3e4f5061728394a5b6c7d8e9f"
+    widevine = "edef8ba979d64acea3c827dcd51d21ed"
+
+    clear = root / "drm-clear.m4a"
+    run(args.ffmpeg, "-y", "-f", "s16le", "-ar", "48000", "-ac", "2", "-i", str(audio),
+        "-t", "8", "-c:a", "aac", "-b:a", "128k", str(clear))
+    single = root / "drm.m4a"
+    run(args.ffmpeg, "-y", "-i", str(clear), "-c", "copy", "-encryption_scheme", "cenc-aes-ctr",
+        "-encryption_key", key_a, "-encryption_kid", kid_a, str(single))
+
+    # DASH: video and audio, each with its own KID (the dash muxer encrypts
+    # all representations with one key: one MPD each, joined)
+    ns = {"d": "urn:mpeg:dash:schema:mpd:2011", "cenc": "urn:mpeg:cenc:2013"}
+    ET.register_namespace("", ns["d"])
+    ET.register_namespace("cenc", ns["cenc"])
+    # the same layout in the clear (/drm-clear.mpd): whether the DASH
+    # demuxer of this FFmpeg plays it at all
+    box = b"\x00\x00\x00\x00" + bytes.fromhex(widevine) + (8).to_bytes(4, "big") + b"ep3 test"
+    box = (len(box) + 8).to_bytes(4, "big") + b"pssh" + box
+    kid_b, key_b = "1234567890abcdef1234567890abcdef", "00ff11ee22dd33cc44bb55aa66997788"
+    sets = {}
+    for variant in ("", "-clear"):
+        joined = None
+        for name, source, codec, kid, key in (
+                ("v", ["-f", "rawvideo", "-pixel_format", "yuv420p", "-video_size", "64x64",
+                       "-framerate", "25", "-i", str(video)], ["-c:v", "mpeg2video", "-g", "25"], kid_v, key_v),
+                ("a", ["-i", str(clear)], ["-c", "copy"], kid_a, key_a),
+                ("b", ["-i", str(clear)], ["-c", "copy"], kid_b, key_b),
+                ("c", ["-i", str(clear)], ["-c", "copy"], kid_a, key_a)):
+            if variant and name in ("b", "c"):
+                continue
+            prefix = f"drm{variant}-{name}"
+            directory = root / prefix
+            directory.mkdir()
+            encryption = [] if variant else [
+                "-format_options", f"encryption_scheme=cenc-aes-ctr:encryption_key={key}:encryption_kid={kid}"]
+            run(args.ffmpeg, "-y", *source, *codec, "-t", "8", "-f", "dash", "-seg_duration", "1",
+                "-use_template", "1", "-use_timeline", "1",
+                "-init_seg_name", "init.m4s", "-media_seg_name", "seg-$Number%05d$.m4s",
+                *encryption, str(directory / "stream.mpd"))
+            for file in directory.iterdir():
+                resources[f"/{prefix}/{file.name}"] = file.read_bytes()
+            mpd = ET.parse(directory / "stream.mpd").getroot()
+            adaptation = mpd.find(".//d:AdaptationSet", ns)
+            for template in adaptation.iter(f"{{{ns['d']}}}SegmentTemplate"):
+                template.set("initialization", f"{prefix}/" + template.get("initialization"))
+                template.set("media", f"{prefix}/" + template.get("media"))
+            for representation in adaptation.findall("d:Representation", ns):
+                representation.set("id", name)
+            if joined is None:
+                joined = mpd
+                period = mpd.find(".//d:Period", ns)
+            elif name in ("b", "c"):
+                sets[name] = adaptation
+            else:
+                period.append(adaptation)
+        if not variant:
+            protection = ET.Element(f"{{{ns['d']}}}ContentProtection", schemeIdUri=f"urn:uuid:{widevine}")
+            ET.SubElement(protection, f"{{{ns['cenc']}}}pssh").text = base64.b64encode(box).decode()
+            period.find("d:AdaptationSet", ns).insert(0, protection)
+        resources[f"/drm{variant}.mpd"] = ET.tostring(joined)
+        if not variant:
+            # a second audio track with its own KID: drm2.mpd; with the KID
+            # of the first: drm4.mpd
+            shared = copy.deepcopy(joined)
+            period.append(sets["b"])
+            resources["/drm2.mpd"] = ET.tostring(joined)
+            shared.find(".//d:Period", ns).append(sets["c"])
+            resources["/drm4.mpd"] = ET.tostring(shared)
+
+    # MP4, video and audio with their own KID: encrypted with one key, the
+    # KID of the audio track (the second tenc) changed afterwards
+    kid_m = "abcdef0123456789abcdef0123456789"
+    both = root / "drm-both.mp4"
+    run(args.ffmpeg, "-y", "-f", "rawvideo", "-pixel_format", "yuv420p", "-video_size", "64x64",
+        "-framerate", "25", "-i", str(video), "-i", str(clear), "-map", "0:v", "-map", "1:a",
+        "-c:v", "mpeg2video", "-g", "25", "-c:a", "copy", "-t", "8",
+        "-encryption_scheme", "cenc-aes-ctr", "-encryption_key", key_v, "-encryption_kid", kid_v, str(both))
+    data = bytearray(both.read_bytes())
+    tenc = [i for i in range(len(data) - 4) if data[i:i + 4] == b"tenc"]
+    assert len(tenc) == 2 and data[tenc[1] + 12:tenc[1] + 28] == bytes.fromhex(kid_v), tenc
+    data[tenc[1] + 12:tenc[1] + 28] = bytes.fromhex(kid_m)
+    both.write_bytes(bytes(data))
+
+    def requests(messages):
+        return [m["DRM_KEY_REQ"] for m in messages if "DRM_KEY_REQ" in m]
+
+    def results(messages):
+        return {m["DRM_KEY"]["kid"]: m["DRM_KEY"]["sts"] for m in messages if "DRM_KEY" in m}
+
+    def drops(messages):
+        return [(m["DRM_KEY_DROP"]["kid"], m["DRM_KEY_DROP"]["type"], m["DRM_KEY_DROP"]["switch"])
+                for m in messages if "DRM_KEY_DROP" in m]
+
+    # Whether this FFmpeg itself reads the encrypted DASH stream with the
+    # keys (ffmpeg -cenc_decryption_keys, packets against the clear copy):
+    # release/6.1-patched reads almost nothing of it (1 of 576 packets in
+    # CI), so the player cannot either and the DASH cases are skipped
+    # there. With an FFmpeg that can request keys (9.0 series) it must read
+    # all of them.
+    def packets(*options):
+        result = subprocess.run([args.ffmpeg, "-hide_banner", "-v", "error", *options,
+                                 "-map", "0", "-c", "copy", "-f", "framecrc", "-"],
+                                capture_output=True, timeout=60)
+        return sum(1 for line in result.stdout.splitlines() if line and not line.startswith(b"#"))
+    clear_packets = packets("-i", base + "/drm-clear.mpd")
+    keyed_packets = packets("-cenc_decryption_keys", f"{kid_a}={key_a}:{kid_v}={key_v}",
+                            "-i", base + "/drm.mpd")
+    dash = clear_packets > 100 and keyed_packets >= clear_packets - 4
+    assert dash or not caps["drmkey"] & 2, ("ffmpeg reads encrypted DASH", clear_packets, keyed_packets)
+    if not dash:
+        print(f"SKIP CENC keys, DASH cases: ffmpeg of this FFmpeg reads {keyed_packets} of "
+              f"{clear_packets} packets of the encrypted DASH stream with cenc_decryption_keys")
+
+    # preloaded keys: no request, on every FFmpeg (decryption_keys,
+    # cenc_decryption_keys)
+    for target, keys in ((str(single), [f"{kid_a}:{key_a}"]),
+                         (base + "/drm.mpd", [f"{kid_a.upper()}:{key_a}", f"{kid_v}:{key_v.upper()}"])):
+        if "drm.mpd" in target and not dash:
+            continue
+        options = [option for key in keys for option in ("--key", key)]
+        messages, lefts = drm_play(args, [*options, target])
+        assert not requests(messages), messages
+        assert sine_played(lefts), (target, len(lefts), max(map(abs, lefts), default=0), messages[-12:], drm_last_log)
+    for wrong in ("1234:5678", f"{kid_a}{key_a}", f"{kid_a}:{key_a[:-1]}g"):
+        invalid = subprocess.run([args.player, "--key", wrong, str(single)], capture_output=True, timeout=5)
+        assert invalid.returncode != 0 and b"--key: " in invalid.stdout, (wrong, invalid.stdout)
+    print("PASS CENC keys --key: MP4" + (" and DASH (a KID per track)" if dash else "")
+          + " play with the preloaded keys, no request; malformed --key refused")
+
+    if not caps["drmkey"] & 2:
+        print("SKIP CENC key requests: this FFmpeg has no decryption_key_url")
+        return
+
+    # the front end is asked once per KID and answers
+    messages, lefts = drm_play(args, ["--key-request", str(single)], {kid_a: key_a})
+    assert [(r["kid"], r["type"]) for r in requests(messages)] == [(kid_a, "audio")], messages
+    assert results(messages) == {kid_a: 0}, messages
+    assert sine_played(lefts), (len(lefts), max(map(abs, lefts), default=0), messages[-12:], drm_last_log)
+    messages, lefts = drm_play(args, ["--key-request", base + "/drm.mpd"],
+                               {kid_a: key_a.upper(), kid_v: key_v})
+    asked = requests(messages)
+    assert sorted((r["kid"], r["type"]) for r in asked) == sorted([(kid_a, "audio"), (kid_v, "video")]), messages
+    for request in asked:
+        assert request["pssh"] == ([{"system": "edef8ba9-79d6-4ace-a3c8-27dcd51d21ed",
+                                     "data": base64.b64encode(box).decode()}]
+                                   if request["kid"] == kid_v else []), request
+    assert results(messages) == {kid_a: 0, kid_v: 0}, messages
+    assert sine_played(lefts), (len(lefts), max(map(abs, lefts), default=0), messages[-12:], drm_last_log)
+    # one key preloaded, the other asked for
+    messages, lefts = drm_play(args, ["--key-request", "--key", f"{kid_v}:{key_v}", base + "/drm.mpd"],
+                               {kid_a: key_a})
+    assert [r["kid"] for r in requests(messages)] == [kid_a], messages
+    assert sine_played(lefts), (len(lefts), max(map(abs, lefts), default=0), messages[-12:], drm_last_log)
+    print("PASS CENC key requests: DRM_KEY_REQ per KID with type and MPD pssh, dk answers, "
+          "MP4 and DASH play; preloaded KIDs are not asked for")
+
+    # no key: "dk kid:-", no answer (timeout), no --key-request
+    messages, lefts = drm_play(args, ["--key-request", str(single)], {kid_a: "-"}, seconds=4)
+    assert [r["kid"] for r in requests(messages)] == [kid_a] and results(messages) == {kid_a: -1}, messages
+    assert not sine_played(lefts)
+    assert drops(messages) == [(kid_a, "audio", -1)], messages
+    start = time.monotonic()
+    messages, lefts = drm_play(args, ["--key-request", "--key-timeout", "1", str(single)], {}, seconds=4)
+    assert [r["kid"] for r in requests(messages)] == [kid_a] and results(messages) == {kid_a: -2}, messages
+    assert not sine_played(lefts)
+    messages, lefts = drm_play(args, [str(single)], {kid_a: key_a}, seconds=3)
+    assert not requests(messages) and not results(messages), messages
+    assert not sine_played(lefts)
+    print("PASS CENC key requests: dk kid:- and no answer (--key-timeout) give no key; "
+          "without --key-request nothing is asked")
+
+    # A track without a key is dropped: audio -> the playback goes on with
+    # video (or another audio track that has a key); video -> FF_ERROR and
+    # the player stops the playback itself (PLAYBACK_STOP, exit code 0).
+    for target, answers, timeout in ((str(both), {kid_v: key_v, kid_m: "-"}, []),
+                                     (base + "/drm.mpd", {kid_v: key_v, kid_a: "-"}, []),
+                                     (base + "/drm.mpd", {},
+                                      ["--key-timeout", "1", "--key", f"{kid_v}:{key_v}"])):
+        dropped = kid_m if target == str(both) else kid_a
+        messages, lefts = drm_play(args, ["--key-request", *timeout, target], answers, seconds=6)
+        assert drops(messages) == [(dropped, "audio", -1)], (target, messages[-12:], drm_last_log)
+        assert results(messages)[dropped] == (-2 if timeout else -1), messages
+        assert not any("FF_ERROR" in m for m in messages), messages
+        assert video_ms(messages) > 2500, (target, video_ms(messages), messages[-12:], drm_last_log)
+        assert drm_last_rc == (0, False), (target, drm_last_rc)
+    print("PASS CENC key requests: an audio track without a key (dk kid:-, no answer) is dropped "
+          "with DRM_KEY_DROP, MP4 and DASH play on with video")
+
+    # two audio tracks, the first without a key: switch to the second
+    messages, lefts = drm_play(args, ["--key-request", base + "/drm2.mpd"],
+                               {kid_v: key_v, kid_a: "-", kid_b: key_b}, seconds=8)
+    dropped = [m["DRM_KEY_DROP"] for m in messages if "DRM_KEY_DROP" in m]
+    assert len(dropped) == 1 and dropped[0]["kid"] == kid_a and dropped[0]["switch"] >= 0, messages
+    after = messages[messages.index({"DRM_KEY_DROP": dropped[0]}):]
+    assert any(m.get("a_c", {}).get("id") == dropped[0]["switch"] for m in after), after
+    assert [r["kid"] for r in requests(messages)].count(kid_b) == 1, messages
+    assert sine_played(lefts), (len(lefts), max(map(abs, lefts), default=0), messages[-12:], drm_last_log)
+    print("PASS CENC key requests: the audio track without a key is dropped, the player switches "
+          "to the other audio track and plays it")
+
+    # the video without a key: FF_ERROR naming the KID, PLAYBACK_STOP, exit 0
+    for target, answers in ((str(both), {kid_v: "-", kid_m: key_v}),
+                            (base + "/drm.mpd", {kid_v: "-", kid_a: key_a})):
+        messages, lefts = drm_play(args, ["--key-request", target], answers, seconds=8)
+        errors = [m["FF_ERROR"] for m in messages if "FF_ERROR" in m]
+        assert errors == [{"msg": f"No key for KID {kid_v} (video)", "code": -13}], (target, messages)
+        assert any("PLAYBACK_STOP" in m for m in messages[messages.index({"FF_ERROR": errors[0]}):]), messages
+        assert drm_last_rc == (0, True), (target, drm_last_rc, drm_last_log)
+    print("PASS CENC key requests: a video without a key ends with FF_ERROR (KID, video) "
+          "and PLAYBACK_STOP, exit code 0")
+
+    # no answer at all: one request; after its timeout no other KID is
+    # waited for, the video has no key: FF_ERROR, PLAYBACK_STOP soon after
+    for target in (str(both), base + "/drm.mpd"):
+        messages, lefts = drm_play(args, ["--key-request", "--key-timeout", "2", target], {}, seconds=12)
+        assert len(requests(messages)) == 1, (target, messages)
+        errors = [m["FF_ERROR"] for m in messages if "FF_ERROR" in m]
+        assert errors == [{"msg": f"No key for KID {kid_v} (video)", "code": -13}], (target, messages)
+        assert any("PLAYBACK_STOP" in m for m in messages), messages
+        assert drm_last_rc == (0, True) and drm_last_end < 2 + 3.5, (target, drm_last_rc, drm_last_end)
+    print("PASS CENC key requests: no answer at all: one request, after its timeout FF_ERROR "
+          "and PLAYBACK_STOP, no second wait")
+
+    # two audio tracks with the same KID and no key: both dropped, no switch
+    # to a dropped track, the video position goes on without a jump
+    messages, lefts = drm_play(args, ["--key-request", base + "/drm4.mpd"],
+                               {kid_v: key_v, kid_a: "-"}, seconds=7)
+    dropped = [m["DRM_KEY_DROP"] for m in messages if "DRM_KEY_DROP" in m]
+    assert sorted(d["kid"] for d in dropped) == [kid_a, kid_a], messages
+    assert len({d["id"] for d in dropped}) == 2, dropped
+    for index, message in enumerate(messages):
+        if "DRM_KEY_DROP" in message:
+            gone = message["DRM_KEY_DROP"]["id"]
+            for later in messages[index + 1:]:
+                for name in ("a_s", "a_c"):
+                    assert later.get(name, {}).get("id") != gone, (gone, messages)
+    positions = [m["J"]["ms"] for m in messages if "J" in m]
+    steps = [b - a for a, b in zip(positions, positions[1:])]
+    assert positions and positions[-1] > 2500 and all(-100 <= step <= 1500 for step in steps), positions
+    assert drm_last_rc == (0, False), drm_last_rc
+    print("PASS CENC key requests: two audio tracks with one KID without a key: both dropped, "
+          "no switch to a dropped track, the video position without a jump")
 
 
 # HEVC HDR: a raw HEVC stream written bit by bit. The parameter sets are valid;
@@ -863,6 +1192,8 @@ def main():
                         assert lefts == rights, name
                         assert (peak_left > 4000) == (channel == 0), (name, peak_left)
                 print("PASS PCM dual mono: --audio-channel left/right copy that channel to both, stereo keeps them")
+
+                check_drm_keys(args, root, audio, video, resources, base)
 
             # am<n>: left/stereo/right of dual mono, am alone reports it; this
             # host output has no decoder, so every valid value gives sts 0.

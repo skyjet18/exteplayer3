@@ -51,6 +51,13 @@
 #define DUMP_BOOL(x) 0 == x ? "false"  : "true"
 
 extern int ffmpeg_av_dict_set(const char *key, const char *value, int flags);
+extern int32_t ffmpeg_drm_key_add(const char *pair);
+extern int32_t ffmpeg_drm_key_command(const char *line);
+extern int32_t ffmpeg_drm_key_caps(void);
+extern void ffmpeg_drm_key_request_set(int32_t enable);
+extern void ffmpeg_drm_key_timeout_set(int32_t seconds);
+extern int32_t ffmpeg_drm_key_audio_switch(void);
+extern int32_t ffmpeg_drm_key_stop(void);
 extern int  container_ffmpeg_audio_info_gen(void);
 extern int  container_ffmpeg_audio_live_info(int32_t track_id, int *channels, const char **description);
 extern void       aac_software_decoder_set(const int32_t val);
@@ -1012,7 +1019,10 @@ static int ParseParams(int argc,char* argv[], PlayFiles_t *playbackFiles, int *p
         OPT_DTS_EAC3,
         OPT_TRUEHD_EAC3,
         OPT_HEAAC_AACLC,
-        OPT_AUDIO_CHANNEL
+        OPT_AUDIO_CHANNEL,
+        OPT_KEY,
+        OPT_KEY_REQUEST,
+        OPT_KEY_TIMEOUT
     };
     static const struct option long_options[] =
     {
@@ -1023,6 +1033,9 @@ static int ParseParams(int argc,char* argv[], PlayFiles_t *playbackFiles, int *p
         {"truehd-eac3", no_argument, NULL, OPT_TRUEHD_EAC3},
         {"heaac-aaclc", no_argument, NULL, OPT_HEAAC_AACLC},
         {"audio-channel", required_argument, NULL, OPT_AUDIO_CHANNEL},
+        {"key",         required_argument, NULL, OPT_KEY},
+        {"key-request", no_argument, NULL, OPT_KEY_REQUEST},
+        {"key-timeout", required_argument, NULL, OPT_KEY_TIMEOUT},
         {NULL, 0, NULL, 0}
     };
     while ( (c = getopt_long(argc, argv, "EZXYKG:W:H:A:V:U:we3dlsrimvCa:j:n:x:u:c:h:o:p:P:t:9:0:1:4:5:6:7:f:b:F:S:O:T:L:Q:D:M:", long_options, NULL)) != -1)
@@ -1058,6 +1071,19 @@ static int ParseParams(int argc,char* argv[], PlayFiles_t *playbackFiles, int *p
             break;
         case OPT_DTS_EAC3:
             xcode |= 8;
+            break;
+        case OPT_KEY:
+            if (ffmpeg_drm_key_add(optarg) < 0)
+            {
+                printf("--key: <kid>:<key>, 32 hex digits each, not \"%s\"\n", optarg);
+                ret = -1;
+            }
+            break;
+        case OPT_KEY_REQUEST:
+            ffmpeg_drm_key_request_set(1);
+            break;
+        case OPT_KEY_TIMEOUT:
+            ffmpeg_drm_key_timeout_set(atoi(optarg));
             break;
         case OPT_TRUEHD_EAC3:
             xcode |= 16;
@@ -1467,6 +1493,7 @@ int main(int argc, char* argv[])
     /* xcode: the audio transcoding this build can do, 1: to AC3 (-Z, -X), 2: to AAC-LC (-Y), 4: to E-AC-3 (-E) */
     /* achannel: the stdin command am<n> (left/stereo/right of dual mono) is known */
     /* hlsseg: HLS segments played directly, 1: any name (.js, .png, none), 2: an image in front of the TS data */
+    /* drmkey: 1 --key <kid>:<key>, 2 --key-request (DRM_KEY_REQ, stdin dk <kid>:<key>) */
     E2iSendMsg("{\"EPLAYER3_EXTENDED\":{\"version\":%d"
                ",\"start\":1"
                ",\"xcode\":%d"
@@ -1476,9 +1503,10 @@ int main(int argc, char* argv[])
 #endif
                ",\"achannel\":1"
                ",\"hlsseg\":%d"
+               ",\"drmkey\":%d"
                "}}\n", 186,
                audio_transcode_caps(),
-               hls_segment_caps());
+               hls_segment_caps(), ffmpeg_drm_key_caps());
 
     PlayFiles_t playbackFiles;
     memset(&playbackFiles, 0x00, sizeof(playbackFiles));
@@ -1511,6 +1539,10 @@ int main(int argc, char* argv[])
         printf("[-Y] [--heaac-aaclc] HE-AAC transcoding to AAC-LC (not for AAC decoded in software, -a)\n");
         printf("     all of them need the encoder in FFmpeg (\"xcode\" in EPLAYER3_EXTENDED) and are off with -K\n");
         printf("[--audio-channel left|stereo|right] dual mono channel at start (0|1|2, default stereo; stdin am<n>)\n");
+        printf("[--key kid:key] CENC key of a KID, 32 hex digits each, repeatable (MP4, DASH, HLS fMP4)\n");
+        printf("[--key-request] ask the front end for the key of other KIDs: DRM_KEY_REQ, answer on stdin dk kid:key or dk kid:-\n");
+        printf("                (\"drmkey\" & 2 in EPLAYER3_EXTENDED: only with an FFmpeg that has decryption_key_url)\n");
+        printf("[--key-timeout s] how long --key-request waits for the answer (default 10)\n");
 #ifdef HAVE_FLV2MPEG4_CONVERTER
         printf("[-4 0|1] - disable/enable flv2mpeg4 converter\n");
 #endif
@@ -1688,6 +1720,16 @@ int main(int argc, char* argv[])
 				}
 				break;
 
+				case 'd':
+				{
+					/* dk: CENC keys, the opening thread may wait for them */
+					if ('k' == argvBuff[1])
+					{
+						ffmpeg_drm_key_command(argvBuff);
+					}
+				}
+				break;
+
 				default:
 					break;
             }
@@ -1750,6 +1792,25 @@ int main(int argc, char* argv[])
 
         while(g_player->playback->isPlaying && 0 == PlaybackDieNow(0))
         {
+            /* CENC: the audio track had no key and another one has, or the
+             * video has none (FF_ERROR is out): as the commands a<id> and q */
+            {
+                int32_t drmAudio = ffmpeg_drm_key_audio_switch();
+                if (drmAudio >= 0)
+                {
+                    char cmd[32];
+                    snprintf(cmd, sizeof(cmd), "a%d\n", drmAudio);
+                    HandleTracks(g_player->manager->audio, PLAYBACK_SWITCH_AUDIO, cmd);
+                    HandleTracks(g_player->manager->audio, (PlaybackCmd_t)-1, "ac");
+                }
+                if (ffmpeg_drm_key_stop())
+                {
+                    commandRetVal = g_player->playback->Command(g_player, PLAYBACK_STOP, NULL);
+                    E2iSendMsg("{\"PLAYBACK_STOP\":{\"sts\":%d}}\n", commandRetVal);
+                    continue;
+                }
+            }
+
             /* we made fgets non blocking */
             if( NULL == ReadCommand(argvBuff, sizeof(argvBuff)-1) )
             {
@@ -1807,6 +1868,15 @@ int main(int argc, char* argv[])
             {
                 commandRetVal = g_player->playback->Command(g_player, PLAYBACK_STOP, NULL);
                 E2iSendMsg("{\"PLAYBACK_STOP\":{\"sts\":%d}}\n", commandRetVal);
+                break;
+            }
+            case 'd':
+            {
+                /* dk <kid>:<key> ...: CENC keys, the reading thread may wait for them */
+                if ('k' == argvBuff[1])
+                {
+                    ffmpeg_drm_key_command(argvBuff);
+                }
                 break;
             }
             case 'c':

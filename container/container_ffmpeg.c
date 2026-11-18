@@ -2620,6 +2620,8 @@ static int AudioTranscoderProcess(AudioTranscoder_t *state, Context_t *context, 
 }
 #endif
 
+#include "drm_key_ffmpeg.c"
+
 static void FFMPEGThread(Context_t *context) 
 {
     char *lastRadioMessage[IPTV_AV_CONTEXT_MAX_NUM] = {NULL, NULL};
@@ -2973,6 +2975,14 @@ static void FFMPEGThread(Context_t *context)
         }
 #endif
 
+        if (drm_key_fatal())
+        {
+            /* a video without a key: the command loop stops the playback */
+            releaseMutex(__FILE__, __FUNCTION__,__LINE__);
+            usleep(100000);
+            continue;
+        }
+
         int ffmpegStatus = 0;
         if(!isWaitingForFinish)
         {
@@ -3032,6 +3042,15 @@ static void FFMPEGThread(Context_t *context)
                 ffmpeg_err("no packet for more than %u s, read ended (%d)\n", readStallActiveMs / 1000, ffmpegStatus);
             }
             readStallActiveMs = 0;
+        }
+
+        if (!isWaitingForFinish && ffmpegStatus == 0 &&
+            drm_key_check_packet(context, cAVIdx, &packet))
+        {
+            /* still encrypted: its stream has no key and is dropped */
+            wrapped_packet_unref(&packet);
+            releaseMutex(__FILE__, __FUNCTION__,__LINE__);
+            continue;
         }
 
         if (!isWaitingForFinish && (ffmpegStatus == 0) )
@@ -4722,6 +4741,7 @@ int32_t container_ffmpeg_init_av_context(Context_t *context, char *filename, uin
     pavio_opts = &avio_opts;
     
     av_dict_set(&avio_opts, "dash_subtitle_default_discard", "1", 0);
+    drm_key_prepare(avContextTab[AVIdx], &avio_opts);
     /* http only (limit 0 otherwise). With reconnect=1 one read of a server
      * that went silent is retried by http.c for more than three minutes,
      * and the demuxers read more than once. The whole call is bounded:
@@ -6043,6 +6063,28 @@ static int32_t container_ffmpeg_switch_audio(Context_t *context, int32_t *arg)
     int64_t sec = 0;
     int32_t ret;
     ffmpeg_printf(10, "track %d\n", *arg);
+    if (context->manager->audio)
+    {
+        /* a track whose KID has no key (dropped) is not switched to */
+        Track_t *Tracks = NULL;
+        int32_t TrackCount = 0, i, dropped = 0;
+        getMutex_wr(__FILE__, __FUNCTION__,__LINE__);
+        context->manager->audio->Command(context, MANAGER_REF_LIST, &Tracks);
+        context->manager->audio->Command(context, MANAGER_REF_LIST_SIZE, &TrackCount);
+        for (i = 0; Tracks && i < TrackCount; ++i)
+        {
+            if (Tracks[i].Id == *arg && drm_audio_stream_dropped((const AVStream *)Tracks[i].stream))
+            {
+                dropped = 1;
+            }
+        }
+        releaseMutex(__FILE__, __FUNCTION__,__LINE__);
+        if (dropped)
+        {
+            ffmpeg_err("audio track %d has no key, not switched to\n", *arg);
+            return cERR_CONTAINER_FFMPEG_ERR;
+        }
+    }
     /* PLAYBACK_SEEK is refused while paused or in trick play. The switch then
      * takes effect at the read position, as it does on streams without duration. */
     if (!context->playback->isDash &&

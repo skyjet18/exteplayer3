@@ -578,6 +578,53 @@ they differ by more than 200 ms. A failed setup or encoder is logged once
 or a seek; playback continues. Stereo downmix (`-s`) is not applied to
 transcoded tracks.
 
+## CENC keys per KID
+
+Streams in CENC (MP4, DASH, HLS fMP4) often use a key per track or per
+resolution. The keys are given per KID, not per stream:
+
+- `--key <kid>:<key>` (32 hex digits each, repeatable) preloads keys. They go
+  to FFmpeg as `decryption_keys` (mov), `cenc_decryption_keys` (DASH) and
+  `seg_format_options=decryption_keys=...` (HLS), which the patched FFmpeg
+  6.1 and 9.0 trees have. Nothing is asked. With `release/6.1-patched` MP4
+  plays, but its DASH demuxer reads almost nothing of an encrypted
+  SegmentTimeline stream even with the keys; DASH needs the 9.0 series.
+- `--key-request` lets FFmpeg ask for a KID it meets while playing and that
+  has no key yet (FFmpeg with the mov option `decryption_key_url`;
+  `"drmkey"` in `EPLAYER3_EXTENDED` is then 3, otherwise 1). The player
+  writes, once per KID:
+
+  ```
+  {"DRM_KEY_REQ":{"kid":"<32 hex>","type":"video","pssh":[{"system":"edef8ba9-79d6-4ace-a3c8-27dcd51d21ed","data":"<base64 of the pssh box>"}]}}
+  ```
+
+  `pssh` holds the pssh boxes for that KID from the MPD (`cenc:pssh`) and
+  the MP4 boxes, as whole boxes (what licence services take). The front end
+  answers on stdin with `dk <kid>:<key>` (several pairs per line are fine,
+  also keys it was not asked for) or `dk <kid>:-` for none. The demuxer waits
+  for it, at most `--key-timeout <s>` (default 10). The outcome is reported
+  as `{"DRM_KEY":{"kid":"...","sts":0}}` (key), `-1` (none) or `-2` (no
+  answer). After a request without an answer the front end is taken as not
+  answering: later KIDs have no key at once, nothing is waited for twice.
+  Without `--key-request` an unknown KID has no key at once, so a front end
+  that does not know the request never waits.
+- A track whose KID has no key (with an FFmpeg that has
+  `decryption_key_url`, or with no key given at all) does not end the
+  playback by itself:
+  - audio: the track is dropped (DASH stops fetching it) with
+    `{"DRM_KEY_DROP":{"kid":"...","type":"audio","id":<track>,"switch":<id or -1>}}`;
+    if the dropped track was playing (or about to be switched to) and
+    another audio track is not dropped, the player switches to it (an `a_c`
+    follows), otherwise it plays on without audio. A dropped track is never
+    switched to, also not with `a<id>` from the front end, and a switch that
+    is still pending to a track that has been dropped meanwhile is
+    cancelled;
+  - subtitles and other tracks: dropped the same way;
+  - video: `{"FF_ERROR":{"msg":"No key for KID <kid> (video)","code":-13}}`,
+    then the player stops the playback as with `q` (`PLAYBACK_STOP`, exit
+    code 0).
+- `-5`/`-6`/`-7` (one key for everything, video or audio) stay as they are.
+
 ## DreamNextGen build (Dreambox One/Two)
 
 The Amlogic Dreambox One and Two backend of the
