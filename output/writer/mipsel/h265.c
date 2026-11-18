@@ -51,6 +51,7 @@
 #include "misc.h"
 #include "pes.h"
 #include "writer.h"
+#include "avcc.h"
 
 /* ***************************** */
 /* Makros/Constants              */
@@ -89,6 +90,7 @@ static int32_t PreparCodecData(unsigned char *data, unsigned int cd_len, unsigne
     if (data)
     {
         unsigned char tmp[4096];
+        AnnexBSets_t sets = {.buf = tmp, .size = sizeof(tmp)};
         unsigned int tmp_len = 0;
 
         h265_printf(10, "H265 have codec data..!\n");
@@ -120,9 +122,11 @@ static int32_t PreparCodecData(unsigned char *data, unsigned int cd_len, unsigne
                     pos += 3;
                     for (j = 0; j < nal_count; j++)
                     {
+                        /* a cut array: the arrays after it cannot be found */
                         if (pos + 2 > cd_len)
                         {
                             h265_printf(10, "Buffer underrun in extra nal header (%d >= %u)\n", pos + 2, cd_len);
+                            pos = cd_len;
                             break;
                         }
                         int nal_size = data[pos] << 8 | data[pos + 1];
@@ -130,23 +134,21 @@ static int32_t PreparCodecData(unsigned char *data, unsigned int cd_len, unsigne
                         if (pos + nal_size > cd_len)
                         {
                             h265_printf(10, "Buffer underrun in extra nal (%d >= %u)\n", pos + 2 + nal_size, cd_len);
+                            pos = cd_len;
                             break;
                         }
-                        if ((nal_type == 0x20 || nal_type == 0x21 || nal_type == 0x22) && ((tmp_len + 4 + nal_size) < sizeof(tmp) )) // use only VPS, SPS, PPS nals
+                        /* use only VPS, SPS, PPS nals, each once and without
+                         * trailing zeros, see AnnexBSetsAppend() */
+                        if ((nal_type == 0x20 || nal_type == 0x21 || nal_type == 0x22) &&
+                            AnnexBSetsAppend(&sets, data + pos, nal_size) < 0)
                         {
-                            memcpy(tmp+tmp_len, "\x00\x00\x00\x01", 4);
-                            tmp_len += 4;
-                            memcpy(tmp + tmp_len, data + pos, nal_size);
-                            tmp_len += nal_size;
-                        }
-                        else if ((tmp_len + 4 + nal_size) >= sizeof(tmp))
-                        {
-                            h264_err("Ignoring nal as tmp buffer is too small tmp_len + nal = %d\n", tmp_len + 4 + nal_size);
+                            h264_err("Ignoring nal as tmp buffer is too small tmp_len + nal = %u\n", sets.len + 4 + nal_size);
                         }
                         pos += nal_size;
                     }
                 }
-                
+                tmp_len = sets.len;
+
                 CodecData = malloc(tmp_len);
                 if (!CodecData)
                 {

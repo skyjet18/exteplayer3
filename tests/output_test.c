@@ -64,8 +64,9 @@ int main(void)
 {
     uint8_t pes[64], bytes[300];
     struct iovec vectors[300];
+    /* two different SPS: a repeated one is sent only once */
     uint8_t avcc[] = {1, 100, 0, 42, 255, 226, 0, 4, 103, 100, 0, 42,
-                     0, 4, 103, 100, 0, 42, 2, 0, 2, 104, 1, 0, 2, 104, 2};
+                     0, 5, 103, 100, 0, 42, 1, 2, 0, 2, 104, 1, 0, 2, 104, 2};
     uint8_t frame[] = {0, 0, 0, 2, 101, 136};
     WriterAVCallData_t call = {0};
     int i, first;
@@ -101,9 +102,9 @@ int main(void)
     call.WriteV = capture;
     WriterVideoH264.reset();
     first = WriterVideoH264.writeData(&call);
-    assert(first == 53);
+    assert(first == 54);
     assert(written[26] == 42); /* Keep the true SPS level. */
-    assert(WriterVideoH264.writeData(&call) == first - 28);
+    assert(WriterVideoH264.writeData(&call) == first - 29);
     avcc[sizeof(avcc) - 1]++;
     assert(WriterVideoH264.writeData(&call) == first);
     WriterVideoH264.reset();
