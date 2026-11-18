@@ -8,6 +8,7 @@ import math
 import os
 from pathlib import Path
 import queue
+import shutil
 import socket
 import struct
 import subprocess
@@ -16,6 +17,7 @@ import tempfile
 import threading
 import time
 import xml.etree.ElementTree as ET
+import zlib
 
 
 def run(*args):
@@ -1018,6 +1020,71 @@ def main():
                 asked = [value for path, value in encodings if path == "/gz/index.m3u8"]
                 assert asked and all(value == expected for value in asked), (options, encodings)
             print("PASS HLS: playlist requested with Accept-Encoding: gzip, -h identity kept")
+
+            # Segments disguised as pictures: a PNG or WebP image in front of
+            # the TS data, named .png, .js or without an extension, also
+            # inside AES-128. Played directly when the hls demuxer of the
+            # linked FFmpeg skips the image (hlsseg bit 2).
+            hlsseg = json.loads(subprocess.run(
+                [args.player], capture_output=True, timeout=5).stderr.splitlines()[0]
+            )["EPLAYER3_EXTENDED"]["hlsseg"]
+            assert hlsseg & 1, hlsseg
+            if hlsseg & 2:
+                def chunk(kind, data):
+                    return (struct.pack(">I", len(data)) + kind + data
+                            + struct.pack(">I", zlib.crc32(kind + data) & 0xffffffff))
+                # image data with 0x47 bytes 188 apart, one TS packet short of a run
+                filler = bytearray(0x46 if (i * 7 + 3) % 256 == 0x47 else (i * 7 + 3) % 256
+                                   for i in range(1500))
+                for k in range(4):
+                    filler[100 + k * 188] = 0x47
+                png = (b"\x89PNG\r\n\x1a\n"
+                       + chunk(b"IHDR", struct.pack(">IIBBBBB", 16, 16, 8, 2, 0, 0, 0))
+                       + chunk(b"tEXt", b"Comment\0" + bytes(filler))
+                       + chunk(b"IDAT", zlib.compress(b"".join(b"\0" + b"\x80" * 48
+                                                             for _ in range(16))))
+                       + chunk(b"IEND", b""))
+                webp = (b"RIFF" + struct.pack("<I", 4 + 8 + len(filler)) + b"WEBP"
+                        + b"VP8L" + struct.pack("<I", len(filler)) + bytes(filler))
+                key, iv = bytes(range(16)), bytes(range(16, 32))
+                resources["/img/aes.key"] = key
+                openssl = shutil.which("openssl")
+                variants = [("png", png, "{}.png", False), ("webp", webp, "s/{}?t=ab12", False)]
+                if openssl:
+                    variants.append(("aes", png, "{}.js", True))
+                else:
+                    print("SKIP HLS image head inside AES-128: no openssl tool")
+                for name, head, pattern, encrypted in variants:
+                    body = ""
+                    for line in lines:
+                        if encrypted and line.startswith("#EXTINF") and "#EXT-X-KEY" not in body:
+                            body += f'#EXT-X-KEY:METHOD=AES-128,URI="aes.key",IV=0x{iv.hex()}\n'
+                        if line in parts:
+                            uri = pattern.format(f"{name}{parts.index(line)}")
+                            data = head + (root / line).read_bytes()
+                            if encrypted:
+                                data = subprocess.run(
+                                    [openssl, "enc", "-aes-128-cbc", "-K", key.hex(),
+                                     "-iv", iv.hex()], input=data, capture_output=True,
+                                    check=True, timeout=10).stdout
+                            resources["/img/" + uri] = data
+                            line = uri
+                        body += line + "\n"
+                    resources[f"/img/{name}.m3u8"] = body.encode()
+                    requests.clear()
+                    player = Player(args.player, base + f"/img/{name}.m3u8")
+                    try:
+                        assert player.wait("PLAYBACK_OPEN")["sts"] == 0, player.messages
+                        assert player.wait("PLAYBACK_PLAY")["sts"] == 0, player.messages
+                        assert player.wait("v_c")["w"] == 64, player.messages
+                    finally:
+                        player.stop()
+                    first = "/img/" + pattern.format(f"{name}0")
+                    assert (first, 0) in requests, requests
+                    print(f"PASS HLS: a {name} image in front of the TS data of segments "
+                          f"named {pattern} skipped, the 64x64 MPEG-2 video played")
+            else:
+                print("SKIP HLS image heads: the hls demuxer of this FFmpeg has no skip_image_head")
 
             # A read that waits for the network (here a segment whose answer
             # is held back) holds the container lock. The track list, the

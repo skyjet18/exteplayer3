@@ -4292,6 +4292,30 @@ static int ffmpeg_has_zlib(void)
     return cfg && strstr(cfg, "--enable-zlib") && !strstr(cfg, "--disable-zlib");
 }
 
+/* The HLS segments this build plays directly, the bits of "hlsseg" in
+ * EPLAYER3_EXTENDED. HLS_SEG_ANY_NAME: segments named .js, .png, .html or
+ * without an extension; extension_picky is off for http input below, and
+ * FFmpeg before 7.1.1 does not check the names. HLS_SEG_IMAGE_HEAD: a PNG,
+ * JPEG, GIF or WebP image in front of the MPEG-TS data of every segment is
+ * skipped; the hls demuxer of the linked FFmpeg has skip_image_head. */
+#define HLS_SEG_ANY_NAME   1
+#define HLS_SEG_IMAGE_HEAD 2
+
+int32_t hls_segment_caps(void)
+{
+    int32_t caps = HLS_SEG_ANY_NAME;
+#if LIBAVFORMAT_VERSION_MAJOR >= 58
+    /* demuxers are found without av_register_all() */
+    const AVInputFormat *hls = av_find_input_format("hls");
+    if (hls && hls->priv_class &&
+        av_opt_find((void *)&hls->priv_class, "skip_image_head", NULL, 0, AV_OPT_SEARCH_FAKE_OBJ))
+    {
+        caps |= HLS_SEG_IMAGE_HEAD;
+    }
+#endif
+    return caps;
+}
+
 /* The watchdog ended a call of the open phase although the context is still
  * there. Its reads were cut off at an unknown point, so it is given up like
  * a context that did not open. Closed before the watchdog is taken off: the
@@ -4664,6 +4688,9 @@ int32_t container_ffmpeg_init_av_context(Context_t *context, char *filename, uin
          * Options of the HLS demuxer only, the others leave them unused. */
         av_dict_set(&avio_opts, "allowed_segment_extensions", "ALL", 0);
         av_dict_set(&avio_opts, "extension_picky",          "0", 0);
+        /* such segments sometimes carry a picture in front of the TS data
+         * (image CDNs): read from the TS data on, see hls_segment_caps() */
+        av_dict_set(&avio_opts, "skip_image_head",          "1", 0);
         /* a segment that fails to open is asked for again before the
          * demuxer skips it (default: skipped at the first failure) */
         av_dict_set(&avio_opts, "seg_max_retry",            "3", 0);
