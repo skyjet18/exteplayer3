@@ -68,6 +68,7 @@ extern void         dts_ac3_transcoder_set(const int32_t val);
 extern void      truehd_ac3_transcoder_set(const int32_t val);
 extern void          aac_he_transcoder_set(const int32_t val);
 extern int32_t        audio_transcode_caps(void);
+extern int32_t            hls_segment_caps(void);
 
 extern void            rtmp_proto_impl_set(const int32_t val);
 extern void        flv2mpeg4_converter_set(const int32_t val);
@@ -1317,6 +1318,7 @@ int main(int argc, char* argv[])
     /* inform client that we can handle additional commands */
     /* xcode: the audio transcoding this build can do, 1: to AC3 (-Z, -X), 2: to AAC-LC (-Y), 4: to E-AC-3 (-E) */
     /* achannel: the stdin command am<n> (left/stereo/right of dual mono) is known */
+    /* hlsseg: HLS segments played directly, 1: any name (.js, .png, none), 2: an image in front of the TS data */
     E2iSendMsg("{\"EPLAYER3_EXTENDED\":{\"version\":%d"
                ",\"xcode\":%d"
 #ifdef HAVE_DREAMNEXTGEN
@@ -1324,8 +1326,10 @@ int main(int argc, char* argv[])
                ",\"trick\":1"
 #endif
                ",\"achannel\":1"
+               ",\"hlsseg\":%d"
                "}}\n", 186,
-               audio_transcode_caps());
+               audio_transcode_caps(),
+               hls_segment_caps());
 
     PlayFiles_t playbackFiles;
     memset(&playbackFiles, 0x00, sizeof(playbackFiles));

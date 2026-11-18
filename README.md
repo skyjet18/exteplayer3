@@ -340,13 +340,23 @@ and selected/discarded state without merging multiple audio tracks.
 ### HTTP input: HLS options and stall limits
 
 For every `http://` and `https://` input the player additionally sets
-`allowed_segment_extensions=ALL`, `extension_picky=0` and `seg_max_retry=3`.
-These are HLS demuxer options; other demuxers, and FFmpeg builds without them,
-leave them unused. HLS segments without a file extension, or named `.jpg`,
-`.png` or `.php`, are therefore accepted and their content decides. A segment
-that fails to open is requested up to three more times, without a pause,
-before the demuxer skips it. Errors in the middle of a segment are not
-retried. Local playlists keep the FFmpeg defaults.
+`allowed_segment_extensions=ALL`, `extension_picky=0`, `skip_image_head=1` and
+`seg_max_retry=3`. These are HLS demuxer options; other demuxers, and FFmpeg
+builds without them, leave them unused. HLS segments without a file extension,
+or named `.jpg`, `.png` or `.php`, are therefore accepted and their content
+decides. Some servers put a PNG, JPEG, GIF or WebP image in front of the
+MPEG-TS data of every segment (image CDNs); with an FFmpeg whose hls demuxer
+has `skip_image_head` each segment is read from its first TS packet on,
+without it the first segment is probed as the picture and the stream does
+not open. A segment that fails to open is requested up to three more times,
+without a pause, before the demuxer skips it. Errors in the middle of a
+segment are not retried. Local playlists keep the FFmpeg defaults.
+
+The startup message tells front ends which of these segments this build
+plays: `"hlsseg"` in `EPLAYER3_EXTENDED` is a bit mask, `1` segments with any
+name (always set), `2` an image in front of the TS data (the linked FFmpeg
+has `skip_image_head`). A front end that otherwise buffers such streams
+with a downloader first can play them directly when the bit is set.
 
 URLs containing `.m3u` additionally send `Accept-Encoding: gzip`, but only when
 `avformat_configuration()` contains `--enable-zlib` and the `-h` headers hold
