@@ -742,6 +742,15 @@ def main():
         resources["/single.mpd"] = ET.tostring(mpd)
         for single_file in root.glob("single-stream*.mp4"):
             resources["/" + single_file.name] = single_file.read_bytes()
+        # the same in segments of 1 s (SegmentTemplate), an adaptation set per stream
+        run(args.ffmpeg, "-y", "-stream_loop", "-1", "-i", str(media),
+            "-map", "0:v", "-map", "0:a", "-map", "0:a", "-t", "40",
+            "-c:v", "mpeg2video", "-g", "12", "-bf", "2", "-c:a", "aac",
+            "-seg_duration", "1", "-init_seg_name", "segsw-init-$RepresentationID$.$ext$",
+            "-media_seg_name", "segsw-$RepresentationID$-$Number%05d$.$ext$",
+            "-f", "dash", str(root / "segsw.mpd"))
+        for segment in [root / "segsw.mpd", *root.glob("segsw-*")]:
+            resources["/" + segment.name] = segment.read_bytes()
         for quality in ("low", "high"):
             resources[f"/{quality}.m3u8"] = (
                 f"#EXTM3U\n#EXT-X-TARGETDURATION:12\n#EXTINF:12,\n"
@@ -859,6 +868,65 @@ def main():
                 finally:
                     player.stop()
             print("PASS single-file DASH: VOD startup and audio switching with live sync off/on")
+
+            # DASH VOD, two audio adaptation sets, a decoder that holds 8 s of
+            # video ahead of what it shows (EP3_FAKE_VIDEO_LEAD): the demuxer
+            # reads 8 s ahead of the playback. An audio switch goes on from
+            # the playback position, with audio of the new track there; it
+            # does not jump to the read position.
+            for mpd in ("/segsw.mpd", "/single.mpd"):
+                player = Player(args.player, "-L", "LINUXDVB_DEBUG_LEVEL:20", base + mpd,
+                                env=dict(os.environ, EP3_FAKE_VIDEO_LEAD="8000"))
+                try:
+                    assert player.wait("PLAYBACK_PLAY")["sts"] == 0
+                    tracks = player.wait("a_l")
+                    assert len(tracks) == 2, tracks
+                    time.sleep(4)
+                    player.command("j")
+                    before = player.wait("J")["ms"]
+                    assert 2500 <= before < 5500, (mpd, before)
+                    player.command("ac")
+                    current = player.wait("a_c")["id"]
+                    other = next(track["id"] for track in tracks if track["id"] != current)
+                    player.command(f"a{other}")
+                    assert player.wait("a_s")["sts"] == 0
+                    time.sleep(0.5)
+                    player.command("j")
+                    after = player.wait("J")["ms"]
+                    switched = time.monotonic()
+                    time.sleep(2)
+                    player.command("j")
+                    later = player.wait("J")["ms"]
+                    elapsed = (time.monotonic() - switched) * 1000
+                    player.command("ac")
+                    assert player.wait("a_c")["id"] == other
+                    player.command("q")
+                    player.process.wait(timeout=5)
+                    size = os.fstat(player.log.fileno()).st_size
+                    log = os.pread(player.log.fileno(), size, 0).decode(errors="replace")
+                finally:
+                    player.stop()
+                assert abs(after - before) <= 1500, (mpd, before, after)
+                assert elapsed - 600 <= later - after <= elapsed + 600, (mpd, after, later, elapsed)
+                # written PTS: back from the read position to the playback
+                # position at the switch, video and audio of the new track together
+                written, pts = [], None
+                for line in log.splitlines():
+                    if "DataLength=" in line and "Pts=" in line:
+                        pts = int(line.split("Pts=")[1].split()[0])
+                    elif line.endswith(("] v1 a0", "] v0 a1")) and pts is not None:
+                        if pts < 0x200000000:
+                            written.append(("v" if line.endswith("v1 a0") else "a", pts))
+                        pts = None
+                video_at = [i for i, (kind, _) in enumerate(written) if kind == "v"]
+                restart = next((video_at[n] for n in range(1, len(video_at))
+                                if written[video_at[n]][1] < written[video_at[n - 1]][1] - 5 * 90000), None)
+                assert restart is not None, (mpd, written[:5], written[-5:])
+                audio_pts = [pts for kind, pts in written[restart:] if kind == "a"]
+                assert audio_pts and abs(audio_pts[0] - written[restart][1]) <= 1.5 * 90000, (
+                    mpd, written[restart], audio_pts[:3])
+                assert audio_pts[-1] - audio_pts[0] >= 2 * 90000, (mpd, audio_pts[0], audio_pts[-1])
+            print("PASS DASH: audio switch goes on from the playback position, not the read-ahead position")
 
             for target in embedded:
                 player = Player(args.player, str(target))

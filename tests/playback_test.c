@@ -4,7 +4,7 @@
 static int64_t position, captured;
 static int selected, clears, switches, seek_error;
 static int sync_error, plays;
-static int clear_error, seek_calls;
+static int clear_error, seek_calls, dash_seek;
 static void *stamp_before_clear;
 
 static int manager_command(void *opaque, ManagerCmd_t command, void *argument)
@@ -55,8 +55,9 @@ static int container_command(void *opaque, ContainerCmd_t command, void *argumen
         captured = position;
         return seek_error;
     }
+    /* live DASH switches without a seek, static DASH like the rest */
     if (command == CONTAINER_SWITCH_AUDIO)
-        return context->playback->isDash ? 0 : PlaybackSeek(context, &zero, 0);
+        return context->playback->isDash && !dash_seek ? 0 : PlaybackSeek(context, &zero, 0);
     return 0;
 }
 
@@ -113,6 +114,18 @@ int main(void)
         stamp_before_clear = playback.stamp;
         assert(!PlaybackSwitchAudio(&context, &track));
         assert(clears == 6 && switches == 4 && seek_calls == old_seek_calls);
+        /* static DASH: the seek of the switch clears from the playback
+         * position, no second clear after it */
+        dash_seek = 1;
+        seek_error = 0;
+        track = 0;
+        position = 4713750;
+        stamp_before_clear = playback.stamp;
+        assert(!PlaybackSwitchAudio(&context, &track));
+        assert(seek_calls == old_seek_calls + 1 && captured == 4713750);
+        assert(clears == 7 && switches == 5 && selected == 0);
+        assert(!playback.isSeeking && !playback.isAudioSwitching);
+        dash_seek = 0;
     }
     playback.isPlaying = 0;
     sync_error = -1;
