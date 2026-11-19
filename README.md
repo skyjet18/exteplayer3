@@ -18,6 +18,16 @@ Core of movie player for E2 based on the libeplayer using the ffmpeg solution
   on any CPU; unset or empty keeps the build default, which
   `-DH264_LEVEL41_DEFAULT=0|1` can set at compile time. Parameter sets inside
   the packets and Annex B codec data are never changed.
+- `EP3_H264_CONSTRAINED_HIGH=0|1`: H.264 "Constrained High" flags. Some live
+  encoders mark their High profile streams with `constraint_set4_flag` and
+  `constraint_set5_flag` (constraint byte `0x0C`); Broadcom decoders show no
+  picture with them, the same stream with the two flags cleared plays. The
+  flags only declare limits the stream keeps anyway, so the writer clears them
+  in every SPS of profile 100, 110, 122 and 244: from `avcC`, from Annex B codec
+  data and inside the packets (in front of the first slice). The packet data
+  is not changed; the cleared byte is written in its place. Other flags and
+  profiles are kept. On by default on every CPU; `0` keeps the flags, and
+  `-DH264_CONSTRAINED_HIGH_DEFAULT=0|1` sets the build default.
 - `-M WIDTHxHEIGHT`: optional automatic H.264 resolution limit; `0x0` (default)
   disables it. Unknown dimensions remain eligible. HEVC is not restricted.
   Explicit positive program IDs selected with `-P` override automatic limits.
@@ -1012,6 +1022,13 @@ provider/SSAI behavior. Before deployment, check on representative receivers:
   ARM box (VU+ Uno 4K SE, openATV 8.0.2, ffmpeg-ext 6.1.1): level 4.2 is
   written as 4.1 and the picture is unchanged. Still open: 1080p50/60
   (level 4.2) H.264 on MIPS boxes with and without `EP3_H264_LEVEL41=0`.
+- The "Constrained High" flags were measured with files on one receiver (VU+
+  Uno 4K SE, openATV): a live HLS stream (High, constraint byte `0x0C`, level
+  4.0, CAVLC) played sound only; the same TS with only that byte set to `0x00`
+  in every SPS showed the picture at 720p30 and 1080p60, a level of 4.2
+  instead of 4.0 did not help. With the writer change the player shows the
+  picture on the unchanged files (720p30, 1080p60) and on the live stream
+  (1080p60 HLS, played directly). Still open: MIPS and HiSilicon receivers.
 - `-K` off/on CPU cost, export consumers joining/leaving, slow readers,
   format changes, seeks and audio switching without decoder silence.
 - `-Z`/`-X`/`-E`/`-Y` transcoding has been checked on one receiver only (VU+
