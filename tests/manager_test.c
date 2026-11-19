@@ -31,6 +31,11 @@ static void check_manager(Manager_t *manager, Context_t *context)
     track.stream = (void *)2;
     track.AVIdx = 1;
     track.is_forced = 1;
+    track.audio_info.sample_rate = 48000;
+    track.audio_info.bit_rate = 640000;
+    snprintf(track.audio_info.channel_layout, sizeof(track.audio_info.channel_layout), "5.1(side)");
+    snprintf(track.video_info.profile_level, sizeof(track.video_info.profile_level), "Main 10@5.1");
+    track.video_info.bit_depth = 10;
     track.aacbuf = malloc(4);
     assert(track.aacbuf);
     assert(!manager->Command(context, MANAGER_ADD, &track));
@@ -38,6 +43,35 @@ static void check_manager(Manager_t *manager, Context_t *context)
     assert(stored && stored->stream == (void *)2 && stored->AVIdx == 1);
     assert(!strcmp(stored->Name, "second"));
     assert(stored->is_forced == 1);
+    if (manager == &AudioManager)
+    {
+        /* the a_l and a_c values of the replaced track */
+        TrackDescription_t *list = NULL, *desc = NULL;
+        assert(!manager->Command(context, MANAGER_GET_TRACK_DESC, &desc));
+        assert(desc && desc->audio_info.sample_rate == 48000 && desc->audio_info.bit_rate == 640000 &&
+               !strcmp(desc->audio_info.channel_layout, "5.1(side)"));
+        free(desc->Name);
+        free(desc->Encoding);
+        free(desc->Title);
+        free(desc);
+        assert(!manager->Command(context, MANAGER_LIST, &list));
+        assert(list && list[0].audio_info.sample_rate == 48000 && list[0].audio_info.bit_rate == 640000 && list[1].Id == -1);
+        free(list[0].Name);
+        free(list[0].Encoding);
+        free(list[0].Title);
+        free(list);
+    }
+    if (manager == &VideoManager)
+    {
+        /* the v_l values */
+        TrackDescription_t *list = NULL;
+        assert(!manager->Command(context, MANAGER_LIST, &list));
+        assert(list && !strcmp(list[0].video_info.profile_level, "Main 10@5.1") &&
+               list[0].video_info.bit_depth == 10 && list[1].Id == -1);
+        free(list[0].Name);
+        free(list[0].Encoding);
+        free(list);
+    }
     if (manager == &SubtitleManager)
     {
         TrackDescription_t *list = NULL, *desc = NULL;
