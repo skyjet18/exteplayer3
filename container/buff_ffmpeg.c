@@ -565,7 +565,7 @@ static int32_t ffmpeg_read(void *opaque, uint8_t *buf, int32_t buf_size)
         }
         else
         {
-            ffmpeg_err( "Timeout, not all buffered data availabel (buf_size=%d sumlen=%d)!\n", buf_size, sumlen);
+            ffmpeg_err( "Timeout, not all buffered data available (buf_size=%d sumlen=%d)!\n", buf_size, sumlen);
         }
     }
 

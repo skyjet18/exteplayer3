@@ -5451,7 +5451,7 @@ static int32_t update_tracks(Context_t *context, char *filename, int32_t initial
                     }
                     else if(!strncmp(encoding, "A_AAC_LATM", 10))
                     {
-                        ffmpeg_printf(10, "AV_CODEC_ID_AAC_LATM extradata will be used in aac writter\n");
+                        ffmpeg_printf(10, "AV_CODEC_ID_AAC_LATM extradata will be used in aac writer\n");
                     }
                     else if (get_codecpar(stream)->codec_id == AV_CODEC_ID_AAC)
                     {
