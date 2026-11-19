@@ -62,7 +62,9 @@ extern int32_t ffmpeg_drm_key_audio_switch(void);
 extern int32_t ffmpeg_drm_key_stop(void);
 extern int  container_ffmpeg_audio_info_gen(void);
 extern int  container_ffmpeg_subtitle_info_gen(void);
-extern int  container_ffmpeg_audio_live_info(int32_t track_id, int *channels, const char **description);
+extern int  container_ffmpeg_audio_live_info(int32_t track_id, int *channels, const char **description,
+                                              AudioStreamInfo_t *info);
+extern int  container_ffmpeg_video_live_info(int32_t track_id, VideoStreamInfo_t *info);
 extern void       aac_software_decoder_set(const int32_t val);
 extern void pcm_audio_export_set(int enabled);
 extern void  aac_latm_software_decoder_set(const int32_t val);
@@ -937,23 +939,60 @@ static void SetNice(int prio)
 
 /* The audio manager has the values of the codec parameters, read when the
  * tracks were listed. The track that plays can be more exact: channel count
- * of the decoded frames, Atmos found in the packets. */
+ * of the decoded frames, Atmos found in the packets, the stream values of
+ * codec parameters that changed after the list. */
 static void AudioLiveInfo(TrackDescription_t *track)
 {
     int channels = 0;
+    AudioStreamInfo_t info;
     const char *description = NULL;
 
-    if (container_ffmpeg_audio_live_info(track->Id, &channels, &description))
+    if (container_ffmpeg_audio_live_info(track->Id, &channels, &description, &info))
     {
         if (channels > 0)
         {
             track->channels = channels;
         }
+        track->audio_info = info;
         if (description)
         {
             track->Description = description;
         }
     }
+}
+
+/* The video track that plays: the stream values of codec parameters that
+ * changed after the list (HLS variant switch). */
+static void VideoLiveInfo(TrackDescription_t *track)
+{
+    VideoStreamInfo_t info;
+
+    if (container_ffmpeg_video_live_info(track->Id, &info))
+    {
+        track->video_info = info;
+    }
+}
+
+/* The keys after "t" of an audio entry, from ,"sr" to the last value. */
+static const char *AudioInfoJson(char *dst, size_t size, const AudioStreamInfo_t *info)
+{
+    char layout[2 * sizeof(info->channel_layout)];
+
+    snprintf(dst, size, ",\"sr\":%d,\"br\":%d,\"cl\":\"%s\",\"bps\":%d", info->sample_rate,
+             info->bit_rate, JsonEscape(layout, sizeof(layout), info->channel_layout), info->bits_per_sample);
+    return dst;
+}
+
+/* The keys after "hdr" of v_c, after "n" of a v_l entry. */
+static const char *VideoInfoJson(char *dst, size_t size, const VideoStreamInfo_t *info)
+{
+    char profile[2 * sizeof(info->profile_level)];
+    char primaries[64];
+
+    snprintf(dst, size, ",\"pr\":\"%s\",\"bd\":%d,\"br\":%d,\"dv\":%d,\"cr\":\"%s\"",
+             JsonEscape(profile, sizeof(profile), info->profile_level), info->bit_depth, info->bit_rate,
+             info->dv_profile, JsonEscape(primaries, sizeof(primaries), info->color_primaries));
+    return dst;
 }
 
 /* The audio tracks of the last MANAGER_LIST, with the values of the codec
@@ -982,12 +1021,13 @@ static void FreeTracks(TrackDescription_t *TrackList)
  * the live values of the track that plays; TrackList is not changed. */
 static void FormatTracks(strbuffer_t *cache, const char *argvBuff, const TrackDescription_t *TrackList)
 {
-    char tmp_str[1024];
+    char tmp_str[1280];
     char enc[128];
     char name[512];
     char desc[64];
-    /* an audio entry with every string and both numbers at their
-     * limit is 1018 bytes: mind tmp_str when a buffer grows */
+    char info[320];
+    /* an audio entry with every string and every number at its limit
+     * is about 1170 bytes: mind tmp_str when a buffer grows */
     char title[256];
     int i;
 
@@ -1016,10 +1056,15 @@ static void FormatTracks(strbuffer_t *cache, const char *argvBuff, const TrackDe
             TrackDescription_t track = TrackList[i];
 
             AudioLiveInfo(&track);
-            snprintf(tmp_str, sizeof(tmp_str), "{\"id\":%d,\"e\":\"%s\",\"n\":\"%s\",\"c\":%d,\"d\":\"%s\",\"t\":\"%s\"}", track.Id, JsonEscape(enc, sizeof(enc), track.Encoding), JsonEscape(name, sizeof(name), track.Name), track.channels, JsonEscape(desc, sizeof(desc), track.Description), JsonEscape(title, sizeof(title), track.Title));
+            snprintf(tmp_str, sizeof(tmp_str), "{\"id\":%d,\"e\":\"%s\",\"n\":\"%s\",\"c\":%d,\"d\":\"%s\",\"t\":\"%s\"%s}", track.Id, JsonEscape(enc, sizeof(enc), track.Encoding), JsonEscape(name, sizeof(name), track.Name), track.channels, JsonEscape(desc, sizeof(desc), track.Description), JsonEscape(title, sizeof(title), track.Title), AudioInfoJson(info, sizeof(info), &track.audio_info));
         }
         else
-            snprintf(tmp_str, sizeof(tmp_str), "{\"id\":%d,\"e\":\"%s\",\"n\":\"%s\"}", TrackList[i].Id, JsonEscape(enc, sizeof(enc), TrackList[i].Encoding), JsonEscape(name, sizeof(name), TrackList[i].Name));
+        {
+            TrackDescription_t track = TrackList[i];
+
+            VideoLiveInfo(&track);
+            snprintf(tmp_str, sizeof(tmp_str), "{\"id\":%d,\"e\":\"%s\",\"n\":\"%s\"%s}", track.Id, JsonEscape(enc, sizeof(enc), track.Encoding), JsonEscape(name, sizeof(name), track.Name), VideoInfoJson(info, sizeof(info), &track.video_info));
+        }
         strbuffer_add( cache, tmp_str );
     }
     strbuffer_add( cache, "]}\n");
@@ -1124,15 +1169,19 @@ static int HandleTracks(Manager_t *ptrManager, const PlaybackCmd_t playbackSwitc
                 else if ('a' == argvBuff[0])
                 {
                     char desc[64];
+                    char info[320];
 
                     AudioLiveInfo(track);
-                    E2iSendMsg("{\"%c_%c\":{\"id\":%d,\"e\":\"%s\",\"n\":\"%s\",\"c\":%d,\"d\":\"%s\",\"t\":\"%s\"}}\n", argvBuff[0], argvBuff[1], track->Id , enc, name, track->channels, JsonEscape(desc, sizeof(desc), track->Description), title);
+                    E2iSendMsg("{\"%c_%c\":{\"id\":%d,\"e\":\"%s\",\"n\":\"%s\",\"c\":%d,\"d\":\"%s\",\"t\":\"%s\"%s}}\n", argvBuff[0], argvBuff[1], track->Id , enc, name, track->channels, JsonEscape(desc, sizeof(desc), track->Description), title, AudioInfoJson(info, sizeof(info), &track->audio_info));
                 }
                 else // video
                 {
-                    char msg[sizeof(enc) + sizeof(name) + 192];
-                    snprintf(msg, sizeof(msg), "{\"%c_%c\":{\"id\":%d,\"e\":\"%s\",\"n\":\"%s\",\"w\":%d,\"h\":%d,\"f\":%u,\"p\":%d,\"an\":%d,\"ad\":%d,\"hdr\":%d}}\n", \
-                    argvBuff[0], argvBuff[1], track->Id , enc, name, track->width, track->height, track->frame_rate, track->progressive, track->aspect_ratio_num, track->aspect_ratio_den, container_ffmpeg_get_hdr_type());
+                    char info[320];
+                    char msg[sizeof(enc) + sizeof(name) + sizeof(info) + 192];
+
+                    VideoLiveInfo(track);
+                    snprintf(msg, sizeof(msg), "{\"%c_%c\":{\"id\":%d,\"e\":\"%s\",\"n\":\"%s\",\"w\":%d,\"h\":%d,\"f\":%u,\"p\":%d,\"an\":%d,\"ad\":%d,\"hdr\":%d%s}}\n", \
+                    argvBuff[0], argvBuff[1], track->Id , enc, name, track->width, track->height, track->frame_rate, track->progressive, track->aspect_ratio_num, track->aspect_ratio_den, container_ffmpeg_get_hdr_type(), VideoInfoJson(info, sizeof(info), &track->video_info));
                     E2iSendMsg("%s", msg);
                     SendExternalVideo(msg);
                 }
@@ -1150,11 +1199,11 @@ static int HandleTracks(Manager_t *ptrManager, const PlaybackCmd_t playbackSwitc
                 }
                 else if ('a' == argvBuff[0])
                 {
-                    E2iSendMsg("{\"%c_%c\":{\"id\":%d,\"e\":\"%s\",\"n\":\"%s\",\"c\":%d,\"d\":\"%s\",\"t\":\"%s\"}}\n", argvBuff[0], argvBuff[1], -1, "", "", 0, "", "");
+                    E2iSendMsg("{\"%c_%c\":{\"id\":%d,\"e\":\"%s\",\"n\":\"%s\",\"c\":%d,\"d\":\"%s\",\"t\":\"%s\",\"sr\":0,\"br\":0,\"cl\":\"\",\"bps\":0}}\n", argvBuff[0], argvBuff[1], -1, "", "", 0, "", "");
                 }
                 else // video
                 {
-                    E2iSendMsg("{\"%c_%c\":{\"id\":%d,\"e\":\"%s\",\"n\":\"%s\",\"w\":%d,\"h\":%d,\"f\":%u,\"p\":%d}}\n", argvBuff[0], argvBuff[1], -1, "", "", -1, -1, 0, -1);
+                    E2iSendMsg("{\"%c_%c\":{\"id\":%d,\"e\":\"%s\",\"n\":\"%s\",\"w\":%d,\"h\":%d,\"f\":%u,\"p\":%d,\"pr\":\"\",\"bd\":0,\"br\":0,\"dv\":0,\"cr\":\"\"}}\n", argvBuff[0], argvBuff[1], -1, "", "", -1, -1, 0, -1);
                 }
             }
             break;

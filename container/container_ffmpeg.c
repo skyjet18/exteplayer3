@@ -54,6 +54,10 @@
 #include <libavcodec/bsf.h>
 #include <libavcodec/avcodec.h>
 //#endif
+#include <libavutil/pixdesc.h>
+#if LIBAVCODEC_VERSION_MAJOR >= 59
+#include <libavutil/dovi_meta.h>
+#endif
 
 #include <ffmpeg/mpeg4audio.h>
 
@@ -582,6 +586,27 @@ static char *stream_title(const AVFormatContext *av, const AVStream *stream)
         title = av_dict_get(stream->metadata, "comment", NULL, 0);
     }
     return title ? title->value : NULL;
+}
+
+/* Bit rate of a stream in bit/s, 0 if unknown: the one of the codec
+ * parameters, else the statistics tag mkvmerge writes for each track
+ * ("BPS", "BPS-eng" from older versions). The HLS "variant_bitrate" is the
+ * BANDWIDTH of a whole variant, not of the track, and is not used. */
+static int stream_bit_rate(AVStream *stream)
+{
+    int64_t rate = get_codecpar(stream)->bit_rate;
+
+    if (rate <= 0)
+    {
+        AVDictionaryEntry *tag = av_dict_get(stream->metadata, "BPS", NULL, 0);
+
+        if (!tag)
+            tag = av_dict_get(stream->metadata, "BPS-eng", NULL, 0);
+        rate = tag ? strtoll(tag->value, NULL, 10) : 0;
+    }
+    if (rate <= 0)
+        return 0;
+    return rate > INT_MAX ? INT_MAX : (int)rate;
 }
 
 static int packet_matches_track(const Track_t *track, unsigned int context_index,
@@ -1403,6 +1428,182 @@ static int eac3_packet_has_atmos(const uint8_t *data, size_t size)
     return 0;
 }
 
+/* Bits per sample of a lossless audio stream (PCM, FLAC, TrueHD, DTS-HD
+ * MA, ...), 0 for lossy codecs, whose sample format says nothing about
+ * the source. */
+static int audio_bits_per_sample(const AVCodecParameters *par)
+{
+    const AVCodecDescriptor *desc = avcodec_descriptor_get(par->codec_id);
+    int lossless = desc && (desc->props & AV_CODEC_PROP_LOSSLESS) && !(desc->props & AV_CODEC_PROP_LOSSY);
+
+    if (par->codec_id == AV_CODEC_ID_DTS)
+    {
+        lossless = par->profile == AV_PROFILE_DTS_HD_MA;
+#ifdef AV_PROFILE_DTS_HD_MA_X
+        lossless = lossless || par->profile == AV_PROFILE_DTS_HD_MA_X;
+#endif
+#ifdef AV_PROFILE_DTS_HD_MA_X_IMAX
+        lossless = lossless || par->profile == AV_PROFILE_DTS_HD_MA_X_IMAX;
+#endif
+    }
+    if (!lossless)
+        return 0;
+    if (par->bits_per_raw_sample > 0)
+        return par->bits_per_raw_sample;
+    return par->bits_per_coded_sample > 0 ? par->bits_per_coded_sample : 0;
+}
+
+/* The values of an audio stream for a_l and a_c. */
+static void audio_stream_info(AVStream *stream, AudioStreamInfo_t *info)
+{
+    AVCodecParameters *par = get_codecpar(stream);
+
+    memset(info, 0, sizeof(*info));
+    info->sample_rate = par->sample_rate > 0 ? par->sample_rate : 0;
+    info->bit_rate = stream_bit_rate(stream);
+    info->bits_per_sample = audio_bits_per_sample(par);
+#if HAVE_CH_LAYOUT
+    if (par->ch_layout.order != AV_CHANNEL_ORDER_UNSPEC && par->ch_layout.nb_channels > 0 &&
+        av_channel_layout_describe(&par->ch_layout, info->channel_layout, sizeof(info->channel_layout)) < 0)
+    {
+        info->channel_layout[0] = '\0';
+    }
+#else
+    if (par->channel_layout && par->channels > 0)
+    {
+        av_get_channel_layout_string(info->channel_layout, sizeof(info->channel_layout), par->channels, par->channel_layout);
+    }
+#endif
+}
+
+/* Profile and level as ffprobe and media players name them: "High@4.1",
+ * "Main 10@5.1"; the profile alone if the level is unknown, "" without a
+ * profile. */
+static void video_profile_level(const AVCodecParameters *par, char *buf, size_t size)
+{
+    const char *profile = avcodec_profile_name(par->codec_id, par->profile);
+    const int level = par->level;
+
+    buf[0] = '\0';
+    if (!profile)
+        return;
+    if (level <= 0)
+        snprintf(buf, size, "%s", profile);
+    else if (par->codec_id == AV_CODEC_ID_H264 && level == 9)
+        snprintf(buf, size, "%s@1b", profile);
+    else if (par->codec_id == AV_CODEC_ID_H264 || par->codec_id == AV_CODEC_ID_VP9)
+        snprintf(buf, size, "%s@%d.%d", profile, level / 10, level % 10);
+    else if (par->codec_id == AV_CODEC_ID_HEVC)
+        snprintf(buf, size, "%s@%d.%d", profile, level / 30, level % 30 / 3);
+    else if (par->codec_id == AV_CODEC_ID_AV1)
+        snprintf(buf, size, "%s@%d.%d", profile, 2 + (level >> 2), level & 3);
+    else
+        snprintf(buf, size, "%s@%d", profile, level);
+}
+
+/* Dolby Vision profile of the configuration record of the stream, 0 if none. */
+static int video_dv_profile(AVStream *stream)
+{
+#if LIBAVCODEC_VERSION_INT >= AV_VERSION_INT(60, 31, 100)
+    const AVCodecParameters *par = get_codecpar(stream);
+    const AVPacketSideData *sd = av_packet_side_data_get(par->coded_side_data, par->nb_coded_side_data,
+                                                         AV_PKT_DATA_DOVI_CONF);
+
+    if (sd && sd->size >= sizeof(AVDOVIDecoderConfigurationRecord))
+        return ((const AVDOVIDecoderConfigurationRecord *)sd->data)->dv_profile;
+#elif LIBAVCODEC_VERSION_MAJOR >= 59
+    size_t size = 0;
+    const uint8_t *data = av_stream_get_side_data(stream, AV_PKT_DATA_DOVI_CONF, &size);
+
+    if (data && size >= sizeof(AVDOVIDecoderConfigurationRecord))
+        return ((const AVDOVIDecoderConfigurationRecord *)data)->dv_profile;
+#else
+    (void)stream;
+#endif
+    return 0;
+}
+
+/* The values of a video stream for v_c and v_l. */
+static void video_stream_info(AVStream *stream, VideoStreamInfo_t *info)
+{
+    AVCodecParameters *par = get_codecpar(stream);
+    const AVPixFmtDescriptor *pix = av_pix_fmt_desc_get((enum AVPixelFormat)par->format);
+
+    memset(info, 0, sizeof(*info));
+    video_profile_level(par, info->profile_level, sizeof(info->profile_level));
+    if (pix && pix->nb_components > 0)
+        info->bit_depth = pix->comp[0].depth;
+    else if (par->bits_per_raw_sample > 0)
+        info->bit_depth = par->bits_per_raw_sample;
+    info->bit_rate = stream_bit_rate(stream);
+    info->dv_profile = video_dv_profile(stream);
+    if (par->color_primaries != AVCOL_PRI_UNSPECIFIED && par->color_primaries != AVCOL_PRI_RESERVED &&
+        par->color_primaries != AVCOL_PRI_RESERVED0)
+        info->color_primaries = av_color_primaries_name(par->color_primaries);
+}
+
+static int video_stream_info_equal(const VideoStreamInfo_t *a, const VideoStreamInfo_t *b)
+{
+    return !strcmp(a->profile_level, b->profile_level) && a->bit_depth == b->bit_depth &&
+           a->bit_rate == b->bit_rate && a->dv_profile == b->dv_profile &&
+           a->color_primaries == b->color_primaries;
+}
+
+/* What the demuxer thread knows about the video stream it plays, for v_c:
+ * the codec parameters change with an HLS variant of another resolution
+ * or codec. Under video_live_mutex, no other lock is taken while it is held. */
+static pthread_mutex_t   video_live_mutex    = PTHREAD_MUTEX_INITIALIZER;
+static int32_t           video_live_track_id = -1;
+static VideoStreamInfo_t video_live_stream;
+
+/* For v_c. Returns 0 if track_id is not the track that plays. */
+int container_ffmpeg_video_live_info(int32_t track_id, VideoStreamInfo_t *info)
+{
+    int ret = 0;
+
+    pthread_mutex_lock(&video_live_mutex);
+    if (track_id >= 0 && track_id == video_live_track_id)
+    {
+        *info = video_live_stream;
+        ret = 1;
+    }
+    pthread_mutex_unlock(&video_live_mutex);
+    return ret;
+}
+
+/* Called for every packet of the video track that plays; listed: the values
+ * of the track when it was listed. A change is sent as v_c. */
+static void video_live_packet(Context_t *context, const Track_t *track, AVStream *stream)
+{
+    VideoStreamInfo_t info;
+    int changed;
+
+    video_stream_info(stream, &info);
+    pthread_mutex_lock(&video_live_mutex);
+    if (track->Id != video_live_track_id)
+        changed = !video_stream_info_equal(&info, &track->video_info);
+    else
+        changed = !video_stream_info_equal(&info, &video_live_stream);
+    video_live_track_id = track->Id;
+    video_live_stream = info;
+    pthread_mutex_unlock(&video_live_mutex);
+
+    if (changed)
+    {
+        ffmpeg_printf(10, "video track %d: %s, %d bit, %d bit/s, DV %d, %s\n", (int)track->Id,
+                      info.profile_level, info.bit_depth, info.bit_rate, info.dv_profile,
+                      info.color_primaries ? info.color_primaries : "-");
+        context->manager->video->Command(context, MANAGER_UPDATED_TRACK_INFO, NULL);
+    }
+}
+
+static void video_live_reset(void)
+{
+    pthread_mutex_lock(&video_live_mutex);
+    video_live_track_id = -1;
+    pthread_mutex_unlock(&video_live_mutex);
+}
+
 /* Packets with JOC that make it Atmos, with no more than STALE packets
  * without JOC in between; packets without JOC that end it again. Frames
  * without JOC are normal inside an Atmos stream (dependent substreams). */
@@ -1417,6 +1618,7 @@ static pthread_mutex_t audio_live_mutex    = PTHREAD_MUTEX_INITIALIZER;
 static int32_t         audio_live_track_id = -1;
 static int             audio_live_channels = 0;   /* of the decoded frames, 0 = not decoded here */
 static int             audio_live_atmos    = -1;  /* E-AC-3: -1 unknown, 0 no, 1 yes */
+static AudioStreamInfo_t audio_live_stream;       /* of the stream now */
 static int             audio_live_gen      = 0;   /* counts the changes of the values above */
 /* demuxer thread only */
 static unsigned int    audio_live_atmos_pos = 0;
@@ -1436,8 +1638,11 @@ int container_ffmpeg_audio_info_gen(void)
 /* For the audio manager. Returns 0 if track_id is not the track that plays.
  * *channels: channel count of the decoded frames, 0 if the track is not
  * decoded here. *description: a constant string if the packets say more than
- * the codec parameters did, else NULL. */
-int container_ffmpeg_audio_live_info(int32_t track_id, int *channels, const char **description)
+ * the codec parameters did, else NULL. *info: the values of the stream
+ * while it plays (the codec parameters change with an HLS variant of another
+ * audio format). */
+int container_ffmpeg_audio_live_info(int32_t track_id, int *channels, const char **description,
+                                     AudioStreamInfo_t *info)
 {
     int ret = 0;
 
@@ -1445,6 +1650,7 @@ int container_ffmpeg_audio_live_info(int32_t track_id, int *channels, const char
     if (track_id >= 0 && track_id == audio_live_track_id)
     {
         *channels    = audio_live_channels;
+        *info        = audio_live_stream;
         *description = audio_live_atmos == 1 ? AUDIO_DESC_EAC3_ATMOS :
                        (audio_live_atmos == 0 ? AUDIO_DESC_EAC3 : NULL);
         ret = 1;
@@ -1454,12 +1660,15 @@ int container_ffmpeg_audio_live_info(int32_t track_id, int *channels, const char
 }
 
 /* Called for every packet of the audio track that plays. */
-static void audio_live_packet(int32_t track_id, int codec_id, const uint8_t *data, size_t size)
+static void audio_live_packet(int32_t track_id, AVStream *stream, const uint8_t *data, size_t size)
 {
+    const int codec_id = (int)get_codecpar(stream)->codec_id;
+    AudioStreamInfo_t info;
     int is_eac3 = codec_id == AV_CODEC_ID_EAC3;
     int detected = is_eac3 ? eac3_packet_has_atmos(data, size) : 0;
     int changed = 0;
 
+    audio_stream_info(stream, &info);
     pthread_mutex_lock(&audio_live_mutex);
     if (track_id != audio_live_track_id)
     {
@@ -1468,6 +1677,12 @@ static void audio_live_packet(int32_t track_id, int codec_id, const uint8_t *dat
         audio_live_atmos     = -1;
         audio_live_atmos_pos = 0;
         audio_live_atmos_neg = 0;
+        audio_live_stream    = info;
+        ++audio_live_gen;
+    }
+    else if (memcmp(&info, &audio_live_stream, sizeof(info)))
+    {
+        audio_live_stream    = info;
         ++audio_live_gen;
     }
 
@@ -3166,6 +3381,7 @@ static void FFMPEGThread(Context_t *context)
                                      avContextTab[cAVIdx]->streams[packet.stream_index]))
             {
                 hevc_hdr_update(context, avContextTab[cAVIdx]->streams[packet.stream_index], &packet);
+                video_live_packet(context, videoTrack, avContextTab[cAVIdx]->streams[packet.stream_index]);
 #if LIBAVCODEC_VERSION_INT >= AV_VERSION_INT(56, 34, 100)
                 AVCodecContext *codec_context = videoTrack->avCodecCtx;
                 if (codec_context && codec_context->codec_id == AV_CODEC_ID_MPEG4 && NULL != mpeg4p2_context)
@@ -3416,7 +3632,7 @@ static void FFMPEGThread(Context_t *context)
 
                 if (packet.data && packet.size > 0)
                 {
-                    audio_live_packet(audioTrack->Id, (int)get_codecpar(audioTrack->stream)->codec_id, packet.data, (size_t)packet.size);
+                    audio_live_packet(audioTrack->Id, audioTrack->stream, packet.data, (size_t)packet.size);
                 }
 
                 if (audioTrack->inject_raw_pcm != 1 && audioTrack->inject_as_pcm != 1 &&
@@ -4097,6 +4313,7 @@ static void FFMPEGThread(Context_t *context)
     }
     hevc_hdr_detector_reset(&hevcHdrDetector);
     hevcHdrStream = NULL;
+    video_live_reset();
 #ifdef HAVE_CLOSED_CAPTIONS
     cc_close();
 #endif
@@ -5328,6 +5545,7 @@ static int32_t update_tracks(Context_t *context, char *filename, int32_t initial
                     track.Name      = "und";
                     track.Encoding  = encoding;
                     track.stream    = stream;
+                    video_stream_info(stream, &track.video_info);
                     track.Id        = stream_track_id(avContext, stream);
 
                     track.duration = (int64_t)av_rescale(stream->duration, (int64_t)stream->time_base.num * 1000, stream->time_base.den); 
@@ -5387,6 +5605,7 @@ static int32_t update_tracks(Context_t *context, char *filename, int32_t initial
 #else
                     track.channels       = get_codecpar(stream)->channels;
 #endif
+                    audio_stream_info(stream, &track.audio_info);
                     track.stream         = stream;
                     track.Id             = stream_track_id(avContext, stream);
                     track.aacbuf         = 0;

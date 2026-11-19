@@ -203,12 +203,17 @@ Audio `a_l` list entries and `a_c` current-track JSON add three keys after
 for display, `""` only when there is no track) and `"t"` (track title, `""`
 when the track has none):
 `{"a_c":{"id":1,"e":"A_EAC3","n":"eng","c":6,"d":"Dolby Atmos","t":"Commentary"}}`.
+Four more audio keys follow `t`: `"sr"` (sample rate in Hz), `"br"` (bit
+rate in bit/s), `"cl"` (channel layout as FFmpeg names it, `stereo`,
+`5.1(side)`, `7.1`) and `"bps"` (bits per sample, lossless codecs only:
+PCM, FLAC, TrueHD/MLP, DTS-HD MA, ALAC and others), `0` or `""` when unknown:
+`...,"t":"Commentary","sr":48000,"br":640000,"cl":"5.1(side)","bps":0}`.
 Subtitle `s_l` entries and `s_c` add `"t"` after `f`:
 `{"s_c":{"id":3,"e":"S_TEXT/ASS","n":"ger","f":1,"t":"Forced"}}`.
 The keys are always present, including in the no-track answers (`"id":-1`,
-`"c":0,"d":"","t":""`). `id`, `e`, `n` and `f` are unchanged; `e` remains the
-codec ID that selects the writer. `v_c` and the `a_s`/`s_s` switch results
-are unchanged.
+`"c":0,"d":"","t":"","sr":0,"br":0,"cl":"","bps":0`). `id`, `e`, `n` and `f`
+are unchanged; `e` remains the codec ID that selects the writer. The
+`a_s`/`s_s` switch results are unchanged.
 
 `d` is derived from codec ID and profile: `DTS`, `DTS-ES`, `DTS 96/24`,
 `DTS Express`, `DTS-HD HRA`, `DTS-HD MA`, `DTS:X`, `DTS:X IMAX`,
@@ -218,7 +223,13 @@ are unchanged.
 without an entry report FFmpeg's codec name. Profiles the linked FFmpeg does
 not define (DTS:X, DTS:X IMAX, E-AC-3 Atmos and xHE-AAC on older releases)
 report the base name. `c` and `d` come from the codec parameters read when
-tracks are listed, so they are only as exact as FFmpeg's probing.
+tracks are listed, so they are only as exact as FFmpeg's probing. So do
+`sr`, `br`, `cl` and `bps` (for DTS-HD the values of the codec parameters,
+which can differ from the core a receiver decodes); `br` is the Matroska
+statistics tag `BPS` when the codec parameters have no bit rate, otherwise
+`0` (the HLS `BANDWIDTH` covers a whole variant and is not used). For the
+selected track they follow changes of the codec parameters during playback,
+such as an HLS variant with other audio.
 
 Two values follow the selected audio track during playback. When that track
 is decoded in software, `c` is the channel count of the decoded frames. For
@@ -321,6 +332,19 @@ mastering-display and alternative-transfer SEI of the selected video stream;
 an alternative-transfer SEI overrides the VUI. Codecs other than HEVC always
 report `0`. Dolby Vision and HDR10+ signalling is not evaluated. The `v_c`
 sent when there is no video track (`"id":-1`) has no `hdr` key.
+
+Five keys follow `hdr` in `v_c`, and `n` in the `v_l` entries:
+`"pr"` (profile and level as ffprobe names the profile, `High@4.1`,
+`Main 10@5.1`; the level as written for H.264, HEVC, VP9 and AV1, FFmpeg's
+number for other codecs), `"bd"` (bit depth of the luma samples), `"br"`
+(bit rate in bit/s, from the codec parameters or the Matroska `BPS` tag),
+`"dv"` (Dolby Vision profile of the configuration record of MP4, Matroska
+or MPEG-TS, `0` without one) and `"cr"` (colour primaries, `bt709`,
+`bt2020`), `0` or `""` when unknown, also in the no-track `v_c`:
+`...,"hdr":1,"pr":"Main 10@5.1","bd":10,"br":0,"dv":8,"cr":"bt2020"}`.
+They come from the codec parameters of the stream. A change of them while
+the track plays (an HLS variant of another codec or profile) is sent as
+`v_c` without a request; `v_l` keeps the values of the list.
 
 Detection starts with the first packet of the selected video stream, from its
 extradata (Annex-B or hvcC) and then from the packets themselves, so a `vc`
@@ -605,8 +629,9 @@ are reduced, each with one line on stdout:
 
 An ignored option leaves the track on its normal path, as does a track whose
 decoder cannot be opened. Track JSON is unchanged: `e` in `a_l`/`a_c` keeps
-the value it has without transcoding (`A_DTS`, `A_IPCM`, `A_AAC`), while the
-audio output is configured for AC-3, E-AC-3 or AAC.
+the value it has without transcoding (`A_DTS`, `A_IPCM`, `A_AAC`) and
+`sr`, `br`, `cl` and `bps` are those of the source track, as with software
+decoding, while the audio output is configured for AC-3, E-AC-3 or AAC.
 
 `-Y` applies only to tracks that would otherwise reach the receiver's AAC
 decoder (`A_AAC`, `A_AAC_LATM`), not to AAC already decoded in software
