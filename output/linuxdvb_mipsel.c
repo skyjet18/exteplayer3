@@ -601,9 +601,15 @@ static int LinuxDvbMapBypassMode(int bypass, bool primary)
  * mode before the frame goes out, see LinuxDvbDtsHdStart().
  *
  * Only where the driver's DTS-HD mode is known to cope with a receiver that
- * has no DTS-HD: the drivers with /proc/stb/audio/dtshd.  Others may give
- * such a receiver no sound at all, so everything else stays on plain DTS.
+ * has no DTS-HD: the drivers with /proc/stb/audio/dtshd, and the Vu+ Uno 4K
+ * SE, Ultimo 4K and Duo 4K SE, which have no such file.  On the Uno 4K SE an
+ * AV receiver with DTS-HD shows DTS-HD MA in this mode, and a TV without any
+ * DTS, connected directly, plays the same sound with and without it; OpenBH
+ * uses the mode on the Ultimo 4K and Duo 4K SE.  Other drivers may give such
+ * a receiver no sound at all, so everything else stays on plain DTS.
  * EP3_DTS_HD_MODE=1 / EP3_DTS_HD_MODE=0 in the environment forces it on / off.
+ * Decided once, at the first DTS start or switch; it reads /proc files, so
+ * LinuxDvbSwitch() asks before it takes the mutex.
  */
 static int LinuxDvbDtsHdModeUsable(void)
 {
@@ -611,9 +617,19 @@ static int LinuxDvbDtsHdModeUsable(void)
     if (usable < 0)
     {
         const char *env = getenv("EP3_DTS_HD_MODE");
-        usable = STB_DREAMBOX != GetSTBType() && access("/proc/stb/audio/dtshd", F_OK) == 0;
+        char model[32] = "";
+
         if (env && (env[0] == '0' || env[0] == '1') && env[1] == '\0')
             usable = env[0] == '1';
+        else if (STB_DREAMBOX == GetSTBType())
+            usable = 0;
+        else if (access("/proc/stb/audio/dtshd", F_OK) == 0)
+            usable = 1;
+        else
+            usable = STB_VUPLUS == GetSTBType() &&
+                     LinuxDvbReadProcLine("/proc/stb/info/vumodel", model, sizeof(model)) &&
+                     (!strcmp(model, "uno4kse") || !strcmp(model, "ultimo4k") ||
+                      !strcmp(model, "duo4kse"));
     }
     return usable;
 }
@@ -1418,6 +1434,8 @@ int LinuxDvbSwitch(Context_t  *context, char *type)
         /* reads /proc files: before the mutex is taken */
         if (audio && audiofd != -1 && !context->playback->isDash)
             eac3Box = LinuxDvbEac3NeedsRestart();
+        if (audio && audiofd != -1)
+            (void)LinuxDvbDtsHdModeUsable();
         getLinuxDVBMutex();
 
         if (audio && audiofd != -1) {
