@@ -60,6 +60,16 @@ static int seek_playback(void *opaque, PlaybackCmd_t command, void *argument)
     return 0;
 }
 
+/* PLAYBACK_SEEK of an audio switch: relative 0, from the playback position */
+static int switch_seeks, switch_seek_error;
+
+static int switch_playback(void *opaque, PlaybackCmd_t command, void *argument)
+{
+    assert(command == PLAYBACK_SEEK && *(int64_t *)argument == 0);
+    switch_seeks++;
+    return switch_seek_error;
+}
+
 static Track_t *subtitle_selected;
 static int subtitle_seeks;
 
@@ -386,17 +396,30 @@ int main(void)
         assert(!g_do_seek_target_seconds);
         assert(streams[0].discard == AVDISCARD_ALL);
         assert(streams[1].discard == AVDISCARD_DEFAULT);
-        /* Static/custom-I/O DASH requests a reset without seeking. */
+        /* Static/custom-I/O DASH seeks to the playback position; the seek
+         * resets the buffers, no reset of its own. */
         playback.isDash = 1;
+        playback.Command = switch_playback;
         av.duration = 60 * AV_TIME_BASE;
         use_custom_io[0] = 1;
         selected = 0;
         assert(!container_ffmpeg_switch_audio(&context, &selected));
-        assert(!g_do_seek_target_seconds);
+        assert(switch_seeks == 1 && !dashAudioResetPending);
         assert(streams[0].discard == AVDISCARD_DEFAULT);
         assert(streams[1].discard == AVDISCARD_ALL);
-        assert(dashAudioResetPending);
+        use_custom_io[0] = 0;
+        selected = 1;
+        assert(!container_ffmpeg_switch_audio(&context, &selected));
+        assert(switch_seeks == 2 && !dashAudioResetPending);
+        /* a refused seek: the switch at the read position with the reset */
+        switch_seek_error = -1;
+        selected = 0;
+        assert(!container_ffmpeg_switch_audio(&context, &selected));
+        assert(switch_seeks == 3 && dashAudioResetPending);
+        assert(streams[0].discard == AVDISCARD_DEFAULT);
+        switch_seek_error = 0;
         dashAudioResetPending = 0;
+        /* live DASH: no seek, the reset */
         av.duration = AV_NOPTS_VALUE;
         selected = 1;
         assert(!container_ffmpeg_switch_audio(&context, &selected));

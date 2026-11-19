@@ -6128,17 +6128,22 @@ static int32_t container_ffmpeg_switch_audio(Context_t *context, int32_t *arg)
 {
     int64_t sec = 0;
     int32_t ret;
+    bool seeked = false;
     ffmpeg_printf(10, "track %d\n", *arg);
     /* PLAYBACK_SEEK is refused while paused or in trick play. The switch then
-     * takes effect at the read position, as it does on streams without duration. */
-    if (!context->playback->isDash &&
-        (!avContextTab[0] || use_custom_io[0] || avContextTab[0]->duration > 0) &&
+     * takes effect at the read position, as it does on streams without duration.
+     * Static DASH seeks as well: the demuxer starts the new representation at
+     * its read position, ahead of the playback by all that has been read ahead,
+     * and without the seek the reset of the A/V buffers jumps there. */
+    if ((!avContextTab[0] || use_custom_io[0] || avContextTab[0]->duration > 0) &&
         !context->playback->isPaused && !context->playback->isForwarding &&
         !context->playback->BackWard && !context->playback->SlowMotion)
     {
         ret = context->playback->Command(context, PLAYBACK_SEEK, &sec);
-        if (ret != 0)
+        /* DASH switched without a seek before: it still can */
+        if (ret != 0 && !context->playback->isDash)
             return ret;
+        seeked = ret == 0;
     }
     getMutex_wr(__FILE__, __FUNCTION__,__LINE__);
     if (context->manager->audio)
@@ -6160,10 +6165,11 @@ static int32_t container_ffmpeg_switch_audio(Context_t *context, int32_t *arg)
             }
         }
     }
-    if (context->playback->isDash)
+    /* the seek resets all of this and more */
+    if (context->playback->isDash && !seeked)
         dashAudioResetPending = 1;
     releaseMutex(__FILE__, __FUNCTION__,__LINE__);
-    
+
     return cERR_CONTAINER_FFMPEG_NO_ERROR;
 }
 
