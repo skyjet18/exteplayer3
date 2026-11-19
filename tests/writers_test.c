@@ -611,8 +611,231 @@ static void h265_repeated_sets_with_a_trailing_zero(void)
     WriterVideoH265.reset();
 }
 
+/* Constrained High: constraint_set4/5 of High profile SPS cleared. The SPS
+ * of a live encoder whose streams played without picture on Broadcom boxes:
+ * High (100), constraint byte 0x0C, level 4.0. */
+static const uint8_t ch_sps[] = {0x67, 0x64, 0x0c, 0x28, 0xac, 0xd9, 0x40, 0x50, 0x05, 0xbb, 0x01, 0x10};
+static const uint8_t ch_pps[] = {0x68, 0xce, 0x3c, 0x80};
+
+/* Writes "data" (and "extra" as codec data) in buffers of their exact size,
+ * so that ASan sees a read beyond them, and checks that the elementary
+ * stream behind the PES header is "expected" and that the caller's buffers
+ * are not changed. */
+static void h264_es(const uint8_t *data, size_t size, const uint8_t *extra, size_t extra_size,
+                    const uint8_t *expected, size_t expected_size)
+{
+    uint8_t *copy = malloc(size);
+    uint8_t *extra_copy = extra_size ? malloc(extra_size) : NULL;
+    WriterAVCallData_t call;
+    size_t pes;
+    assert(copy && (!extra_size || extra_copy));
+    memcpy(copy, data, size);
+    if (extra_size)
+        memcpy(extra_copy, extra, extra_size);
+    call = packet(copy, size, extra_copy, extra_size, capture);
+    WriterVideoH264.reset();
+    assert(WriterVideoH264.writeData(&call) == (int)written_size);
+    /* the PES header, with the fake start code of the Annex B path */
+    pes = parts[0].iov_len;
+    assert(written_size == pes + expected_size);
+    assert(!memcmp(written + pes, expected, expected_size));
+    assert(!memcmp(copy, data, size));
+    assert(!extra_size || !memcmp(extra_copy, extra, extra_size));
+    WriterVideoH264.reset();
+    free(copy);
+    free(extra_copy);
+}
+
+/* Appends an Annex B NAL unit. */
+static size_t put_nal(uint8_t *out, size_t pos, const uint8_t *nal, size_t size)
+{
+    memcpy(out + pos, "\0\0\0\1", 4);
+    memcpy(out + pos + 4, nal, size);
+    return pos + 4 + size;
+}
+
+/* A TS packet: AUD, SPS, PPS and slice, SPS and PPS in front of every IDR. */
+static size_t ch_access_unit(uint8_t *out, const uint8_t *sps, size_t sps_size)
+{
+    size_t pos = put_nal(out, 0, (const uint8_t[]){0x09, 0xf0}, 2);
+    pos = put_nal(out, pos, sps, sps_size);
+    pos = put_nal(out, pos, ch_pps, sizeof(ch_pps));
+    return put_nal(out, pos, (const uint8_t[]){0x65, 0x88, 0x84}, 3);
+}
+
+/* An Annex B packet with a SPS of "header", "profile", "flags" and
+ * "level": written with "expected" as its constraint byte. */
+static void h264_constraint_annexb(uint8_t header, uint8_t profile, uint8_t flags, uint8_t level, uint8_t expected)
+{
+    uint8_t sps[sizeof(ch_sps)], wanted[sizeof(ch_sps)];
+    uint8_t data[64], out[64];
+    size_t size;
+    memcpy(sps, ch_sps, sizeof(sps));
+    sps[0] = header;
+    sps[1] = profile;
+    sps[2] = flags;
+    sps[3] = level;
+    memcpy(wanted, sps, sizeof(wanted));
+    wanted[2] = expected;
+    size = ch_access_unit(data, sps, sizeof(sps));
+    assert(ch_access_unit(out, wanted, sizeof(wanted)) == size);
+    h264_es(data, size, NULL, 0, out, size);
+}
+
+static void h264_constrained_high_in_the_packet(void)
+{
+    /* the stream of the encoder: High, 0x0C, level 4.0 */
+    h264_constraint_annexb(0x67, 100, 0x0c, 40, 0x00);
+    /* one of the two flags, other High profiles, nal_ref_idc 1 */
+    h264_constraint_annexb(0x67, 100, 0x08, 40, 0x00);
+    h264_constraint_annexb(0x67, 100, 0x04, 42, 0x00);
+    h264_constraint_annexb(0x67, 110, 0x1c, 40, 0x10);
+    h264_constraint_annexb(0x67, 122, 0x0c, 41, 0x00);
+    h264_constraint_annexb(0x67, 244, 0x0c, 50, 0x00);
+    h264_constraint_annexb(0x27, 100, 0x0c, 40, 0x00);
+    /* the other constraint flags of High stay */
+    h264_constraint_annexb(0x67, 100, 0xec, 40, 0xe0);
+}
+
+static void h264_other_profiles_keep_their_flags(void)
+{
+    /* High without the flags, Baseline, Main, Extended, MVC */
+    h264_constraint_annexb(0x67, 100, 0x00, 40, 0x00);
+    h264_constraint_annexb(0x67, 100, 0x10, 40, 0x10);
+    h264_constraint_annexb(0x67, 66, 0xcc, 30, 0xcc);
+    h264_constraint_annexb(0x67, 77, 0x4c, 40, 0x4c);
+    h264_constraint_annexb(0x67, 88, 0x0c, 30, 0x0c);
+    h264_constraint_annexb(0x67, 118, 0x0c, 40, 0x0c);
+    h264_constraint_annexb(0x67, 128, 0x0c, 40, 0x0c);
+    /* level_idc 0: a cleared byte could start an emulated start code */
+    h264_constraint_annexb(0x67, 100, 0x0c, 0, 0x0c);
+}
+
+/* Two SPS in one packet, Annex B codec data in front of a packet
+ * without parameter sets. */
+static void h264_constrained_high_annexb_codec_data(void)
+{
+    uint8_t high10[sizeof(ch_sps)];
+    uint8_t data[96], out[96], extra[64], extra_out[64];
+    uint8_t sps0[sizeof(ch_sps)];
+    size_t size, extra_size;
+    memcpy(high10, ch_sps, sizeof(high10));
+    high10[1] = 110;
+    high10[2] = 0x08;
+    memcpy(sps0, ch_sps, sizeof(sps0));
+    sps0[2] = 0;
+    size = put_nal(data, 0, ch_sps, sizeof(ch_sps));
+    size = put_nal(data, size, high10, sizeof(high10));
+    size = put_nal(data, size, (const uint8_t[]){0x65, 0x88}, 2);
+    high10[2] = 0;
+    assert(put_nal(out, put_nal(out, put_nal(out, 0, sps0, sizeof(sps0)), high10, sizeof(high10)),
+                   (const uint8_t[]){0x65, 0x88}, 2) == size);
+    h264_es(data, size, NULL, 0, out, size);
+
+    extra_size = put_nal(extra, put_nal(extra, 0, ch_sps, sizeof(ch_sps)), ch_pps, sizeof(ch_pps));
+    put_nal(extra_out, put_nal(extra_out, 0, sps0, sizeof(sps0)), ch_pps, sizeof(ch_pps));
+    size = put_nal(data, 0, (const uint8_t[]){0x65, 0x88}, 2);
+    memcpy(out, extra_out, extra_size);
+    memcpy(out + extra_size, data, size);
+    h264_es(data, size, extra, extra_size, out, extra_size + size);
+}
+
+/* The SPS of the avcC (MP4, MKV) and SPS in length prefixed samples. */
+static void h264_constrained_high_avcc(void)
+{
+    uint8_t avcc[64] = {1, 100, 0x0c, 40, 0xff, 0xe1};
+    uint8_t sps0[sizeof(ch_sps)];
+    uint8_t out[64];
+    uint8_t frame[] = {0, 0, 0, 2, 0x65, 0x88};
+    uint8_t key[4 + sizeof(ch_sps) + 4 + sizeof(ch_pps) + 6];
+    uint8_t empty[] = {1, 100, 0x0c, 40, 0xff, 0xe0, 0};
+    size_t pos = 6, size;
+    memcpy(sps0, ch_sps, sizeof(sps0));
+    sps0[2] = 0;
+    pos = avcc_set(avcc, pos, ch_sps, sizeof(ch_sps));
+    avcc[pos++] = 1;
+    pos = avcc_set(avcc, pos, ch_pps, sizeof(ch_pps));
+    size = put_nal(out, 0, sps0, sizeof(sps0));
+    size = put_nal(out, size, ch_pps, sizeof(ch_pps));
+    size = put_nal(out, size, frame + 4, 2);
+    h264_es(frame, sizeof(frame), avcc, pos, out, size);
+
+    /* the sets in the key frame, the avcC without them */
+    memcpy(key, "\0\0\0\x0c", 4);
+    memcpy(key + 4, ch_sps, sizeof(ch_sps));
+    memcpy(key + 16, "\0\0\0\x04", 4);
+    memcpy(key + 20, ch_pps, sizeof(ch_pps));
+    memcpy(key + 24, frame, sizeof(frame));
+    h264_es(key, sizeof(key), empty, sizeof(empty), out, size);
+}
+
+/* Packets cut within the SPS: nothing read beyond them (ASan), a SPS too
+ * short for its level byte is written as it is. */
+static void h264_constrained_high_cut(void)
+{
+    uint8_t data[64], out[64];
+    uint8_t avcc[64] = {1, 100, 0x0c, 40, 0xff, 0xe1};
+    uint8_t key[4 + sizeof(ch_sps)];
+    size_t pos = 6, cut;
+    ch_access_unit(data, ch_sps, sizeof(ch_sps));
+    /* AUD, start code, then 67 64 0C 28: the level byte is the 14th */
+    for (cut = 5; cut <= 6 + 4 + 4; cut++)
+    {
+        memcpy(out, data, cut);
+        if (cut == 6 + 4 + 4)
+            out[12] = 0;
+        h264_es(data, cut, NULL, 0, out, cut);
+    }
+    /* length prefixed: the length says 12, the packet ends earlier */
+    pos = avcc_set(avcc, pos, ch_sps, sizeof(ch_sps));
+    avcc[pos++] = 1;
+    pos = avcc_set(avcc, pos, ch_pps, sizeof(ch_pps));
+    memcpy(key, "\0\0\0\x0c", 4);
+    memcpy(key + 4, ch_sps, sizeof(ch_sps));
+    for (cut = 6; cut <= 8; cut++)
+    {
+        uint8_t *copy = malloc(cut);
+        WriterAVCallData_t call;
+        assert(copy);
+        memcpy(copy, key, cut);
+        call = packet(copy, cut, avcc, pos, capture);
+        WriterVideoH264.reset();
+        assert(WriterVideoH264.writeData(&call) > 0);
+        /* the SPS of the packet as far as it goes, its byte 2 cleared once it has a level */
+        assert(!memcmp(written + written_size - (cut - 4), key + 4, cut - 4 < 3 ? cut - 4 : 2));
+        if (cut == 8)
+            assert(!written[written_size - 2]);
+        assert(!memcmp(copy, key, cut));
+        WriterVideoH264.reset();
+        free(copy);
+    }
+}
+
+/* More SPS in a packet than bytes to clear: the rest stays, nothing
+ * beyond the iovec. */
+static void h264_constrained_high_many_sets(void)
+{
+    uint8_t data[45 * 8 + 6], out[45 * 8 + 6];
+    size_t pos = 0;
+    int i;
+    for (i = 0; i < 45; i++)
+    {
+        pos = put_nal(data, pos, (const uint8_t[]){0x67, 100, 0x0c, 40}, 4);
+        put_nal(out, pos - 8, (const uint8_t[]){0x67, 100, i < 32 ? 0 : 0x0c, 40}, 4);
+    }
+    pos = put_nal(data, pos, (const uint8_t[]){0x65, 0x88}, 2);
+    put_nal(out, pos - 6, (const uint8_t[]){0x65, 0x88}, 2);
+    h264_es(data, pos, NULL, 0, out, pos);
+}
+
 int main(void)
 {
+    h264_constrained_high_in_the_packet();
+    h264_other_profiles_keep_their_flags();
+    h264_constrained_high_annexb_codec_data();
+    h264_constrained_high_avcc();
+    h264_constrained_high_cut();
+    h264_constrained_high_many_sets();
     h264_repeated_sets_with_a_trailing_zero();
     h264_stray_zero_between_sets();
     h264_pps_count_beyond_the_avcc();
