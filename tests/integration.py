@@ -720,6 +720,9 @@ def main():
         # Paths whose body stops at byte n, the connection kept open without
         # another byte until released (also for requests that start there).
         stalls, stall_release = {}, threading.Event()
+        # Paths that are read but never answered, not even with the headers,
+        # until stall_release.
+        unanswered = set()
         payload = media.read_bytes()
         master = (b"#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=100000\nlow.m3u8\n"
                   b"#EXT-X-STREAM-INF:BANDWIDTH=900000\nhigh.m3u8\n")
@@ -772,6 +775,9 @@ def main():
                 if failures.get(self.path):
                     failures[self.path] -= 1
                     self.send_error(503)
+                    return
+                if self.path in unanswered:
+                    stall_release.wait(150)
                     return
                 # requests behind the stall point (the duration probe at the
                 # end of a TS) are answered in full
@@ -2025,6 +2031,63 @@ def main():
                 assert opens[0]["file"] == "file://" + str(target), (options, opens)
                 assert lines.index({"FF_ERROR": errors[0]}) < lines.index({"PLAYBACK_OPEN": opens[0]})
             print("PASS failed open: FF_ERROR and PLAYBACK_OPEN sts -1, also for a missing -x iptv:// file")
+
+            # q while the open of the input hangs on a server that accepts the
+            # connection and stops answering: before the headers, after them,
+            # in the HLS master or media playlist, in the segment, and when
+            # avformat_find_stream_info() waits for more packets. The player
+            # ends without a signal and with the exit code of a stop during
+            # the open (11), within a few seconds, and without an FF_ERROR:
+            # the open did not fail, it was stopped.
+            for name, data in (("qhead.ts", payload), ("qbody.ts", payload), ("qinfo.ts", payload),
+                               ("qseg.ts", payload), ("qsegbody.ts", payload),
+                               ("qmaster.m3u8", master), ("qmedia.m3u8", b"")):
+                resources["/" + name] = data
+            unanswered.update({"/qhead.ts", "/qmaster.m3u8", "/qmedia.m3u8", "/qseg.ts"})
+            stalls["/qbody.ts"] = 0
+            stalls["/qinfo.ts"] = 188 * 40
+            stalls["/qsegbody.ts"] = 188 * 40
+            resources["/qvariant.m3u8"] = b"#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=100000\nqmedia.m3u8\n"
+            for name in ("qseg", "qsegbody"):
+                resources[f"/{name}.m3u8"] = (
+                    f"#EXTM3U\n#EXT-X-TARGETDURATION:12\n#EXTINF:12,\n"
+                    f"{name}.ts\n#EXT-X-ENDLIST\n").encode()
+            for path, delay in (("/qhead.ts", 1), ("/qbody.ts", 2), ("/qinfo.ts", 1),
+                                ("/qmaster.m3u8", 1), ("/qvariant.m3u8", 3), ("/qseg.m3u8", 1),
+                                ("/qsegbody.m3u8", 2), ("/qinfo.ts", 3)):
+                player = Player(args.player, base + path)
+                try:
+                    time.sleep(delay)
+                    assert player.process.poll() is None, (path, player.process.returncode, player.messages)
+                    assert not any("PLAYBACK_OPEN" in message for message in player.messages), (
+                        path, player.messages)
+                    started = time.monotonic()
+                    player.command("j")  # not answered during the open, as before
+                    player.command("q")
+                    try:
+                        player.process.wait(timeout=8)
+                    except subprocess.TimeoutExpired:
+                        raise AssertionError(f"{path}: still running 8 s after q")
+                    took = time.monotonic() - started
+                finally:
+                    if player.process.poll() is None:
+                        player.process.kill()
+                        player.process.wait()
+                    player.reader.join(timeout=2)
+                    player.process.stdin.close()
+                    player.process.stderr.close()
+                    player.log.seek(0)
+                    output = player.log.read().decode(errors="replace")
+                    player.log.close()
+                details = (path, delay, player.process.returncode, round(took, 2), player.messages,
+                           "".join(player.raw_stderr)[-4000:], output[-3000:])
+                assert player.process.returncode >= 0, details  # not ended by a signal
+                assert player.process.returncode == 11, details
+                assert took < 5, details
+                assert not player.diagnostic_error, details
+                assert not any("FF_ERROR" in message for message in player.messages), details
+            print("PASS q during a hanging open: exit code 11 within 5 s, no signal, no FF_ERROR"
+                  " (http before/after the headers, find_stream_info, HLS playlists and segment)")
 
             # Playback that ends because no data comes any more (the stall
             # limit, at least 60 s) is not the end of the stream: FF_ERROR
