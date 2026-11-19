@@ -571,15 +571,15 @@ class HevcBits:
         return bytes(out)
 
 
-def hevc_profile_tier_level(bits):
-    bits.put(1, 8)  # profile space 0, Main tier, Main profile
-    bits.put(0x60000000, 32)
+def hevc_profile_tier_level(bits, profile=1):
+    bits.put(profile, 8)  # profile space 0, Main tier, Main (1) or Main 10 (2) profile
+    bits.put(0x60000000 if profile == 1 else 0x20000000, 32)
     bits.put(9, 4)  # progressive, frame only
     bits.put(0, 44)
     bits.put(60, 8)  # level 2
 
 
-def hevc_stream(transfer, alternative=None, frames=60):
+def hevc_stream(transfer, alternative=None, frames=60, profile=1):
     vps = HevcBits()
     vps.put(0, 4)
     vps.put(3, 2)
@@ -587,7 +587,7 @@ def hevc_stream(transfer, alternative=None, frames=60):
     vps.put(0, 3)  # one sub-layer
     vps.put(1, 1)
     vps.put(0xFFFF, 16)
-    hevc_profile_tier_level(vps)
+    hevc_profile_tier_level(vps, profile)
     vps.put(1, 1)
     for _ in range(3):
         vps.ue(0)
@@ -598,11 +598,12 @@ def hevc_stream(transfer, alternative=None, frames=60):
     sps.put(0, 4)
     sps.put(0, 3)
     sps.put(1, 1)
-    hevc_profile_tier_level(sps)
+    hevc_profile_tier_level(sps, profile)
     for value in (0, 1, 64, 64):  # SPS id, 4:2:0, 64x64
         sps.ue(value)
     sps.put(0, 1)  # no conformance window
-    for value in (0, 0, 4):  # 8 bit, 8 bit POC LSB
+    depth = 2 if profile == 2 else 0
+    for value in (depth, depth, 4):  # 8 bit (10 bit for Main 10), 8 bit POC LSB
         sps.ue(value)
     sps.put(1, 1)
     for value in (0, 0, 0, 0, 1, 0, 2, 0, 0):  # DPB; 8x8 CU, 16x16 CTB; 4x4 to 16x16 TU
@@ -2463,14 +2464,175 @@ def main():
                 try:
                     assert player.wait("a_l") == []
                     for _ in range(2):  # sent at the start, then asked for
-                        assert player.wait("a_c") == {
-                            "id": -1, "e": "", "n": "", "c": 0, "d": "", "t": ""}
+                        current = player.wait("a_c")
+                        assert current == {"id": -1, "e": "", "n": "", "c": 0, "d": "", "t": "",
+                                           "sr": 0, "br": 0, "cl": "", "bps": 0}, current
+                        assert list(current) == ["id", "e", "n", "c", "d", "t", "sr", "br", "cl",
+                                                 "bps"], current
                         assert player.wait("s_c") == {"id": -1, "e": "", "n": "", "f": 0, "t": ""}
                         player.command("ac\nsc")
                 finally:
                     player.stop()
 
             track_case("a_c/s_c without audio and subtitle tracks: every key present", no_track)
+
+            # Sample rate "sr" and bit rate "br" of audio tracks. FFmpeg has no
+            # MP3 encoder here: silent MPEG-1 Layer III frames, 44.1 kHz mono
+            # 128 kbit/s, header and zero side info (part2_3_length 0).
+            silence_mp3 = root / "silence.mp3"
+            silence_mp3.write_bytes((b"\xff\xfb\x90\xc0" + bytes(413)) * 460)
+            rates = root / "rates.mkv"
+            run(args.ffmpeg, "-y", "-i", str(media), "-f", "s16le", "-ar", "48000", "-ac", "2",
+                "-i", str(audio), "-f", "mp3", "-i", str(silence_mp3), "-f", "srt",
+                "-i", str(subtitles), "-map", "0:v", "-map", "1:a", "-map", "2:a", "-map", "1:a",
+                "-map", "1:a", "-map", "3", "-c:v", "copy",
+                "-c:a:0", "ac3", "-ac:a:0", "6", "-b:a:0", "448k",
+                "-c:a:1", "copy",
+                "-c:a:2", "flac", "-ar:a:2", "44100", "-sample_fmt:a:2", "s32",
+                "-c:a:3", "aac", "-b:a:3", "128k", "-metadata:s:a:3", "BPS=131072",
+                "-c:s", "copy", "-t", "12", str(rates))
+            rates_mp4 = root / "rates.mp4"
+            run(args.ffmpeg, "-y", "-i", str(media), "-f", "s16le", "-ar", "48000", "-ac", "2",
+                "-i", str(audio), "-map", "0:v", "-map", "1:a", "-c:v", "copy", "-c:a", "aac",
+                "-b:a", "128k", "-t", "12", str(rates_mp4))
+            audio_keys = ["id", "e", "n", "c", "d", "t", "sr", "br", "cl", "bps"]
+            video_keys = ["id", "e", "n", "w", "h", "f", "p", "an", "ad", "hdr",
+                          "pr", "bd", "br", "dv", "cr"]
+
+            def rate_values():
+                player = Player(args.player, str(rates))
+                try:
+                    video = player.wait("v_c")  # sent before the audio tracks
+                    tracks = player.wait("a_l")
+                    current = player.wait("a_c")
+                    subtitle_tracks = player.wait("s_l")
+                    player.command("vl")
+                    video_list = player.wait("v_l")
+                    switched_tracks = []
+                    for index in (1, 2, 3):
+                        player.command(f"ai{index}")
+                        assert player.wait("a_s")["id"] == tracks[index]["id"]
+                        player.command("ac")
+                        switched_tracks.append(player.wait("a_c"))
+                finally:
+                    player.stop()
+                print("rates.mkv a_l:", tracks)
+                assert all(list(track) == audio_keys for track in tracks), tracks
+                assert list(current) == audio_keys, current
+                assert [(t["d"], t["c"], t["sr"]) for t in tracks] == [
+                    ("Dolby Digital", 6, 48000), ("MP3", 1, 44100), ("FLAC", 2, 44100),
+                    ("AAC-LC", 2, 48000)], tracks
+                assert tracks[0]["br"] == 448000, tracks[0]
+                assert tracks[1]["br"] == 128000, tracks[1]
+                assert tracks[2]["br"] == 0, tracks[2]
+                # AAC in Matroska has no bit rate: the statistics tag
+                assert tracks[3]["br"] == 131072, tracks[3]
+                assert tracks[0]["cl"] in ("5.1(side)", "5.1"), tracks[0]
+                assert [t["cl"] for t in tracks[1:]] == ["mono", "stereo", "stereo"], tracks
+                # bits per sample only for lossless codecs
+                assert [t["bps"] for t in tracks] == [0, 0, 24, 0], tracks
+                print("rates.mkv v_c:", video, "v_l:", video_list)
+                assert list(video) == video_keys, video
+                assert video["bd"] == 8 and video["dv"] == 0 and video["cr"] == "", video
+                assert video["pr"].startswith("Main"), video
+                assert len(video_list) == 1, video_list
+                assert list(video_list[0]) == ["id", "e", "n", "pr", "bd", "br", "dv", "cr"]
+                assert {k: video_list[0][k] for k in video_keys[10:]} == {
+                    k: video[k] for k in video_keys[10:]}, (video_list, video)
+                assert current == tracks[0], (current, tracks)
+                for track, switched_track in zip(tracks[1:], switched_tracks):
+                    assert switched_track == track, (switched_track, track)
+                # subtitle entries keep their keys
+                assert all(list(track) == ["id", "e", "n", "f", "t"]
+                           for track in subtitle_tracks), subtitle_tracks
+
+            track_case("a_l/a_c: rate, bit rate, layout and sample size of AC-3 5.1 448k, MP3 "
+                       "44.1 kHz 128k mono, FLAC 24 bit without bit rate and AAC with a BPS "
+                       "tag; v_c/v_l of MPEG-2; s_l unchanged", rate_values)
+
+            def rate_values_mp4():
+                player = Player(args.player, str(rates_mp4))
+                try:
+                    tracks = player.wait("a_l")
+                    current = player.wait("a_c")
+                finally:
+                    player.stop()
+                print("rates.mp4 a_l:", tracks)
+                assert len(tracks) == 1 and current == tracks[0], (current, tracks)
+                assert tracks[0]["sr"] == 48000, tracks
+                assert 96000 <= tracks[0]["br"] <= 160000, tracks
+                assert (tracks[0]["cl"], tracks[0]["bps"]) == ("stereo", 0), tracks
+
+            track_case("a_l/a_c: sample rate and bit rate of AAC 48 kHz 128k in MP4",
+                       rate_values_mp4)
+
+            # Video: H.264 High 8 bit in MP4 (MP4 has a bit rate), written bit
+            # by bit as tests/h264_avcc_mp4.py does: I_PCM macroblocks, no
+            # encoder needed; HEVC Main 10 with BT.2020 in MPEG-TS (none).
+            def h264_high_sps():
+                b = h264_avcc_mp4.Bits()
+                b.put(100, 8)   # High profile
+                b.put(0, 8)
+                b.put(40, 8)    # level 4.0
+                b.ue(0)         # seq_parameter_set_id
+                b.ue(1)         # chroma_format_idc 4:2:0
+                b.ue(0)         # bit_depth_luma_minus8
+                b.ue(0)         # bit_depth_chroma_minus8
+                b.put(0, 2)     # no transform bypass, no scaling matrix
+                for value in (0, 2, 1):  # frame_num bits, POC type 2, one reference
+                    b.ue(value)
+                b.put(0, 1)
+                b.ue(3)         # 64x64
+                b.ue(3)
+                b.put(1, 1)
+                b.put(1, 1)
+                b.put(0, 2)     # no cropping, no VUI
+                return b.nal(0x67)
+
+            start = b"\0\0\0\1"
+            h264_raw = root / "high.h264"
+            h264_raw.write_bytes(b"".join(
+                start + h264_high_sps() + start + h264_avcc_mp4.pps(0) + start + h264_avcc_mp4.idr(n)
+                for n in range(50)))
+            high_mp4 = root / "high.mp4"
+            run(args.ffmpeg, "-y", "-f", "h264", "-framerate", "25", "-i", str(h264_raw),
+                "-c", "copy", str(high_mp4))
+            main10_raw = root / "main10.hevc"
+            main10_raw.write_bytes(hevc_stream(1, profile=2))
+            main10_ts = root / "main10.ts"
+            run(args.ffmpeg, "-y", "-f", "hevc", "-framerate", "25", "-i", str(main10_raw),
+                "-c", "copy", str(main10_ts))
+
+            def video_values(target, check):
+                def case():
+                    player = Player(args.player, str(target))
+                    try:
+                        video = player.wait("v_c")
+                        player.command("vl")
+                        video_list = player.wait("v_l")
+                    finally:
+                        player.stop()
+                    print(f"{target.name} v_c:", video)
+                    assert list(video) == video_keys, video
+                    assert video["dv"] == 0, video
+                    assert {k: video_list[0][k] for k in video_keys[10:]} == {
+                        k: video[k] for k in video_keys[10:]}, (video_list, video)
+                    check(video)
+                return case
+
+            def high_check(video):
+                assert (video["e"], video["pr"], video["bd"]) == (
+                    "V_MPEG4/ISO/AVC", "High@4.0", 8), video
+                assert video["br"] > 0, video
+
+            def main10_check(video):
+                assert (video["e"], video["pr"], video["bd"], video["cr"], video["br"]) == (
+                    "V_HEVC", "Main 10@2.0", 10, "bt2020", 0), video
+
+            track_case("v_c/v_l: H.264 High@4.0, 8 bit, bit rate of the MP4",
+                       video_values(high_mp4, high_check))
+            track_case("v_c/v_l: HEVC Main 10@2.0, 10 bit, BT.2020, no bit rate in MPEG-TS",
+                       video_values(main10_ts, main10_check))
             assert not failed, failed
 
             sound = root / "sound.ts"
