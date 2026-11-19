@@ -1741,10 +1741,10 @@ int main(int argc, char* argv[])
 
     if (0 != ParseParams(argc, argv, &playbackFiles, &audioTrackIdx, &subtitleTrackIdx, &linuxDvbBufferSizeMB))
     {
-        printf("Usage: exteplayer3 filePath [-u user-agent] [-c cookies] [-h headers] [-p prio] [-a] [-d] [-w] [-l] [-s] [-i] [-C] [-T timeout] [-L desc] [-t audioTrackId] [-9 subtitleTrackId] [-x separateAudioUri] plabackUri\n");
+        printf("Usage: exteplayer3 filePath [-u user-agent] [-c cookies] [-h headers] [-p prio] [-a n] [-d] [-w] [-l] [-s] [-i] [-C] [-T timeout] [-L desc] [-t audioTrackIndex] [-9 subtitleTrackIndex] [-x separateAudioUri] playbackUri\n");
         printf("[-K] export decoded S16LE audio to " PCM_EXPORT_PATH " (forces software decoding)\n");
         printf("[-b size] Linux DVB output buffer size in MB\n");
-        printf("[-a 0|1|2|3] AAC software decoding - 1 bit - AAC ADTS, 2 - bit AAC LATM\n");
+        printf("[-a 0|1|2|3] AAC software decoding, bit mask: 1 - AAC, 2 - AAC LATM (3 - both, 0 - none)\n");
         printf("[-j ms] AAC/DTS PTS dejitter threshold in ms, 0 - disabled (default 200)\n");
         printf("[-Q 0|1|2] HLS/DASH quality: auto/highest (0 or 2), lowest (1)\n");
         printf("[-D 0|1] Keep only default HLS audio renditions (default 0)\n");
@@ -1759,6 +1759,7 @@ int main(int argc, char* argv[])
         printf("[-w] WMA2, WMA/PRO software decoding\n");
         printf("[-l] software decoder use LPCM for injection (otherwise wav PCM will be used)\n");
         printf("[-s] software decoding as stereo [downmix]\n");
+        printf("[-r] PCM tracks go to the PCM writer as they are, without software decoding and resampling\n");
         printf("[-Z] [--dts-ac3] DTS transcoding to AC3 5.1 (also with -d)\n");
         printf("[-X] [--truehd-ac3] TrueHD/MLP transcoding to AC3 5.1\n");
         printf("[-E] -Z and -X transcode to E-AC-3 5.1 instead of AC3 (AC3 when FFmpeg has no E-AC-3 encoder)\n");
@@ -1779,7 +1780,7 @@ int main(int argc, char* argv[])
         printf("[-4 0|1] - disable/enable flv2mpeg4 converter\n");
 #endif
         printf("[-C] disable tracks info cache\n");
-        printf("[-T] set http timeout\n");
+        printf("[-T ms] set http timeout in ms (default 10000)\n");
         printf("[-L desc] description of debug level to change in format NAME:INT_VALUE\n");
         printf("[-i] play in infinity loop\n");
         printf("[-v] switch to live TS stream mode\n");
@@ -1787,8 +1788,8 @@ int main(int argc, char* argv[])
         printf("[-o 0|1] set progressive download\n");
         printf("[-p value] nice value\n");
         printf("[-P value] select Program ID from multi-service stream\n");
-        printf("[-t id] audio track ID switched on at start\n");
-        printf("[-9 id] subtitle track ID switched on at start\n");
+        printf("[-t index] audio track switched on at start, position in the audio track list (0 - first, as stdin ai<n>)\n");
+        printf("[-9 index] subtitle track switched on at start, position in the subtitle track list (0 - first, as stdin si<n>)\n");
         printf("[--start seconds] start position, before the first packet (not for live streams; \"start\" in EPLAYER3_EXTENDED)\n");
         printf("[-h headers] set custom HTTP headers \"Name: value\\r\\nName: value\\r\\n\"\n");
         printf("[-u user-agent] set custom http User-Agent header\n");
@@ -1796,16 +1797,16 @@ int main(int argc, char* argv[])
         printf("[-x separateAudioUri]\n");
         printf("[-0 idx] video MPEG-DASH representation index\n");
         printf("[-1 idx] audio MPEG-DASH representation index\n");
-        printf("[-5 idx] all stream MPEG-DASH cenc decryption key\n");
-        printf("[-6 idx] video MPEG-DASH stream index cenc decryption key\n");
-        printf("[-7 idx] audio MPEG-DASH stream index cenc decryption key\n");
+        printf("[-5 key] MPEG-DASH cenc decryption key of all streams, 32 hex digits (default key)\n");
+        printf("[-6 key] MPEG-DASH cenc decryption key of the video streams, 32 hex digits\n");
+        printf("[-7 key] MPEG-DASH cenc decryption key of the audio streams, 32 hex digits\n");
         printf("[-f ffopt=ffval] any other ffmpeg option\n");
-        printf("[-F path to additional file with moov atom data (used for mp4 playback in progressive download mode)\n");
-        printf("[-O moov atom offset in the original file (used for mp4 playback in progressive download mode)\n");
-        printf("[-S remote file size (used for mp4 playback in progressive download mode)\n");
-        printf("[-G path (directory where graphic subtitles frames will be saved)\n");
-        printf("[-W osd window width (width of the window used to scale graphic subtitle frame)\n");
-        printf("[-H osd window height (height of the window used to scale graphic subtitle frame)\n");
+        printf("[-F path] additional file with moov atom data (used for mp4 playback in progressive download mode)\n");
+        printf("[-O offset] moov atom offset in the original file (used for mp4 playback in progressive download mode)\n");
+        printf("[-S size] remote file size (used for mp4 playback in progressive download mode)\n");
+        printf("[-G path] directory where graphic subtitles frames will be saved\n");
+        printf("[-W width] osd window width (width of the window used to scale graphic subtitle frame, default 1280)\n");
+        printf("[-H height] osd window height (height of the window used to scale graphic subtitle frame, default 720)\n");
         exit(1);
     }
     
