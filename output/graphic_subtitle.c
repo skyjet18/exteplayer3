@@ -35,7 +35,7 @@
 #include "plugins/png.h"
 
 /* ***************************** */
-/* Makros/Constants              */
+/* Macros/Constants              */
 /* ***************************** */
 #define MAX_RECT_DESC 4
 
@@ -61,7 +61,7 @@ typedef struct
 } rec_desc_t;
 
 /* ***************************** */
-/* Varaibles                     */
+/* Variables                     */
 /* ***************************** */
 static decoder_sys_t *g_sys;
 

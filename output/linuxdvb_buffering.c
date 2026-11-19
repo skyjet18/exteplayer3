@@ -65,13 +65,13 @@ typedef struct BufferingNode_s {
 #define NODE_DATA(node) ((uint8_t *)(node) + sizeof(BufferingNode_t) + (node)->segCount * sizeof(uint32_t))
 
 /* ***************************** */
-/* Makros/Constants              */
+/* Macros/Constants              */
 /* ***************************** */
 #define cERR_LINUX_DVB_BUFFERING_NO_ERROR      0
 #define cERR_LINUX_DVB_BUFFERING_ERROR        -1
 
 /* ***************************** */
-/* Varaibles                     */
+/* Variables                     */
 /* ***************************** */
 static pthread_t bufferingThread;
 static pthread_mutex_t bufferingMtx;
@@ -349,7 +349,7 @@ int32_t LinuxDvbBuffClose(Context_t *context)
         
         /* wait for thread end */
 #if 0
-        /* This code couse symbol versioning of clock_gettime@GLIBC_2.17 */
+        /* This code causes symbol versioning of clock_gettime@GLIBC_2.17 */
         clock_gettime(CLOCK_REALTIME, &max_wait);
         max_wait.tv_sec += 1;
 #else

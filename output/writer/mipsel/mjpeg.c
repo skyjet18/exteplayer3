@@ -50,7 +50,7 @@
 #include "writer.h"
 
 /* ***************************** */
-/* Makros/Constants              */
+/* Macros/Constants              */
 /* ***************************** */
 
 /* ***************************** */
@@ -58,7 +58,7 @@
 /* ***************************** */
 
 /* ***************************** */
-/* Varaibles                     */
+/* Variables                     */
 /* ***************************** */
 static bool must_send_header = false;
 static uint8_t *private_data = NULL;

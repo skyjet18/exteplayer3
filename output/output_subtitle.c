@@ -41,7 +41,7 @@
 #include "writer.h"
 
 /* ***************************** */
-/* Makros/Constants              */
+/* Macros/Constants              */
 /* ***************************** */
 
 /* Error Constants */
@@ -66,7 +66,7 @@ Number, Style, Name,, MarginL, MarginR, MarginV, Effect,, Text
 
 
 /* ***************************** */
-/* Varaibles                     */
+/* Variables                     */
 /* ***************************** */
 static pthread_mutex_t mutex;
 static int isSubtitleOpened = 0;

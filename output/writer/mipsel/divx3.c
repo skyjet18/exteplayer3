@@ -51,7 +51,7 @@
 #include "writer.h"
 
 /* ***************************** */
-/* Makros/Constants              */
+/* Macros/Constants              */
 /* ***************************** */
 #define B_GET_BITS(w,e,b)  (((w)>>(b))&(((unsigned)(-1))>>((sizeof(unsigned))*8-(e+1-b))))
 #define B_SET_BITS(name,v,e,b)  (((unsigned)(v))<<(b))
@@ -61,7 +61,7 @@
 /* ***************************** */
 
 /* ***************************** */
-/* Varaibles                     */
+/* Variables                     */
 /* ***************************** */
 static uint8_t initialHeader = 1;
 static uint8_t brcm_divx311_sequence_header[] =

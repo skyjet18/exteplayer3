@@ -4,12 +4,12 @@
 /* these file contains a list of metadata tags which can be used by applications
  * to stream specific information. it maps the tags to ffmpeg specific tags.
  *
- * fixme: if we add other container for some resons later (maybe some other libs
+ * fixme: if we add other container for some reasons later (maybe some other libs
  * support better demuxing or something like this), then we should think on a
  * more generic mechanism!
  */
 
-/* metatdata map list:
+/* metadata map list:
  */
 char* metadata_map[] =
 {

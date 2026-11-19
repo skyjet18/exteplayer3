@@ -50,7 +50,7 @@
 #include "pes.h"
 
 /* ***************************** */
-/* Makros/Constants              */
+/* Macros/Constants              */
 /* ***************************** */
 #define cERR_LINUXDVB_NO_ERROR      0
 #define cERR_LINUXDVB_ERROR        -1
@@ -630,7 +630,7 @@ int LinuxDvbAVSync(Context_t  *context, char * type __attribute__((unused))) {
     int ret = cERR_LINUXDVB_NO_ERROR;
     /* konfetti: this one is dedicated to audiofd so we
      * are ignoring what is given by type! I think we should
-     * remove this param. Therefor we should add a variable
+     * remove this param. Therefore we should add a variable
      * setOn or something like that instead, this would remove
      * using a variable inside the structure.
      */
@@ -694,7 +694,7 @@ int LinuxDvbPts(Context_t  *context __attribute__((unused)), unsigned long long 
     
     linuxdvb_printf(50, "\n");
 
-    // pts is a non writting requests and can be done in parallel to other requests
+    // pts is a non writing requests and can be done in parallel to other requests
     //getLinuxDVBMutex();
 
     if (videofd > -1 && !ioctl(videofd, VIDEO_GET_PTS, (void*)&sCURRENT_PTS))

@@ -68,7 +68,7 @@
 #include "hevc_hdr.h"
 
 /* ***************************** */
-/* Makros/Constants              */
+/* Macros/Constants              */
 /* ***************************** */
 
 #define HAVE_CH_LAYOUT (LIBAVUTIL_VERSION_INT >= AV_VERSION_INT(59, 0, 100))
@@ -102,7 +102,7 @@
 typedef enum {RTMP_NATIVE, RTMP_LIBRTMP, RTMP_NONE} eRTMPProtoImplType;
 
 /* ***************************** */
-/* Varaibles                     */
+/* Variables                     */
 /* ***************************** */
 
 static pthread_rwlock_t mutex = PTHREAD_RWLOCK_INITIALIZER;
@@ -1730,7 +1730,7 @@ static int64_t aac_pts_dejitter(AacPtsDejitter_t *s, const AVPacket *packet, AVS
     return pts;
 }
 
-/* search for metatdata in context and stream
+/* search for metadata in context and stream
  * and map it to our metadata.
  */
 
@@ -4560,7 +4560,7 @@ int32_t container_ffmpeg_init_av_context(Context_t *context, char *filename, uin
                 if (rtmpProtoImplType == RTMP_NONE)
                 {
                     /* if we have both impl, we will prefer native
-                     * unless uri contain param wich can be understandable
+                     * unless uri contain param which can be understandable
                      * only by librtmp
                      */
                     if (strstr(filename, " token=") || 
@@ -4629,7 +4629,7 @@ int32_t container_ffmpeg_init_av_context(Context_t *context, char *filename, uin
                         key = token;
                         value = poseq + 1;
                         ffmpeg_printf(20, "rtmp_key = \"%s\", rtmp_value = \"%s\"\n", key, value);
-                        /* translate librtmp connection parameters to ffmpeg ones routin provided by @mx3L
+                        /* translate librtmp connection parameters to ffmpeg ones routine provided by @mx3L
                          *
                          * librtmp parameters     - https://rtmpdump.mplayerhq.hu/librtmp.3.html
                          * ffmpeg rtmp parameters - https://ffmpeg.org/ffmpeg-protocols.html#rtmp
@@ -4684,7 +4684,7 @@ int32_t container_ffmpeg_init_av_context(Context_t *context, char *filename, uin
                         {
                             av_dict_set(&avio_opts, "rtmp_tcurl", value, 0);
                         }
-                        // timeout is ment for incoming connections
+                        // timeout is meant for incoming connections
                         else if (!strcasecmp(key, "timeout"))
                         {
                         }
@@ -5256,7 +5256,7 @@ static int32_t update_tracks(Context_t *context, char *filename, int32_t initial
                           stream->index, previous_id, stream_track_id(avContext, stream),
                           get_codecpar(stream)->codec_type);
 
-            /* some values in track are unset and therefor copyTrack segfaults.
+            /* some values in track are unset and therefore copyTrack segfaults.
              * so set it by default to NULL!
              */
             memset(&track, 0, sizeof(track));
@@ -6380,7 +6380,7 @@ static int32_t container_ffmpeg_update_duration(Context_t *context)
             Track_t *track = NULL;
             AVStream *stream = avContext->streams[n];
 
-            /* some values in track are unset and therefor copyTrack segfaults.
+            /* some values in track are unset and therefore copyTrack segfaults.
              * so set it by default to NULL!
              */
 

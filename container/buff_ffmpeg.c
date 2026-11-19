@@ -137,7 +137,7 @@ static void update_finish_timeout()
             seekLastPts = currPts;
         }
         
-        /* On some STBs PTS readed from decoder is invalid after seek or at start 
+        /* On some STBs PTS read from decoder is invalid after seek or at start 
          * this is the reason for additional validation when we what to close immediately
          */
         if( !progressive_playback && !seekRestart && 0 == ret && currPts >= maxInjectedPts && 
