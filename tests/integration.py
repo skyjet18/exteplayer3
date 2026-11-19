@@ -524,6 +524,36 @@ def cc_h264(frames):
     return stream
 
 
+def constrained_high_h264(frames):
+    """64x64 H.264 High profile with constraint_set4/5 (0x0C), level 4.0,
+    CAVLC, SPS and PPS in front of every IDR I_PCM picture."""
+    b = h264_avcc_mp4.Bits()
+    b.put(100, 8)   # High
+    b.put(0x0C, 8)  # constraint_set4_flag, constraint_set5_flag
+    b.put(40, 8)    # level 4.0
+    b.ue(0)         # seq_parameter_set_id
+    b.ue(1)         # chroma_format_idc 4:2:0
+    b.ue(0)         # bit_depth_luma_minus8
+    b.ue(0)         # bit_depth_chroma_minus8
+    b.put(0, 1)     # qpprime_y_zero_transform_bypass_flag
+    b.put(0, 1)     # seq_scaling_matrix_present_flag
+    b.ue(0)         # log2_max_frame_num_minus4
+    b.ue(2)         # pic_order_cnt_type
+    b.ue(1)         # max_num_ref_frames
+    b.put(0, 1)     # gaps_in_frame_num_value_allowed_flag
+    b.ue(3)         # pic_width_in_mbs_minus1
+    b.ue(3)         # pic_height_in_map_units_minus1
+    b.put(1, 1)     # frame_mbs_only_flag
+    b.put(1, 1)     # direct_8x8_inference_flag
+    b.put(0, 1)     # frame_cropping_flag
+    b.put(0, 1)     # vui_parameters_present_flag
+    sps = b.nal(0x67)
+    assert sps[:4] == b"\x67\x64\x0c\x28", sps.hex()
+    start = b"\0\0\0\1"
+    sets = start + sps + start + h264_avcc_mp4.pps(0)
+    return b"".join(sets + start + h264_avcc_mp4.idr(n) for n in range(frames))
+
+
 def cc_scc():
     """The same captions as a Scenarist SCC file: one line per event, 30 frames a second."""
     lines = ["Scenarist_SCC V1.0", ""]
@@ -1433,6 +1463,37 @@ def main():
                 finally:
                     player.stop()
             print("PASS H.264 avcC with repeated sets and stray zeros: played")
+
+            # "Constrained High": constraint_set4/5 of a High profile SPS
+            # (0x0C), in front of every IDR picture in TS (Annex B) and in
+            # the samples and the avcC of MP4. The writer clears them
+            # (tests/run.sh checks the bytes), EP3_H264_CONSTRAINED_HIGH=0
+            # keeps them; the debug log of the writer tells which.
+            raw = root / "constrained-high.h264"
+            raw.write_bytes(constrained_high_h264(50))
+            for name in ("constrained-high.ts", "constrained-high.mp4"):
+                run(args.ffmpeg, "-y", "-f", "h264", "-framerate", "25", "-i", str(raw),
+                    "-c", "copy", *frame_times, str(root / name))
+                for switch, cleared in ((None, True), ("0", False)):
+                    env = dict(os.environ)
+                    env.pop("EP3_H264_CONSTRAINED_HIGH", None)
+                    if switch is not None:
+                        env["EP3_H264_CONSTRAINED_HIGH"] = switch
+                    player = Player(args.player, "-L", "H264_DEBUG_LEVEL:10", str(root / name), env=env)
+                    try:
+                        assert player.wait("PLAYBACK_PLAY")["sts"] == 0
+                        video = player.wait("v_c")
+                        assert video["e"] == "V_MPEG4/ISO/AVC" and video["w"] == 64, video
+                        time.sleep(1)
+                        player.command("q")
+                        player.process.wait(timeout=5)
+                        size = os.fstat(player.log.fileno()).st_size
+                        log = os.pread(player.log.fileno(), size, 0).decode(errors="replace")
+                    finally:
+                        player.stop()
+                    assert ("H264 profile 100: constraint_set4/5 cleared (0x0c -> 0x00)" in log) == cleared, (
+                        name, switch, log[-3000:])
+            print("PASS H.264 Constrained High: constraint_set4/5 cleared in TS and MP4, kept with the switch off")
 
             player = Player(args.player, "-U", "0", str(codecs))
             try:
