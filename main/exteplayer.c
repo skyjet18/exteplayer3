@@ -26,6 +26,7 @@
 #include <signal.h>
 #include <inttypes.h>
 #include <stdarg.h>
+#include <time.h>
 #include "pcm_export.h"
 #include "ca_bundle.h"
 
@@ -1695,7 +1696,26 @@ static void *PlaybackInitThread(PlaybackInitParams_t *params)
 	return NULL;
 }
 
-int main(int argc, char* argv[]) 
+/* q during the open: how long the open may take to end after the interrupt
+ * callback reports the stop (FFmpeg asks it every 100 ms while it waits) */
+#define OPEN_STOP_WAIT_MS 2000
+
+/* 1 when the open thread has returned within ms */
+static int WaitOpenEnd(PlaybackInitParams_t *params, int ms)
+{
+    struct timespec tick = {0, 10 * 1000 * 1000};
+
+    while (0 == __atomic_load_n(&params->init_finished, __ATOMIC_ACQUIRE))
+    {
+        if (ms <= 0)
+            return 0;
+        nanosleep(&tick, NULL);
+        ms -= 10;
+    }
+    return 1;
+}
+
+int main(int argc, char* argv[])
 {
     pthread_t termThread;
     int isTermThreadStarted = 0;
@@ -1948,9 +1968,21 @@ int main(int argc, char* argv[])
             {
 				case 'q':
 				{
-					/* received stop command during init state, co just cancel init thread and quit */
-			    	pthread_cancel(itid);
-			    	exit(11);
+					/* Stop during the open: the interrupt callback of the
+					 * open reports the stop, so FFmpeg leaves a wait on the
+					 * network and the open thread returns; only then the
+					 * process ends. exit() while that thread was still in
+					 * FFmpeg ran the exit handlers beside it. An open that
+					 * the callback cannot end (name resolution, a FIFO
+					 * without a writer) is cancelled after the wait, as
+					 * before. The exit code stays 11. */
+					PlaybackDieNow(1);
+					if (!WaitOpenEnd(&params, OPEN_STOP_WAIT_MS))
+					{
+						printf("open not ended %d ms after q, cancelled\n", OPEN_STOP_WAIT_MS);
+						pthread_cancel(itid);
+					}
+					exit(11);
 				}
 				break;
 

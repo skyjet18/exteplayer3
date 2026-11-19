@@ -4864,7 +4864,9 @@ int32_t container_ffmpeg_init_av_context(Context_t *context, char *filename, uin
             }
             ffmpeg_err("avformat_open_input failed %d (%s)\n", err, filename);
             av_strerror(err, error, 512);
-            E2iSendMsg("{\"FF_ERROR\":{\"msg\":\"%s\",\"code\":%i}}\n", error, err);
+            /* not when q has stopped the open: it did not fail */
+            if (!PlaybackDieNow(0))
+                E2iSendMsg("{\"FF_ERROR\":{\"msg\":\"%s\",\"code\":%i}}\n", error, err);
 
             if(avio_opts != NULL)
             {

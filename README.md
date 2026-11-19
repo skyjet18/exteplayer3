@@ -1018,6 +1018,18 @@ phase as well (exit code 11). A second signal, or a stop that takes more than
 5 s, ends the process at once (exit code 128 + signal). `SIGPIPE` is ignored:
 a front end that is gone is found through the end of the command pipe.
 
+`q` during the open of the input (also a server that accepts the connection
+and then stops answering, in `avformat_open_input()` or
+`avformat_find_stream_info()`, an HLS playlist or segment) is reported to the
+interrupt callback of the open, so FFmpeg leaves its wait on the network; the
+player ends when the open thread has returned, with exit code 11 and without
+`FF_ERROR` or `PLAYBACK_OPEN`. Exit code 11 is a normal exit, not `SIGSEGV`
+(a process that a signal ends has no exit code; shells show 128 + signal).
+Before, the open thread was cancelled and `exit()` ran beside it while it was
+still inside FFmpeg. An open that the callback cannot end (name resolution, a
+FIFO without a writer) is cancelled after 2 s, as before, with stdout
+`open not ended 2000 ms after q, cancelled`.
+
 The parent death signal (`PR_SET_PDEATHSIG`) was `SIGKILL`. It belongs to the
 thread that started the player, not to its process (see prctl(2)), so it also
 killed the player when only that thread ended. It is `SIGUSR2` now, which
