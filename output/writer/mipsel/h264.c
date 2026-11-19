@@ -284,6 +284,152 @@ static void LimitSpsLevel(unsigned char *sps, unsigned int len)
     }
 }
 
+/* High profile streams of some live encoders set constraint_set4_flag and
+ * constraint_set5_flag (constraint byte 0x0C, "Constrained High"). The
+ * Broadcom decoders show no picture with them, the same stream with the two
+ * flags cleared plays. The flags only tell that the stream keeps limits it
+ * keeps anyway (frame_mbs_only, no B slices), so clearing them does not
+ * change the decoding. EP3_H264_CONSTRAINED_HIGH=0 keeps them; a build can
+ * set its own default with -DH264_CONSTRAINED_HIGH_DEFAULT=0|1. */
+#ifndef H264_CONSTRAINED_HIGH_DEFAULT
+#define H264_CONSTRAINED_HIGH_DEFAULT 1
+#endif
+
+#define SPS_CONSTRAINT_SET45 0x0c
+
+/* room for the cleared constraint bytes of the parameter sets in a packet */
+#define CONSTRAINT_BYTES_MAX 32
+
+static int ConstrainedHighLogged;
+
+static int ClearConstrainedHighWanted(void)
+{
+    static int wanted = -1;
+    if (wanted < 0)
+    {
+        const char *env = getenv("EP3_H264_CONSTRAINED_HIGH");
+        if (env && env[0])
+        {
+            wanted = env[0] != '0';
+        }
+        else
+        {
+            wanted = H264_CONSTRAINED_HIGH_DEFAULT;
+        }
+    }
+    return wanted;
+}
+
+/* The constraint byte to write for the SPS NAL unit "sps" (NAL header
+ * first) of "len" bytes, or -1 when it stays as it is. Only the High
+ * profiles (100 High, 110 High 10, 122 High 4:2:2, 244 High 4:4:4
+ * Predictive) lose constraint_set4/5; constraint_set3 (the intra profiles)
+ * and the MVC and other profiles are left alone.
+ * NAL header and profile_idc are not 0, so no emulation prevention byte can
+ * stand at the constraint byte or the level byte: both are the RBSP bytes.
+ * With level_idc not 0 behind it, a cleared constraint byte cannot form a
+ * 00 00 that would need one either. */
+static int SpsConstraintByte(const uint8_t *sps, unsigned int len)
+{
+    if (len < 4 || (sps[0] & 0x1f) != 7 || !(sps[2] & SPS_CONSTRAINT_SET45) || !sps[3])
+    {
+        return -1;
+    }
+    switch (sps[1])
+    {
+    case 100:
+    case 110:
+    case 122:
+    case 244:
+        break;
+    default:
+        return -1;
+    }
+    if (!ClearConstrainedHighWanted())
+    {
+        return -1;
+    }
+    if (!ConstrainedHighLogged)
+    {
+        ConstrainedHighLogged = 1;
+        h264_printf(10, "H264 profile %d: constraint_set4/5 cleared (0x%02x -> 0x%02x)\n",
+                    sps[1], sps[2], sps[2] & ~SPS_CONSTRAINT_SET45);
+    }
+    return sps[2] & ~SPS_CONSTRAINT_SET45;
+}
+
+/* Cleared constraint bytes of the parameter sets inside a packet. The packet
+ * is not changed (its data can be shared with other references): the iovec
+ * takes the byte from here instead. */
+typedef struct
+{
+    uint8_t      byte[CONSTRAINT_BYTES_MAX];
+    unsigned int count;
+} ConstraintBytes_t;
+
+/* Adds the NAL unit "nal" of "len" bytes to the iovec, a SPS whose
+ * constraint byte is cleared in three parts when "room" has them. */
+static int AddNal(struct iovec *iov, int ic, int room, uint8_t *nal, uint32_t len, ConstraintBytes_t *bytes)
+{
+    int byte = room >= 3 ? SpsConstraintByte(nal, len) : -1;
+    if (byte >= 0 && bytes->count < CONSTRAINT_BYTES_MAX)
+    {
+        bytes->byte[bytes->count] = (uint8_t)byte;
+        iov[ic].iov_base = nal;
+        iov[ic++].iov_len = 2;
+        iov[ic].iov_base = &bytes->byte[bytes->count++];
+        iov[ic++].iov_len = 1;
+        iov[ic].iov_base = nal + 3;
+        iov[ic++].iov_len = len - 3;
+        return ic;
+    }
+    iov[ic].iov_base = nal;
+    iov[ic++].iov_len = len;
+    return ic;
+}
+
+/* Adds the Annex B data "buf" to the iovec. Each SPS in front of the first
+ * slice whose constraint byte is cleared splits it around that byte; at most
+ * "room" entries are used. */
+static int AddAnnexB(struct iovec *iov, int ic, int room, uint8_t *buf, uint32_t len, ConstraintBytes_t *bytes)
+{
+    uint32_t start = 0;
+    uint32_t i;
+
+    for (i = 0; room >= 3 && len >= 4 && i < len - 3; i++)
+    {
+        if (buf[i] || buf[i + 1] || buf[i + 2] != 1)
+        {
+            continue;
+        }
+        uint32_t nal = i + 3;
+        uint8_t type = buf[nal] & 0x1f;
+        if (type >= 1 && type <= 5)
+        {
+            /* slice data: the parameter sets are in front of it */
+            break;
+        }
+        int byte = SpsConstraintByte(buf + nal, len - nal);
+        if (byte >= 0 && bytes->count < CONSTRAINT_BYTES_MAX)
+        {
+            bytes->byte[bytes->count] = (uint8_t)byte;
+            iov[ic].iov_base = buf + start;
+            iov[ic++].iov_len = nal + 2 - start;
+            iov[ic].iov_base = &bytes->byte[bytes->count++];
+            iov[ic++].iov_len = 1;
+            room -= 2;
+            start = nal + 3;
+            i = start - 1;
+        }
+    }
+    if (start < len)
+    {
+        iov[ic].iov_base = buf + start;
+        iov[ic++].iov_len = len - start;
+    }
+    return ic;
+}
+
 static int32_t PreparCodecData(unsigned char *data, unsigned int cd_len, unsigned int *NalLength)
 {
     unsigned char tmp[AVCC_TMP_SIZE];
@@ -327,6 +473,12 @@ static int32_t PreparCodecData(unsigned char *data, unsigned int cd_len, unsigne
     {
         if ((tmp[sets.at[i]] & 0x1f) == 7)
         {
+            /* tmp is a copy, the avcC of the stream stays as it is */
+            int byte = SpsConstraintByte(tmp + sets.at[i], sets.length[i]);
+            if (byte >= 0)
+            {
+                tmp[sets.at[i] + 2] = (uint8_t)byte;
+            }
             LimitSpsLevel(tmp + sets.at[i], sets.length[i]);
         }
     }
@@ -365,6 +517,8 @@ static int writeData(void* _call)
     int                     len = 0;
     int ic = 0;
     struct iovec iov[IOVEC_SIZE];
+    ConstraintBytes_t constraintBytes;
+    constraintBytes.count = 0;
     h264_printf(20, "\n");
 
     if (call == NULL)
@@ -397,6 +551,7 @@ static int writeData(void* _call)
         initialHeader = 1;
         avc3 = 0;
         sps_pps_in_stream = 0;
+        ConstrainedHighLogged = 0;
     }
 
     if (call->private_data && call->private_size &&
@@ -442,13 +597,11 @@ static int writeData(void* _call)
         if (InsertPrivData && call->private_data && call->private_size > 0 && initialHeader)
         {
             initialHeader = 0;
-            iov[ic].iov_base  = call->private_data;
-            iov[ic++].iov_len = call->private_size;
+            ic = AddAnnexB(iov, ic, (IOVEC_SIZE - 1) / 2, call->private_data, call->private_size, &constraintBytes);
             PacketLength     += call->private_size;
         }
-        
-        iov[ic].iov_base  = call->data;
-        iov[ic++].iov_len = call->len;
+
+        ic = AddAnnexB(iov, ic, IOVEC_SIZE - ic, call->data, call->len, &constraintBytes);
         PacketLength     += call->len;
         
 #ifdef HAVE_DREAMNEXTGEN
@@ -574,8 +727,7 @@ static int writeData(void* _call)
             iov[ic++].iov_len = sizeof(Head);
             PacketLength += sizeof(Head);
             
-            iov[ic].iov_base  = call->data + pos;
-            iov[ic++].iov_len = nal_len;
+            ic = AddNal(iov, ic, IOVEC_SIZE - ic, call->data + pos, nal_len, &constraintBytes);
             PacketLength     += nal_len;
     
             pos += pack_len;
