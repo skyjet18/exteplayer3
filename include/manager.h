@@ -27,6 +27,23 @@ typedef enum {
     eTypePES
 } eTrackTypeEplayer;
 
+/* Audio stream values for front ends: 0 or "" when unknown. */
+typedef struct AudioStreamInfo_s {
+    int                   sample_rate;      /* Hz */
+    int                   bit_rate;         /* bit/s */
+    int                   bits_per_sample;  /* lossless codecs only */
+    char                  channel_layout[40];
+} AudioStreamInfo_t;
+
+/* Video stream values for front ends: 0, "" or NULL when unknown. */
+typedef struct VideoStreamInfo_s {
+    char                  profile_level[48];
+    int                   bit_depth;
+    int                   bit_rate;         /* bit/s */
+    int                   dv_profile;       /* Dolby Vision, 0 = none */
+    const char           *color_primaries;  /* a constant string or NULL */
+} VideoStreamInfo_t;
+
 typedef struct Track_s {
     char *                Name;
     char *                Encoding;
@@ -68,6 +85,10 @@ typedef struct Track_s {
     const char           *Description;
     /* audio: channel count from the codec parameters, 0 if unknown */
     int                   channels;
+    /* audio: rate, bit rate, sample size, channel layout of the stream */
+    AudioStreamInfo_t     audio_info;
+    /* video: profile and level, bit depth, bit rate, Dolby Vision, colour */
+    VideoStreamInfo_t     video_info;
     /* audio, subtitle: title of the track, owned like Name, NULL if none */
     char                 *Title;
 
@@ -93,6 +114,10 @@ typedef struct TrackDescription_s
     const char *          Description;
     /* audio only: 0 if unknown */
     int                   channels;
+    /* audio only */
+    AudioStreamInfo_t     audio_info;
+    /* video only */
+    VideoStreamInfo_t     video_info;
     unsigned int          frame_rate;
     int                   width;
     int                   height;

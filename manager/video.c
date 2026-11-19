@@ -143,6 +143,7 @@ static TrackDescription_t* ManagerList(Context_t  *context __attribute__((unused
             tracklist[j].Name = strdup(Tracks[i].Name);
             tracklist[j].Encoding = strdup(Tracks[i].Encoding);
             tracklist[j].Title = NULL;
+            tracklist[j].video_info = Tracks[i].video_info;
             ++j;
         }
         tracklist[j].Id = -1;
@@ -232,6 +233,7 @@ static int Command(void  *_context, ManagerCmd_t command, void * argument) {
                 track->height               = Tracks[CurrentTrack].height;
                 track->aspect_ratio_num     = Tracks[CurrentTrack].aspect_ratio_num;
                 track->aspect_ratio_den     = Tracks[CurrentTrack].aspect_ratio_den;
+                track->video_info           = Tracks[CurrentTrack].video_info;
                 pthread_mutex_unlock(&track_mutex);
                 context->output->video->Command(context, OUTPUT_GET_PROGRESSIVE, &(track->progressive));
                 /* a picture size FFmpeg does not know is taken from the video decoder */
