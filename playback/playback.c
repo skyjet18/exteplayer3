@@ -672,6 +672,8 @@ static int32_t PlaybackSwitchAudio(Context_t  *context, int32_t *track)
 
         if(ret == 0 && nextrackid != curtrackid)
         {
+            /* a seek of the container for the switch changes it */
+            void *stamp = context->playback->stamp;
             if (context->container && context->container->selectedContainer)
             {
                 ret = context->container->selectedContainer->Command(context, CONTAINER_SWITCH_AUDIO, &nextrackid);
@@ -686,7 +688,9 @@ static int32_t PlaybackSwitchAudio(Context_t  *context, int32_t *track)
             }
             else if (context->output && context->output->audio)
             {
-                if (context->playback->isDash)
+                /* DASH without that seek (live): the new representation starts
+                 * at the read position, nothing read before it may play on */
+                if (context->playback->isDash && context->playback->stamp == stamp)
                 {
                     playback_stamp += 1;
                     context->playback->stamp = (void *)(uintptr_t)playback_stamp;

@@ -54,7 +54,8 @@ Core of movie player for E2 based on the libeplayer using the ffmpeg solution
   buffers or reconfiguring audio output. Internal switch seeks retain
   subsecond precision and reset discontinuity tracking after a successful VOD
   seek. Unknown-duration non-DASH network audio switches do not seek or clear
-  video. All DASH audio switches reset A/V buffers as described below.
+  video. Static DASH switches seek like other VOD inputs; live DASH switches
+  reset A/V buffers as described below.
   The companion FFmpeg DASH demuxer must include the single-file
   seek/reactivation fix so a reselected audio file does not restart at zero.
 - While playback is paused, winding forward or backward, or in slow motion,
@@ -107,12 +108,17 @@ For DASH, the player now preserves the common media timeline across audio
 selections instead of anchoring a new track to the last delivered audio packet.
 The non-SH4 DVB backend honors requested hardware A/V sync for DASH and reapplies
 it after configuring the selected audio codec, before restarting audio.
-Other formats retain their existing sync policy. All DASH audio switches,
-including live and static/VOD streams, reset both A/V decoder buffers and
-invalidate queued output before restarting selected audio, without seeking
-the input. A brief video interruption is expected.
+Other formats retain their existing sync policy. All DASH audio switches
+reset both A/V decoder buffers and invalidate queued output before restarting
+selected audio; a brief video interruption is expected.
 This restores the buffer-reset behavior present in `2a7459f` and removed by
 `989093c`, which receiver testing identified as the switching regression.
+The demuxer starts the reselected representation at its read position, which
+runs ahead of the playback by all that has been read ahead. Static/VOD DASH
+therefore seeks to the playback position for the switch (the seek does the
+reset), as other VOD inputs do; without it the playback jumped to the read
+position. Live DASH, and a switch while paused or in trick play, reset
+without seeking and continue at the read position.
 Segmented DASH reactivation additionally
 requires the companion correction separating packet-drop state from single-file
 seeks; the earlier `79390c5c6d` fix alone does not cover real reopening.
