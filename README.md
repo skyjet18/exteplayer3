@@ -120,11 +120,13 @@ that frame is written; if the driver refuses the mode, plain DTS is set again.
 A frame without extension costs no ioctl, and a seek keeps the mode. While
 playback is paused the decoder is not touched and a later frame decides.
 Unset, this is active only where `/proc/stb/audio/dtshd` exists and the
-receiver is not a Dreambox, the drivers whose DTS-HD mode is known to cope
-with a receiver that has no DTS-HD; elsewhere such a receiver could get no
-sound at all. Only the exact values `0` and `1` are honored; anything else
-selects that default. Software-decoded DTS uses the PCM writer and is not
-affected. `-L LINUXDVB_DEBUG_LEVEL:10 -L LINUXDVB_SILENT:0` logs
+receiver is not a Dreambox, and on a VU+ whose `/proc/stb/info/vumodel` is
+`uno4kse`, `ultimo4k` or `duo4kse` (no such file there): the drivers whose
+DTS-HD mode is known to cope with a receiver that has no DTS-HD; elsewhere
+such a receiver could get no sound at all. Only the exact values `0` and `1`
+are honored; anything else selects that default. Software-decoded DTS uses
+the PCM writer and is not affected.
+`-L LINUXDVB_DEBUG_LEVEL:10 -L LINUXDVB_SILENT:0` logs
 `DTS with HD extension, set bypass 0x10`.
 
 Audio and video share one timestamp origin, and the distance between their
@@ -990,11 +992,13 @@ provider/SSAI behavior. Before deployment, check on representative receivers:
   timestamps more than 60 seconds apart): audible audio and its lip sync.
 - The DTS-HD bypass mode has been checked on one receiver only (VU+ Uno 4K
   SE, openATV 8.0.2, ffmpeg-ext 6.1.1, with an AV receiver): it has no
-  `/proc/stb/audio/dtshd`, so the automatic mode stays off; forced with
-  `EP3_DTS_HD_MODE=1` the AV receiver shows DTS-HD MA, without it DTS (core).
-  Still open: a box with `/proc/stb/audio/dtshd`, sound with a receiver without
-  DTS-HD, DTS:X, plain DTS after switching to a core-only track, and
-  `EP3_DTS_HD_MODE=1` on other chipsets.
+  `/proc/stb/audio/dtshd`; in DTS-HD mode the AV receiver shows DTS-HD MA,
+  without it DTS (core). With a TV without any DTS support connected
+  directly (openATV 8.0.1, FFmpeg 9) the DTS-HD MA 7.1 track plays
+  with the same sound in both modes. The VU+ Ultimo 4K and Duo 4K SE use the
+  mode in OpenBH and OpenViX and have not been checked here. Still open: a box
+  with `/proc/stb/audio/dtshd`, DTS:X, plain DTS after switching to a
+  core-only track, and `EP3_DTS_HD_MODE=1` on other chipsets.
 - AAC dejitter and passthrough versus software PCM; DTS/PES B-frame output,
   initial/changed H.264 SPS/PPS, busy decoder devices and stop latency.
 - DTS core-frame padding has been checked on one receiver only (VU+ Uno 4K

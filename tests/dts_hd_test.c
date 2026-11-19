@@ -16,17 +16,22 @@
 int test_ioctl(int fd, unsigned long request, ...);
 #define access test_access
 int test_access(const char *path, int mode);
+#define fopen test_fopen
+FILE *test_fopen(const char *path, const char *mode);
 #include "../output/linuxdvb_mipsel.c"
 #undef ioctl
 #undef access
+#undef fopen
 
 /* The DTS-HD bypass mode: the first DTS frame after a start or a switch
  * decides. The driver is a list of the ioctls it was given; whether it has
- * /proc/stb/audio/dtshd is up to the case. The decision whether the mode is
+ * /proc/stb/audio/dtshd and which /proc/stb/info/vumodel it reports is up to
+ * the case. The decision whether the mode is
  * usable is taken once per process, so every case runs in a child of its own. */
 
 static stb_type_t stb = STB_VUPLUS;
 static int has_dtshd = 1;
+static const char *model = NULL;
 static unsigned long requests[32];
 static int arguments[32];
 static int request_count;
@@ -60,6 +65,17 @@ int test_access(const char *path, int mode)
 {
     assert(mode == F_OK && !strcmp(path, "/proc/stb/audio/dtshd"));
     return has_dtshd ? 0 : -1;
+}
+
+FILE *test_fopen(const char *path, const char *how)
+{
+    assert(!strcmp(how, "r"));
+    /* /proc reads may block: never with the output mutex held */
+    assert(!pthread_mutex_trylock(&LinuxDVBmutex));
+    pthread_mutex_unlock(&LinuxDVBmutex);
+    if (strcmp(path, "/proc/stb/info/vumodel") || !model)
+        return NULL;
+    return fmemopen((void *)model, strlen(model), how);
 }
 
 stb_type_t GetSTBType(void) { return stb; }
@@ -200,6 +216,44 @@ static void forced_on(void)
     hd_extension_after_the_core();
 }
 
+/* Vu+ Uno 4K SE, Ultimo 4K and Duo 4K SE have no /proc/stb/audio/dtshd and
+ * use the mode; other Vu+ models and other boxes with such a model file stay
+ * on plain DTS. */
+static void vuplus_model(const char *name)
+{
+    has_dtshd = 0;
+    model = name;
+}
+static void uno4kse(void) { vuplus_model("uno4kse\n"); hd_extension_after_the_core(); }
+static void ultimo4k(void) { vuplus_model("ultimo4k\n"); hd_extension_after_the_core(); }
+static void duo4kse(void) { vuplus_model("duo4kse"); hd_extension_after_the_core(); }
+static void solo4k(void) { vuplus_model("solo4k\n"); no_restart(); }
+static void zero4k(void) { vuplus_model("zero4k\n"); no_restart(); }
+static void uno4k(void) { vuplus_model("uno4k\n"); no_restart(); }
+static void not_a_vuplus(void) { vuplus_model("uno4kse\n"); stb = STB_UNKNOWN; no_restart(); }
+static void vuplus_forced_off(void)
+{
+    vuplus_model("uno4kse\n");
+    assert(!setenv("EP3_DTS_HD_MODE", "0", 1));
+    no_restart();
+}
+
+/* The first DTS track comes with a switch after an AC-3 start: the model is
+ * read before the mutex is taken (test_fopen asserts it). */
+static void uno4kse_switch_to_dts(void)
+{
+    vuplus_model("uno4kse\n");
+    encoding = "A_AC3";
+    start();
+    encoding = "A_DTS";
+    assert(!Command(&context, OUTPUT_SWITCH, "audio"));
+    assert(requests[2] == AUDIO_SET_BYPASS_MODE && arguments[2] == 2);
+    request_count = 0;
+    write_audio(core_hd, sizeof(core_hd));
+    assert(request_count == 5);
+    assert_restart(0, 0x10);
+}
+
 /* The driver refuses DTS-HD: plain DTS again, the decoder runs on. */
 static void mode_refused(void)
 {
@@ -271,6 +325,15 @@ int main(void)
     failed += run("AC-3 track", ac3_track);
     failed += run("EP3_DTS_HD_MODE=0", forced_off);
     failed += run("EP3_DTS_HD_MODE=1", forced_on);
+    failed += run("Vu+ Uno 4K SE", uno4kse);
+    failed += run("Vu+ Ultimo 4K", ultimo4k);
+    failed += run("Vu+ Duo 4K SE", duo4kse);
+    failed += run("Vu+ Solo 4K", solo4k);
+    failed += run("Vu+ Zero 4K", zero4k);
+    failed += run("Vu+ Uno 4K", uno4k);
+    failed += run("vumodel on another box", not_a_vuplus);
+    failed += run("Vu+ Uno 4K SE, EP3_DTS_HD_MODE=0", vuplus_forced_off);
+    failed += run("Vu+ Uno 4K SE, switch to DTS", uno4kse_switch_to_dts);
     failed += run("DTS-HD mode refused", mode_refused);
     failed += run("paused", paused);
     failed += run("decided again after a switch", decided_again_after_a_switch);
