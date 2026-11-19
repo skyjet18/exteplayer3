@@ -153,6 +153,91 @@ static int64_t AudioClockPosition(void)
     return shown;
 }
 
+/* With EP3_FAKE_VIDEO_LEAD=<ms> the video decoder holds up to <ms> of video
+ * ahead of what it shows, as receiver decoders and their buffers do: video is
+ * taken without pacing until that much is ahead of the position, which plays
+ * in real time from the first video written after the start or a clear. A
+ * clear drops what was ahead; the old position stays until video comes again. */
+static int videoLeadMs = -2; /* -2 = not read yet, -1 = off */
+static pthread_mutex_t videoClockMutex = PTHREAD_MUTEX_INITIALIZER;
+static int64_t videoClockBase = INVALID_PTS_VALUE; /* first PTS since the start or clear */
+static int64_t videoClockMax = INVALID_PTS_VALUE;  /* highest PTS since then */
+static int64_t videoClockStartUs;                  /* when videoClockBase is shown */
+static int64_t videoClockShown = 0;
+static uint32_t videoClockClears = 0;
+
+static bool VideoLeadOn(void)
+{
+    if (videoLeadMs == -2)
+    {
+        const char *env = getenv("EP3_FAKE_VIDEO_LEAD");
+        videoLeadMs = env && *env ? atoi(env) : -1;
+        if (videoLeadMs < 0)
+            videoLeadMs = -1;
+    }
+    return videoLeadMs >= 0;
+}
+
+static void VideoClockReset(bool start)
+{
+    pthread_mutex_lock(&videoClockMutex);
+    videoClockBase = INVALID_PTS_VALUE;
+    videoClockMax = INVALID_PTS_VALUE;
+    videoClockClears++;
+    if (start)
+        videoClockShown = 0;
+    pthread_mutex_unlock(&videoClockMutex);
+}
+
+/* under videoClockMutex */
+static int64_t VideoClockPositionLocked(int64_t now)
+{
+    if (videoClockBase != INVALID_PTS_VALUE && now >= videoClockStartUs)
+    {
+        int64_t pos = videoClockBase + (now - videoClockStartUs) * 9 / 100;
+        videoClockShown = pos < videoClockMax ? pos : videoClockMax;
+    }
+    return videoClockShown;
+}
+
+static int64_t VideoClockPosition(void)
+{
+    pthread_mutex_lock(&videoClockMutex);
+    int64_t shown = VideoClockPositionLocked(AudioClockNowUs());
+    pthread_mutex_unlock(&videoClockMutex);
+    return shown;
+}
+
+/* Takes video of this PTS once it is no more than the lead ahead of the position.
+ * A clear while it waits drops it. */
+static void VideoClockWrite(int64_t pts)
+{
+    pthread_mutex_lock(&videoClockMutex);
+    uint32_t clears = videoClockClears;
+    for (;;)
+    {
+        int64_t now = AudioClockNowUs();
+        if (videoClockClears != clears)
+            break;
+        if (videoClockBase == INVALID_PTS_VALUE)
+        {
+            videoClockBase = pts;
+            videoClockStartUs = now;
+        }
+        int64_t ahead = pts - (videoClockBase + (now - videoClockStartUs) * 9 / 100);
+        if (ahead <= videoLeadMs * 90LL)
+        {
+            if (videoClockMax == INVALID_PTS_VALUE || pts > videoClockMax)
+                videoClockMax = pts;
+            break;
+        }
+        pthread_mutex_unlock(&videoClockMutex);
+        usleep(10000);
+        pthread_mutex_lock(&videoClockMutex);
+    }
+    pthread_mutex_unlock(&videoClockMutex);
+}
+
 /* ***************************** */
 /* Prototypes                    */
 /* ***************************** */
@@ -285,6 +370,12 @@ int LinuxDvbClear(Context_t  *context __attribute__((unused)), char *type)
 
 int LinuxDvbPts(Context_t  *context __attribute__((unused)), unsigned long long int* pts)
 {
+    if (last_pts != 0 && VideoLeadOn())
+    {
+        /* what the video decoder shows, behind what has been written */
+        *pts = (unsigned long long int)VideoClockPosition();
+        return 0;
+    }
     if (last_pts == 0 && AudioClockOn())
     {
         /* no video written: the position of the audio decoder */
@@ -402,7 +493,12 @@ static int Write(void  *_context, void *_out)
                 }
             }
 
-            if (out->pts != INVALID_PTS_VALUE)
+            if (out->pts != INVALID_PTS_VALUE && VideoLeadOn())
+            {
+                VideoClockWrite(out->pts);
+                last_pts = out->pts;
+            }
+            else if (out->pts != INVALID_PTS_VALUE)
             {
                 if (out->pts > last_pts)
                 {
@@ -524,6 +620,8 @@ static int Command(void  *_context, OutputCmd_t command, void * argument) {
     case OUTPUT_PLAY: {	// 4
         if (argument && !strcmp("audio", (char*)argument))
             AudioClockReset(false);
+        if (argument && !strcmp("video", (char*)argument))
+            VideoClockReset(true);
         sCURRENT_PTS = 0;
         ret = LinuxDvbPlay(context, (char*)argument);
         break;
@@ -556,6 +654,8 @@ static int Command(void  *_context, OutputCmd_t command, void * argument) {
         ret = LinuxDvbClear(context, (char*)argument);
         if (argument && !strcmp("audio", (char*)argument))
             AudioClockReset(true);
+        if (!argument || !strcmp("video", (char*)argument))
+            VideoClockReset(false);
         reset(context);
         sCURRENT_PTS = 0;
         break;
