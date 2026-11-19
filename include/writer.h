@@ -124,7 +124,7 @@ typedef struct {
     uint8_t           *private_data;
     uint32_t          private_size;
 
-    int64_t           durationMS; // duration in miliseconds
+    int64_t           durationMS; // duration in milliseconds
 
     uint32_t         width;
     uint32_t         height;

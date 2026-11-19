@@ -55,7 +55,7 @@
 #include "pcm.h"
 
 /* ***************************** */
-/* Makros/Constants              */
+/* Macros/Constants              */
 /* ***************************** */
 #define LLPCM_VOB_HEADER_LEN (6)
 
@@ -64,7 +64,7 @@
 /* ***************************** */
 
 /* ***************************** */
-/* Varaibles                     */
+/* Variables                     */
 /* ***************************** */
 static uint8_t PesHeader[PES_MAX_HEADER_SIZE];
 static uint8_t initialHeader = 1;

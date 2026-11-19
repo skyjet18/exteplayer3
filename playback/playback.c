@@ -29,7 +29,7 @@
 #include "misc.h"
 
 /* ***************************** */
-/* Makros/Constants              */
+/* Macros/Constants              */
 /* ***************************** */
 #define cERR_PLAYBACK_NO_ERROR      0
 #define cERR_PLAYBACK_ERROR        -1
@@ -53,7 +53,7 @@ int64_t PlaybackLastContinue(void)
 }
 
 /* ***************************** */
-/* Varaibles                     */
+/* Variables                     */
 /* ***************************** */
 
 /* ***************************** */
@@ -481,7 +481,7 @@ static int32_t PlaybackTerminate(Context_t  *context)
 
     if ( context && context->playback && context->playback->isPlaying ) 
     {
-        //First Flush and than delete container, else e2 cant read length of file anymore
+        //First Flush and than delete container, else e2 can't read length of file anymore
 
         if (context->output->Command(context, OUTPUT_FLUSH, NULL) < 0)
         {

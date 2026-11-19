@@ -54,7 +54,7 @@
 #include "avcc.h"
 
 /* ***************************** */
-/* Makros/Constants              */
+/* Macros/Constants              */
 /* ***************************** */
 #define IOVEC_SIZE 1024
 
@@ -63,7 +63,7 @@
 /* ***************************** */
 
 /* ***************************** */
-/* Varaibles                     */
+/* Variables                     */
 /* ***************************** */
 static unsigned char           Head[] = {0, 0, 0, 1};
 static int                     initialHeader = 1;

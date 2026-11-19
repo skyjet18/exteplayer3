@@ -29,7 +29,7 @@ typedef enum {
 } stb_type_t;
 
 /* ***************************** */
-/* Makros/Constants              */
+/* Macros/Constants              */
 /* ***************************** */
 #define INVALID_PTS_VALUE                       0x200000000ull
 

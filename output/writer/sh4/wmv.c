@@ -48,7 +48,7 @@
 #include "writer.h"
 
 /* ***************************** */
-/* Makros/Constants              */
+/* Macros/Constants              */
 /* ***************************** */
 
 #define WMV3_PRIVATE_DATA_LENGTH        4
@@ -84,7 +84,7 @@ static const unsigned char  Metadata[]          =
 };
 
 /* ***************************** */
-/* Varaibles                     */
+/* Variables                     */
 /* ***************************** */
 static int initialHeader = 1;
 

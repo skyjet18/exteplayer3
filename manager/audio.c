@@ -31,7 +31,7 @@
 #include "debug.h"
 
 /* ***************************** */
-/* Makros/Constants              */
+/* Macros/Constants              */
 /* ***************************** */
 #define TRACKWRAP 20
 
@@ -46,7 +46,7 @@ static const char FILENAME[] = __FILE__;
 /* ***************************** */
 
 /* ***************************** */
-/* Varaibles                     */
+/* Variables                     */
 /* ***************************** */
 
 static Track_t * Tracks = NULL;
