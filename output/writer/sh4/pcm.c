@@ -51,7 +51,7 @@
 #include "pcm.h"
 
 /* ***************************** */
-/* Makros/Constants              */
+/* Macros/Constants              */
 /* ***************************** */
 
 /* ***************************** */
@@ -59,7 +59,7 @@
 /* ***************************** */
 
 /* ***************************** */
-/* Varaibles                     */
+/* Variables                     */
 /* ***************************** */
 
 static int32_t  initialHeader = 1;
@@ -75,7 +75,7 @@ static const uint8_t clpcm_prv[14] =
     0, 9,   //first_access_unit_pointer
     0x00,   //emph,rsvd,stereo,downmix
     0x0F,   //quantisation word length 1,2
-    0x0F,   //audio sampling freqency 1,2
+    0x0F,   //audio sampling frequency 1,2
     0,      //resvd, multi channel type
     0,      //bit shift on channel GR2, assignment
     0x80,   //dynamic range control

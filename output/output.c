@@ -29,7 +29,7 @@
 #include "output.h"
 
 /* ***************************** */
-/* Makros/Constants              */
+/* Macros/Constants              */
 /* ***************************** */
 
 /* Error Constants */
@@ -43,7 +43,7 @@ static const char* FILENAME = "output.c";
 /* ***************************** */
 
 /* ***************************** */
-/* Varaibles                     */
+/* Variables                     */
 /* ***************************** */
 
 static Output_t * AvailableOutput[] = {

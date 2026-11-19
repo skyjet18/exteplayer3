@@ -50,7 +50,7 @@
 #include "writer.h"
 
 /* ***************************** */
-/* Makros/Constants	      */
+/* Macros/Constants	      */
 /* ***************************** */
 #define WMV_FRAME_START_CODE 0x0d
 
@@ -61,7 +61,7 @@
 static const  uint8_t Vc1FrameStartCode[]     = {0, 0, 1, WMV_FRAME_START_CODE};
 
 /* ***************************** */
-/* Varaibles                     */
+/* Variables                     */
 /* ***************************** */
 static int initialHeader = 1;
 static video_codec_data_t videocodecdata = {0, 0};

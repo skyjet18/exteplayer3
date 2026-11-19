@@ -52,7 +52,7 @@
 #include "avcc.h"
 
 /* ***************************** */
-/* Makros/Constants              */
+/* Macros/Constants              */
 /* ***************************** */
 #define NALU_TYPE_PLAYER2_CONTAINER_PARAMETERS          24
 #define CONTAINER_PARAMETERS_VERSION                    0x00
@@ -63,7 +63,7 @@
 
 
 /* ***************************** */
-/* Varaibles                     */
+/* Variables                     */
 /* ***************************** */
 const  uint8_t   Head[] = {0, 0, 0, 1};
 static int32_t   initialHeader = 1;

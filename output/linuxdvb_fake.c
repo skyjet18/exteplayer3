@@ -48,7 +48,7 @@
 #include "pes.h"
 
 /* ***************************** */
-/* Makros/Constants              */
+/* Macros/Constants              */
 /* ***************************** */
 
 #define cERR_LINUXDVB_NO_ERROR      0

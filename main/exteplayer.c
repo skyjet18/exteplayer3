@@ -1643,7 +1643,7 @@ int main(int argc, char* argv[])
 
     SetBuffering();
 
-    //Registrating output devices
+    //Registering output devices
     g_player->output->Command(g_player, OUTPUT_ADD, "audio");
     g_player->output->Command(g_player, OUTPUT_ADD, "video");
     g_player->output->Command(g_player, OUTPUT_ADD, "subtitle");

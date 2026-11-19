@@ -50,7 +50,7 @@
 #include "writer.h"
 
 /* ***************************** */
-/* Makros/Constants	      */
+/* Macros/Constants	      */
 /* ***************************** */
 #define VC1_SEQUENCE_LAYER_METADATA_START_CODE  0x80
 #define VC1_FRAME_START_CODE 0x0d
@@ -63,7 +63,7 @@ static const unsigned char  SequenceLayerStartCode[] = {0x00,    0x00,   0x01,  
 static const  uint8_t Vc1FrameStartCode[]     = {0, 0, 1, VC1_FRAME_START_CODE};
 
 /* ***************************** */
-/* Varaibles                     */
+/* Variables                     */
 /* ***************************** */
 static int initialHeader = 1;
 static video_codec_data_t videocodecdata = {0, 0};

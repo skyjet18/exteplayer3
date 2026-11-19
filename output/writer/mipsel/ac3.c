@@ -51,7 +51,7 @@
 #include "writer.h"
 
 /* ***************************** */
-/* Makros/Constants              */
+/* Macros/Constants              */
 /* ***************************** */
 #define AC3_HEADER_LENGTH       7
 
@@ -60,7 +60,7 @@
 /* ***************************** */
 
 /* ***************************** */
-/* Varaibles                     */
+/* Variables                     */
 /* ***************************** */
 unsigned char AC3_SYNC_HEADER[] = {0x80, 0x01, 0x00, 0x01};
 

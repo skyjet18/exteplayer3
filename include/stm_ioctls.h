@@ -3,7 +3,7 @@
  *
  * Copyright (C) STMicroelectronics Limited 2005. All rights reserved.
  *
- * Extensions to the LinuxDVB API (v3) implemented by the Havana implemenation.
+ * Extensions to the LinuxDVB API (v3) implemented by the Havana implementation.
  */
 
 #ifndef H_STM_IOCTLS

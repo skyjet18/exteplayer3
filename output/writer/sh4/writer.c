@@ -30,7 +30,7 @@
 #include "writer.h"
 
 /* ***************************** */
-/* Makros/Constants              */
+/* Macros/Constants              */
 /* ***************************** */
 
 #ifdef SAM_WITH_DEBUG
@@ -60,7 +60,7 @@ if (debug_level >= level) printf(x); } while (0)
 /* ***************************** */
 
 /* ***************************** */
-/* Varaibles                     */
+/* Variables                     */
 /* ***************************** */
 
 static Writer_t * AvailableWriter[] = {
