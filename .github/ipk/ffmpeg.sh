@@ -70,7 +70,7 @@ ARGS=(--disable-stripping --enable-pic --enable-shared --enable-pthreads --enabl
       --enable-muxer=image2 --enable-muxer=mjpeg --enable-muxer=rawvideo --enable-muxer=mpeg2video
       --enable-muxer=matroska --enable-muxer=m4v --enable-muxer=image2pipe --enable-muxer=apng
       --enable-muxer=mpegts --enable-muxer=asf --enable-muxer=spdif
-      --disable-encoders --disable-encoder=libx264 --enable-encoder=ac3 --enable-encoder=aac
+      --disable-encoders --disable-encoder=libx264 --enable-encoder=ac3 --enable-encoder=eac3 --enable-encoder=aac
       --enable-encoder=mpeg1video --enable-encoder=ljpeg --enable-encoder=mjpeg --enable-encoder=mpeg4
       --enable-encoder=jpeg2000 --enable-encoder=jpegls --enable-encoder=png --enable-encoder=rawvideo
       --enable-encoder=wmav2 --enable-decoder=truehd --enable-decoder=mlp
