@@ -7,11 +7,12 @@
 # usage: package.sh <out/player> <dist directory>
 # environment: ARCH, VERSION, MAX_GLIBC, REPOSITORY, PLAYER_SHA, FFMPEG_REPO,
 #              FFMPEG_VERSION (6.1 or 9), FFMPEG_BRANCH, FFMPEG_SHA
-# Writes exteplayer3_<VERSION>_ffmpeg<6|9>_<armv7ahf|mips32el>.ipk,
+# Writes exteplayer3_<VERSION>_ffmpeg<6|9>_<armv7ahf|mips32el|aarch64>.ipk,
 # .manifest.txt and .buildinfo.txt into the dist directory. Both FFmpeg
 # variants are the package exteplayer3 (they replace the player of the image
 # and each other). Exit status 1 when a file needs a
-# newer glibc than MAX_GLIBC.
+# newer glibc than MAX_GLIBC. Depends: libc6 of the highest GLIBC_ version
+# the files need (the result of that check), not more.
 set -eux
 P=$1
 mkdir -p "$2"
@@ -28,6 +29,10 @@ python3 "$HERE/elfinfo.py" --max-glibc "$MAX_GLIBC" --bundled-dir "$BD/lib/extep
 sed -i "s#^== $BD/#== #" "$P/manifest.txt"
 cat "$P/manifest.txt"
 GLIBC=$(python3 -c "import json,sys; print(json.load(open(sys.argv[1]))['glibc_max'])" "$P/manifest.json")
+# the glibc the package depends on: what the files need (2.17 or 2.19), so
+# images with glibc 2.19 can install it; the check above guarantees
+# GLIBC <= MAX_GLIBC
+DEPENDS_GLIBC=${GLIBC:-$MAX_GLIBC}
 {
     echo "exteplayer3: $REPOSITORY $PLAYER_SHA (version $VERSION)"
     echo "ffmpeg:      $FFMPEG_REPO $FFMPEG_BRANCH $FFMPEG_SHA ($FFMPEG_RELEASE)"
@@ -43,10 +48,13 @@ cat "$P/buildinfo.txt"
 
 T=exteplayer3_${VERSION}_ffmpeg${FFMPEG_VERSION%%.*}_$LABEL
 # Architecture as in the packages of ipk/: "all" for ARM (one package for
-# all ARM images), mips32el for MIPS
+# all ARM images), mips32el for MIPS; aarch64 (no package in ipk/) as the
+# package architecture of the AArch64 machines of OE-Alliance (dreamone,
+# dreamtwo), so a 32-bit image does not take it
 case $ARCH in
     armhf) IPK_ARCH=all ;;
     mipsel) IPK_ARCH=mips32el ;;
+    arm64) IPK_ARCH=aarch64 ;;
 esac
 W=$(mktemp -d)
 mkdir -p "$W/data/usr/bin" "$W/data/usr/lib" "$W/control"
@@ -64,7 +72,7 @@ Maintainer: OE-Core Developers <openembedded-core@lists.openembedded.org>
 License: GPL-2.0
 Architecture: $IPK_ARCH
 OE: exteplayer3
-Depends: libc6 (>= 2.20)
+Depends: libc6 (>= $DEPENDS_GLIBC)
 Source: https://github.com/$REPOSITORY/tree/$PLAYER_SHA
 EOF
 cat "$W/control/control"

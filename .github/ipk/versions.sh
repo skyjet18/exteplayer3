@@ -20,7 +20,13 @@ BLURAY_SHA256=478ffd68a0f5dde8ef6ca989b7f035b5a0a22c599142e5cd3ff7b03bbebe5f2b
 # librtmp of rtmpdump 2.6 (OpenSSL 3 support), no release tarballs
 RTMPDUMP_GIT=https://git.ffmpeg.org/rtmpdump.git
 RTMPDUMP_COMMIT=138fdb258d9fc26f1843fd1b891180416c9dc575
-# target (ARCH: Debian architecture, armhf by default)
+# libsrt for the FFmpeg 9 packages (OE-Alliance enables SRT in its FFmpeg 9
+# recipe only). 1.5.4 configures with the CMake 3.0 of jessie; the current
+# release 1.5.7 needs CMake 3.5
+SRT_VERSION=1.5.4
+SRT_URL=https://github.com/Haivision/srt/archive/refs/tags/v1.5.4.tar.gz
+SRT_SHA256=d0a8b600fe1b4eaaf6277530e3cfc8f15b8ce4035f16af4a5eb5d4b123640cdd
+# target (ARCH: Debian architecture armhf, mipsel or arm64, armhf by default)
 case ${ARCH:-armhf} in
     armhf)
         # code generation of the package: ARMv7-A, ARM (not Thumb) mode,
@@ -41,5 +47,14 @@ case ${ARCH:-armhf} in
         # MIPS has no GNU hash style (not in the line of the package either)
         HASHSTYLE=""
         LABEL=mips32el
+        ;;
+    arm64)
+        # 64-bit ARM (Dreambox One/Two): ARMv8-A, the AArch64 baseline
+        ARCHFLAGS="-march=armv8-a"
+        QEMU=aarch64
+        TRIPLET=aarch64-linux-gnu
+        OPENSSL_TARGET=linux-aarch64
+        HASHSTYLE="-Wl,--hash-style=gnu"
+        LABEL=aarch64
         ;;
 esac

@@ -7,15 +7,22 @@ name: ipk release
 #   exteplayer3_<version>_ffmpeg9_armv7ahf.ipk   ARMv7 hard-float, FFmpeg 9
 #   exteplayer3_<version>_ffmpeg6_mips32el.ipk   MIPS, FFmpeg 6.1
 #   exteplayer3_<version>_ffmpeg9_mips32el.ipk   MIPS, FFmpeg 9
-# All four are the package exteplayer3 (they replace the player of the image
-# and each other). Each has /usr/bin/exteplayer3 and, in
+#   exteplayer3_<version>_ffmpeg6_aarch64.ipk    64-bit ARM (Dreambox One/Two),
+#   exteplayer3_<version>_ffmpeg9_aarch64.ipk    FFmpeg 6.1 / FFmpeg 9
+# All six are the package exteplayer3 (they replace the player of the image
+# and each other). The aarch64 ones are built with the DreamNextGen backend
+# (HAVE_DREAMNEXTGEN) and are not tested on a receiver yet. The FFmpeg 9
+# packages have SRT (libsrt). Each has /usr/bin/exteplayer3 and, in
 # /usr/lib/exteplayer3_deps, FFmpeg from skyjet18/FFmpeg plus the libraries an
 # image may not have (OpenSSL 3.5, libxml2, librtmp, libbluray, ...); the
 # player and FFmpeg find them there through their RPATH.
 #
-# Build environment: a Debian 8 armhf / mipsel userland under qemu-user
-# (GCC 4.9.2, glibc 2.19), so the files run on old images (OpenPLi 4
-# generation) and new ones alike; every file must need GLIBC <= MAX_GLIBC.
+# Build environment: a Debian 8 armhf / mipsel / arm64 userland under
+# qemu-user (GCC 4.9.2, glibc 2.19), so the files run on old images (OpenPLi
+# 4 generation) and new ones alike; every file must need GLIBC <= MAX_GLIBC
+# (AArch64 symbols start at GLIBC_2.17). The ipk depends on libc6 of the
+# highest GLIBC_ version its files need (2.17 or 2.19), as found by that
+# check.
 # Before packaging, the player and ffmpeg/ffprobe are started under qemu-user
 # (local files, HLS over HTTPS). The scripts are in .github/ipk/; the text of
 # the releases is .github/ipk/release-notes.md.
@@ -23,10 +30,10 @@ name: ipk release
 # When it runs:
 #   - a push to master that changes the version of the player (the number
 #     in the EPLAYER3_EXTENDED message in main/exteplayer.c): if there is no
-#     tag v<version> yet, builds the four ipks and then creates the tag
+#     tag v<version> yet, builds the six ipks and then creates the tag
 #     v<version> on the pushed commit and the release "exteplayer3 <version>"
 #     with the text of release-notes.md, the changes since the previous
-#     version and the four ipks. Tags and releases made by the workflow
+#     version and the six ipks. Tags and releases made by the workflow
 #     itself start no further runs, so all of it happens in this one run. A
 #     push that leaves the version as it is builds nothing;
 #   - a release is published by hand (Releases -> Draft a new release):
@@ -34,7 +41,7 @@ name: ipk release
 #   - a tag v* is pushed by hand: builds it and attaches the ipks if a release
 #     for the tag already exists (otherwise they are only kept with the run;
 #     publishing the release then builds and attaches them). When the release
-#     has the four ipks already (a release made in the web interface starts a
+#     has the six ipks already (a release made in the web interface starts a
 #     tag run and a release run), the second run builds nothing; "Re-run all
 #     jobs" builds and replaces them;
 #   - by hand (Actions -> ipk release -> Run workflow): builds the selected
@@ -42,8 +49,10 @@ name: ipk release
 #     "release": also creates the tag and release of the current version, as
 #     a version push does. On master, with "version" (e.g. 185): creates the
 #     release of an older version from the commit that set that version
-#     (or from "ref"); a version that does not build with FFmpeg 9 gets only
-#     the FFmpeg 6.1 packages, and the release text says so;
+#     (or from "ref"); a version that does not build with FFmpeg 9 (or for
+#     aarch64) gets only the other packages, and the release text says so.
+#     Architectures: "all" (armhf, mipsel, aarch64), "both" (armhf and
+#     mipsel, as before aarch64 was added) or one of them;
 #   - once a week on master: keeps the caches below alive and up to date
 #     (GitHub drops caches unused for 7 days), so a release is built in
 #     minutes. The packages of that run are attached to it as well.
@@ -76,8 +85,9 @@ on:
       arches:
         description: Architectures
         type: choice
-        options: ['both', 'armhf', 'mipsel']
-        default: 'both'
+        # "both": armhf and mipsel (the choice before aarch64 was added)
+        options: ['all', 'both', 'armhf', 'mipsel', 'aarch64']
+        default: 'all'
       release:
         description: 'Create the tag and release of the version in main/exteplayer.c if there is none (master only)'
         type: boolean
@@ -174,7 +184,7 @@ jobs:
         # the FFmpeg 6.1 packages then
         old=false
         ffmpegs=${INPUT_FFMPEG:-both}
-        arches=${INPUT_ARCHES:-both}
+        arches=${INPUT_ARCHES:-all}
         case $EVENT/$GITHUB_REF in
           release/*) tag=$RELEASE_TAG; mode=attach ;;
           push/refs/tags/*) tag=${GITHUB_REF#refs/tags/}; mode=attach ;;
@@ -249,7 +259,7 @@ jobs:
               tag=v$player
               mode=create
               ffmpegs=both
-              arches=both
+              arches=all
             fi
             ;;
         esac
@@ -264,12 +274,17 @@ jobs:
           exit 1
         fi
 
+        # arch: Debian architecture of the build environment, label: name of
+        # the ipk
         armhf='{"arch":"armhf","label":"armv7ahf"}'
         mipsel='{"arch":"mipsel","label":"mips32el"}'
+        aarch64='{"arch":"arm64","label":"aarch64"}'
         case $arches in
           armhf) list="$armhf" ;;
           mipsel) list="$mipsel" ;;
-          *) list="$armhf $mipsel" ;;
+          aarch64) list="$aarch64" ;;
+          both) list="$armhf $mipsel" ;;
+          *) list="$armhf $mipsel $aarch64" ;;
         esac
         case $ffmpegs in
           6.1|9) ffs=$ffmpegs ;;
@@ -294,11 +309,11 @@ jobs:
             exit 1
           fi
           summary="$summary- FFmpeg $ff: \`$FFMPEG_REPO\` \`$branch\` at \`$ffsha\`"$'\n'
-          # FFmpeg 9 packages of an older version may fail
-          optional=false
-          if [ $old = true ] && [ "$ff" = 9 ]; then optional=true; fi
           for a in $list; do
             label=$(echo "$a" | sed 's/.*"label":"\([^"]*\)".*/\1/')
+            # FFmpeg 9 and aarch64 packages of an older version may fail
+            optional=false
+            if [ $old = true ] && { [ "$ff" = 9 ] || [ "$label" = aarch64 ]; }; then optional=true; fi
             matrix="$matrix${matrix:+,}${a%\}},\"ffmpeg\":\"$ff\",\"ffmpeg_major\":\"${ff%%.*}\",\"ffmpeg_branch\":\"$branch\",\"ffmpeg_sha\":\"$ffsha\",\"optional\":\"$optional\"}"
             f=exteplayer3_${version}_ffmpeg${ff%%.*}_$label.ipk
             expected="$expected${expected:+ }$f"
@@ -438,8 +453,8 @@ jobs:
     needs: [setup, ffmpeg]
     runs-on: ubuntu-24.04
     timeout-minutes: 60
-    # FFmpeg 9 with an older version of the player: a failure does not stop
-    # the release, it is made with the FFmpeg 6.1 packages
+    # FFmpeg 9 or aarch64 with an older version of the player: a failure
+    # does not stop the release, it is made with the other packages
     continue-on-error: ${{ matrix.optional == 'true' }}
     strategy:
       fail-fast: false
@@ -558,7 +573,7 @@ jobs:
           if [ -f "dist/$f" ]; then continue; fi
           case " $REQUIRED " in
             *" $f "*) echo "::error::$f was not built"; rc=1 ;;
-            *) echo "::warning title=Not built::$f (FFmpeg 9 with this version of the player); the release is made without it." ;;
+            *) echo "::warning title=Not built::$f (FFmpeg 9 or aarch64 with this version of the player); the release is made without it." ;;
           esac
         done
         exit $rc

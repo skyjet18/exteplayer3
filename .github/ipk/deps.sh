@@ -63,6 +63,18 @@ log rtmp-make make -j$J SYS=posix CRYPTO=OPENSSL prefix=$P XCFLAGS="-I$P/include
 log rtmp-install make install SYS=posix CRYPTO=OPENSSL prefix=$P
 echo "librtmp   rtmpdump $RTMPDUMP_COMMIT (v2.6, OpenSSL)" >> $P/VERSIONS
 
+# libsrt (C++, NEEDs the libstdc++ of the image); linked by FFmpeg 9 only,
+# so only the FFmpeg 9 packages bundle it. Crypto through OpenSSL (EVP).
+mkdir -p /build/srt-build
+cd /build/srt-build
+log srt-cmake env CXXFLAGS="$CFLAGS" cmake /build/srt-$SRT_VERSION -DCMAKE_INSTALL_PREFIX=$P \
+    -DCMAKE_INSTALL_LIBDIR=lib -DCMAKE_INSTALL_INCLUDEDIR=include -DCMAKE_BUILD_TYPE=Release \
+    -DENABLE_SHARED=ON -DENABLE_STATIC=OFF -DENABLE_APPS=OFF -DENABLE_ENCRYPTION=ON \
+    -DUSE_ENCLIB=openssl-evp -DENABLE_STDCXX_SYNC=OFF -DENABLE_UNITTESTS=OFF
+log srt-make make -j$J
+log srt-install make install
+echo "libsrt    $SRT_VERSION (OpenSSL EVP, FFmpeg 9 packages only)" >> $P/VERSIONS
+
 rm -rf $P/share/doc $P/share/man $P/share/gtk-doc
 ls -la $P/lib
 cat $P/VERSIONS

@@ -122,7 +122,8 @@ def main():
     for f in ipks:
         m = re.match(r'exteplayer3_.*_ffmpeg([0-9]+)_([a-z0-9]+)\.ipk$', f)
         major, label = (m.group(1), m.group(2)) if m else ('?', '?')
-        images = {'armv7ahf': 'ARM', 'mips32el': 'MIPS'}.get(label, label)
+        images = {'armv7ahf': 'ARM', 'mips32el': 'MIPS',
+                  'aarch64': '64-bit ARM (Dreambox One/Two), untested'}.get(label, label)
         info = buildinfo(os.path.join(a.dist, f[:-4] + '.buildinfo.txt'))
         if 'ffmpeg' in info and major in ff:
             ff[major] = info['ffmpeg']
@@ -138,8 +139,8 @@ def main():
         variants = sorted(set(re.sub(r'^exteplayer3_[^_]*_(ffmpeg[0-9]+)_([a-z0-9]+)\.ipk$', r'\1 \2', f)
                               for f in missing))
         note = ('\n> **Note:** no package for %s: this version of the player does not build '
-                'with that FFmpeg (or did not pass the tests of the build); support for it came '
-                'with a later version.\n' % ', '.join(v.replace('ffmpeg6', 'FFmpeg 6.1')
+                'with that FFmpeg or for that architecture (or did not pass the tests of the '
+                'build); support for it came with a later version.\n' %', '.join(v.replace('ffmpeg6', 'FFmpeg 6.1')
                                                       .replace('ffmpeg9', 'FFmpeg 9') for v in variants))
 
     text = open(a.template, encoding='utf-8').read()

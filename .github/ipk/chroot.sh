@@ -5,7 +5,7 @@
 # the FFmpeg installation of ffmpeg.sh unpacked to $R/opt/ffstage.
 # Programs then run with: sudo chroot $R ...
 # usage: chroot.sh <rootfs.tar.zst> [ffstage.tar.zst]
-# environment: ARCH (armhf or mipsel), R (directory of the root)
+# environment: ARCH (armhf, mipsel or arm64), R (directory of the root)
 set -eux
 HERE=$(cd "$(dirname "$0")" && pwd)
 . "$HERE/versions.sh"

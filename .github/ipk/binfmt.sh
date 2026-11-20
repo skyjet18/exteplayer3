@@ -2,7 +2,7 @@
 # Makes sure the kernel starts programs of the target architecture with
 # qemu-user. With a directory: copies the interpreter into that root, for the
 # case that the registration does not keep the interpreter open.
-# usage: binfmt.sh <arm|mipsel> [root directory]
+# usage: binfmt.sh <arm|mipsel|aarch64> [root directory]
 set -eu
 Q=$1
 E=/proc/sys/fs/binfmt_misc/qemu-$Q
