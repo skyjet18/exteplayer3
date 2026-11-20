@@ -1,0 +1,620 @@
+name: ipk release
+
+# Builds the prebuilt packages of exteplayer3 the way the ones in ipk/ are
+# made, with FFmpeg 6.1 and with FFmpeg 9, and attaches them to the GitHub
+# release:
+#   exteplayer3_<version>_ffmpeg6_armv7ahf.ipk   ARMv7 hard-float, FFmpeg 6.1
+#   exteplayer3_<version>_ffmpeg9_armv7ahf.ipk   ARMv7 hard-float, FFmpeg 9
+#   exteplayer3_<version>_ffmpeg6_mips32el.ipk   MIPS, FFmpeg 6.1
+#   exteplayer3_<version>_ffmpeg9_mips32el.ipk   MIPS, FFmpeg 9
+#   exteplayer3_<version>_ffmpeg6_aarch64.ipk    64-bit ARM (Dreambox One/Two),
+#   exteplayer3_<version>_ffmpeg9_aarch64.ipk    FFmpeg 6.1 / FFmpeg 9
+# All six are the package exteplayer3 (they replace the player of the image
+# and each other). The aarch64 ones are built with the DreamNextGen backend
+# (HAVE_DREAMNEXTGEN) and are not tested on a receiver yet. The FFmpeg 9
+# packages have SRT (libsrt). Each has /usr/bin/exteplayer3 and, in
+# /usr/lib/exteplayer3_deps, FFmpeg from skyjet18/FFmpeg plus the libraries an
+# image may not have (OpenSSL 3.5, libxml2, librtmp, libbluray, ...); the
+# player and FFmpeg find them there through their RPATH.
+#
+# Build environment: a Debian 8 armhf / mipsel / arm64 userland under
+# qemu-user (GCC 4.9.2, glibc 2.19), so the files run on old images (OpenPLi
+# 4 generation) and new ones alike; every file must need GLIBC <= MAX_GLIBC
+# (AArch64 symbols start at GLIBC_2.17). The ipk depends on libc6 of the
+# highest GLIBC_ version its files need (2.17 or 2.19), as found by that
+# check.
+# Before packaging, the player and ffmpeg/ffprobe are started under qemu-user
+# (local files, HLS over HTTPS). The scripts are in .github/ipk/; the text of
+# the releases is .github/ipk/release-notes.md.
+#
+# When it runs:
+#   - a push to master that changes the version of the player (the number
+#     in the EPLAYER3_EXTENDED message in main/exteplayer.c): if there is no
+#     tag v<version> yet, builds the six ipks and then creates the tag
+#     v<version> on the pushed commit and the release "exteplayer3 <version>"
+#     with the text of release-notes.md, the changes since the previous
+#     version and the six ipks. Tags and releases made by the workflow
+#     itself start no further runs, so all of it happens in this one run. A
+#     push that leaves the version as it is builds nothing;
+#   - a release is published by hand (Releases -> Draft a new release):
+#     builds the tagged commit and attaches the ipks to that release;
+#   - a tag v* is pushed by hand: builds it and attaches the ipks if a release
+#     for the tag already exists (otherwise they are only kept with the run;
+#     publishing the release then builds and attaches them). When the release
+#     has the six ipks already (a release made in the web interface starts a
+#     tag run and a release run), the second run builds nothing; "Re-run all
+#     jobs" builds and replaces them;
+#   - by hand (Actions -> ipk release -> Run workflow): builds the selected
+#     branch; the ipks are attached to the run as artifacts. On master, with
+#     "release": also creates the tag and release of the current version, as
+#     a version push does. On master, with "version" (e.g. 185): creates the
+#     release of an older version from the commit that set that version
+#     (or from "ref"); a version that does not build with FFmpeg 9 (or for
+#     aarch64) gets only the other packages, and the release text says so.
+#     Architectures: "all" (armhf, mipsel, aarch64), "both" (armhf and
+#     mipsel, as before aarch64 was added) or one of them;
+#   - once a week on master: keeps the caches below alive and up to date
+#     (GitHub drops caches unused for 7 days), so a release is built in
+#     minutes. The packages of that run are attached to it as well.
+# Version: the number in main/exteplayer.c; for a release or tag made by
+# hand, the number of the tag (v187 -> 187).
+# FFmpeg: release/6.1-patched (as the packages in ipk/) and
+# release/9.0-patched; the branches are followed by name, their current
+# commits are built.
+#
+# Caches: the build environment with the libraries (about 30 minutes per
+# architecture when built) and FFmpeg (30 to 50 minutes per version and
+# architecture), keyed by the scripts that make them and by the FFmpeg
+# commit. A first run, or one after a change of either, takes about 85
+# minutes; otherwise about 5 minutes.
+
+on:
+  push:
+    branches: [master]
+    paths: ['main/exteplayer.c']
+    tags: ['v*']
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      ffmpeg:
+        description: FFmpeg
+        type: choice
+        options: ['both', '6.1', '9']
+        default: 'both'
+      arches:
+        description: Architectures
+        type: choice
+        # "both": armhf and mipsel (the choice before aarch64 was added)
+        options: ['all', 'both', 'armhf', 'mipsel', 'aarch64']
+        default: 'all'
+      release:
+        description: 'Create the tag and release of the version in main/exteplayer.c if there is none (master only)'
+        type: boolean
+        default: false
+      version:
+        description: 'Older version to release, e.g. 185: built from the commit that set it (master only)'
+        type: string
+        default: ''
+      ref:
+        description: 'With "version": commit or branch to build instead (e.g. a version that is not in the history of master)'
+        type: string
+        default: ''
+  schedule:
+    # Mondays 03:17 UTC
+    - cron: '17 3 * * 1'
+
+permissions:
+  contents: read
+
+# one build per tag or branch (and per older version) at a time; a second
+# one waits
+concurrency:
+  group: ipk-${{ github.ref }}${{ inputs.version && format('-v{0}', inputs.version) || '' }}
+  cancel-in-progress: false
+
+env:
+  # the highest glibc symbol version a shipped file may need
+  MAX_GLIBC: '2.19'
+  FFMPEG_REPO: skyjet18/FFmpeg
+  # root of the jessie userland on the runner
+  R: /opt/oldroot
+
+jobs:
+  setup:
+    name: Version and FFmpeg
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      build: ${{ steps.s.outputs.build }}
+      version: ${{ steps.s.outputs.version }}
+      sha: ${{ steps.s.outputs.sha }}
+      tag: ${{ steps.s.outputs.tag }}
+      mode: ${{ steps.s.outputs.mode }}
+      expected: ${{ steps.s.outputs.expected }}
+      required: ${{ steps.s.outputs.required }}
+      arches: ${{ steps.s.outputs.arches }}
+      matrix: ${{ steps.s.outputs.matrix }}
+    steps:
+    - name: Check out this repository
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      with:
+        # the version before the push, older versions and the tags
+        fetch-depth: 0
+
+    - name: Version, release, FFmpeg, architectures
+      id: s
+      env:
+        GH_TOKEN: ${{ github.token }}
+        EVENT: ${{ github.event_name }}
+        BEFORE: ${{ github.event.before }}
+        DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        RELEASE_TAG: ${{ github.event.release.tag_name }}
+        INPUT_FFMPEG: ${{ inputs.ffmpeg }}
+        INPUT_ARCHES: ${{ inputs.arches }}
+        INPUT_RELEASE: ${{ inputs.release }}
+        INPUT_VERSION: ${{ inputs.version }}
+        INPUT_REF: ${{ inputs.ref }}
+        RUN_ATTEMPT: ${{ github.run_attempt }}
+      run: |
+        set -eu
+        # the number after the format string of the EPLAYER3_EXTENDED message
+        version_of() {
+          git show "$1:main/exteplayer.c" 2> /dev/null | tr -d '\r' | sed -n '/EPLAYER3_EXTENDED.*version/,/;/p' |
+            tr -d '\n' | sed -n 's/.*", *\([0-9][0-9]*\)[,)].*/\1/p' | head -1
+        }
+        tag_exists() {
+          [ -n "$(git ls-remote --tags origin "refs/tags/$1")" ]
+        }
+        only_default_branch() {
+          if [ "$GITHUB_REF" != "refs/heads/$DEFAULT_BRANCH" ]; then
+            echo "::error::$1 only on $DEFAULT_BRANCH"
+            exit 1
+          fi
+        }
+        sha=$(git rev-parse HEAD)
+        player=$(version_of HEAD)
+        version=$player
+        build=true
+        # mode: "create" = tag and release made by this run, "attach" = the
+        # ipks go to the release of the tag if there is one, "" = no release
+        mode=""
+        tag=""
+        # an older version: FFmpeg 9 may not build, the release is made with
+        # the FFmpeg 6.1 packages then
+        old=false
+        ffmpegs=${INPUT_FFMPEG:-both}
+        arches=${INPUT_ARCHES:-all}
+        case $EVENT/$GITHUB_REF in
+          release/*) tag=$RELEASE_TAG; mode=attach ;;
+          push/refs/tags/*) tag=${GITHUB_REF#refs/tags/}; mode=attach ;;
+          push/refs/heads/*)
+            # only branches of the trigger (master): a release when the
+            # version changed and has no tag yet
+            if [ -n "$BEFORE" ] && [ "${BEFORE//0/}" != "" ] && git cat-file -e "$BEFORE^{commit}" 2> /dev/null; then
+              before=$(version_of "$BEFORE")
+            else
+              before=$(version_of HEAD^)
+            fi
+            if [ -z "$player" ]; then
+              echo "::error::no version in main/exteplayer.c (EPLAYER3_EXTENDED)"
+              exit 1
+            elif [ "$player" = "$before" ]; then
+              echo "::notice title=No new version::The player version is still $player; nothing to build."
+              build=false
+            elif tag_exists "v$player"; then
+              echo "::notice title=Tag exists::Version ${before:-?} -> $player, but the tag v$player exists already; nothing to build."
+              build=false
+            else
+              echo "::notice title=New version::Version ${before:-?} -> $player: builds the ipks and creates the tag and release v$player."
+              tag=v$player
+              mode=create
+            fi
+            ;;
+          workflow_dispatch/*)
+            if [ -n "$INPUT_VERSION" ]; then
+              only_default_branch '"version"'
+              version=${INPUT_VERSION#v}
+              if ! [[ $version =~ ^[0-9]+$ ]]; then
+                echo "::error::version '$INPUT_VERSION': a number like 185"
+                exit 1
+              fi
+              if [ -n "$INPUT_REF" ]; then
+                git fetch -q origin "$INPUT_REF" || { echo "::error::ref '$INPUT_REF' not found"; exit 1; }
+                sha=$(git rev-parse FETCH_HEAD)
+              else
+                # the commit that set the version: on the first-parent
+                # history, the first commit with that number after one with
+                # another number (the most recent such change)
+                sha=""
+                prev=""
+                for c in $(git rev-list --reverse --first-parent HEAD -- main/exteplayer.c); do
+                  v=$(version_of "$c")
+                  if [ "$v" = "$version" ] && [ "$prev" != "$version" ]; then sha=$c; fi
+                  prev=$v
+                done
+                if [ -z "$sha" ]; then
+                  echo "::error::version $version is not in the history of $DEFAULT_BRANCH; give the commit with \"ref\""
+                  exit 1
+                fi
+              fi
+              if [ "$(version_of "$sha")" != "$version" ]; then
+                echo "::error::the commit $sha reports version $(version_of "$sha"), not $version"
+                exit 1
+              fi
+              if tag_exists "v$version"; then
+                echo "::error::the tag v$version exists already"
+                exit 1
+              fi
+              echo "::notice title=Older version::Version $version from $(git log -1 --format='%h %ad %s' --date=short "$sha")"
+              tag=v$version
+              mode=create
+              old=true
+            elif [ "$INPUT_RELEASE" = true ]; then
+              only_default_branch '"release"'
+              if tag_exists "v$player"; then
+                echo "::error::the tag v$player exists already; raise the version in main/exteplayer.c"
+                exit 1
+              fi
+              tag=v$player
+              mode=create
+              ffmpegs=both
+              arches=all
+            fi
+            ;;
+        esac
+        if [ "$mode" = attach ] && [[ $tag =~ ^v?([0-9]+(\.[0-9]+)*)$ ]]; then
+          version=${BASH_REMATCH[1]}
+          if [ "$version" != "$player" ]; then
+            echo "::warning::tag $tag, but the player reports version ${player:-?} (main/exteplayer.c)"
+          fi
+        fi
+        if [ -z "$version" ]; then
+          echo "::error::no version: neither a tag like v187 nor the version in main/exteplayer.c"
+          exit 1
+        fi
+
+        # arch: Debian architecture of the build environment, label: name of
+        # the ipk
+        armhf='{"arch":"armhf","label":"armv7ahf"}'
+        mipsel='{"arch":"mipsel","label":"mips32el"}'
+        aarch64='{"arch":"arm64","label":"aarch64"}'
+        case $arches in
+          armhf) list="$armhf" ;;
+          mipsel) list="$mipsel" ;;
+          aarch64) list="$aarch64" ;;
+          both) list="$armhf $mipsel" ;;
+          *) list="$armhf $mipsel $aarch64" ;;
+        esac
+        case $ffmpegs in
+          6.1|9) ffs=$ffmpegs ;;
+          *) ffs="6.1 9" ;;
+        esac
+        rootfs=""
+        matrix=""
+        expected=""
+        required=""
+        for a in $list; do
+          rootfs="$rootfs${rootfs:+,}$a"
+        done
+        summary=""
+        for ff in $ffs; do
+          case $ff in
+            6.1) branch=release/6.1-patched ;;
+            9) branch=release/9.0-patched ;;
+          esac
+          ffsha=$(git ls-remote "https://github.com/$FFMPEG_REPO" "refs/heads/$branch" | cut -f1)
+          if [ -z "$ffsha" ]; then
+            echo "::error::branch $branch not found in $FFMPEG_REPO"
+            exit 1
+          fi
+          summary="$summary- FFmpeg $ff: \`$FFMPEG_REPO\` \`$branch\` at \`$ffsha\`"$'\n'
+          for a in $list; do
+            label=$(echo "$a" | sed 's/.*"label":"\([^"]*\)".*/\1/')
+            # FFmpeg 9 and aarch64 packages of an older version may fail
+            optional=false
+            if [ $old = true ] && { [ "$ff" = 9 ] || [ "$label" = aarch64 ]; }; then optional=true; fi
+            matrix="$matrix${matrix:+,}${a%\}},\"ffmpeg\":\"$ff\",\"ffmpeg_major\":\"${ff%%.*}\",\"ffmpeg_branch\":\"$branch\",\"ffmpeg_sha\":\"$ffsha\",\"optional\":\"$optional\"}"
+            f=exteplayer3_${version}_ffmpeg${ff%%.*}_$label.ipk
+            expected="$expected${expected:+ }$f"
+            if [ $optional = false ]; then required="$required${required:+ }$f"; fi
+          done
+        done
+
+        # a release that has these ipks already (the second of the tag and
+        # release runs of a release made in the web interface): nothing to do,
+        # unless the run is started again by hand
+        if [ "$mode" = attach ] && [ "$build" = true ] && [ "$RUN_ATTEMPT" = 1 ] &&
+           assets=$(gh release view "$tag" --repo "$GITHUB_REPOSITORY" --json assets -q '.assets[].name' 2> /dev/null); then
+          missing=""
+          for f in $expected; do
+            echo "$assets" | grep -qxF "$f" || missing="$missing $f"
+          done
+          if [ -z "$missing" ]; then
+            echo "::notice title=Already attached::The release $tag has all ipks of this run already; nothing to build (Re-run all jobs builds and replaces them)."
+            build=false
+          fi
+        fi
+
+        {
+          echo "build=$build"
+          echo "version=$version"
+          echo "sha=$sha"
+          echo "tag=$tag"
+          echo "mode=$mode"
+          echo "expected=$expected"
+          echo "required=$required"
+          echo "arches={\"include\":[$rootfs]}"
+          echo "matrix={\"include\":[$matrix]}"
+        } | tee -a "$GITHUB_OUTPUT"
+        {
+          echo "exteplayer3 $version (${tag:-no tag}, $(git log -1 --format='%h %s' "$sha")), release: ${mode:-none}, build: $build"
+          echo
+          echo "$summary"
+        } >> "$GITHUB_STEP_SUMMARY"
+
+  # Debian 8 userland with the libraries of /opt/deps (rootfs.sh, deps.sh);
+  # only built when the cache does not have it
+  rootfs:
+    name: Build environment ${{ matrix.arch }}
+    needs: setup
+    if: needs.setup.outputs.build == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.setup.outputs.arches) }}
+    env:
+      ARCH: ${{ matrix.arch }}
+    steps:
+    - name: Check out this repository
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+    - name: In the cache?
+      id: cache
+      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: rootfs.tar.zst
+        key: jessie-${{ matrix.arch }}-${{ hashFiles('.github/ipk/rootfs.sh', '.github/ipk/deps.sh', '.github/ipk/versions.sh', '.github/ipk/binfmt.sh') }}
+        lookup-only: true
+    - name: Userland and libraries
+      if: steps.cache.outputs.cache-hit != 'true'
+      run: bash .github/ipk/rootfs.sh $R "$PWD/rootfs.tar.zst"
+    - name: Into the cache
+      if: steps.cache.outputs.cache-hit != 'true'
+      uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: rootfs.tar.zst
+        key: ${{ steps.cache.outputs.cache-primary-key }}
+
+  # FFmpeg compiled in that userland (ffmpeg.sh), installed to /opt/ffstage;
+  # only built when the cache does not have this commit with these scripts
+  # (one cache per FFmpeg version and architecture)
+  ffmpeg:
+    name: FFmpeg ${{ matrix.ffmpeg }} ${{ matrix.arch }}
+    needs: [setup, rootfs]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.setup.outputs.matrix) }}
+    env:
+      ARCH: ${{ matrix.arch }}
+      FFMPEG_VERSION: ${{ matrix.ffmpeg }}
+      FFMPEG_SHA: ${{ matrix.ffmpeg_sha }}
+    steps:
+    - name: Check out this repository
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+    - name: In the cache?
+      id: cache
+      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ffstage.tar.zst
+        key: ffstage-${{ matrix.ffmpeg }}-${{ matrix.ffmpeg_sha }}-${{ matrix.arch }}-${{ hashFiles('.github/ipk/rootfs.sh', '.github/ipk/deps.sh', '.github/ipk/versions.sh', '.github/ipk/binfmt.sh') }}-${{ hashFiles('.github/ipk/ffmpeg.sh') }}
+        lookup-only: true
+    - name: Build environment from the cache
+      if: steps.cache.outputs.cache-hit != 'true'
+      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: rootfs.tar.zst
+        key: jessie-${{ matrix.arch }}-${{ hashFiles('.github/ipk/rootfs.sh', '.github/ipk/deps.sh', '.github/ipk/versions.sh', '.github/ipk/binfmt.sh') }}
+        fail-on-cache-miss: true
+    - name: Configure and compile
+      if: steps.cache.outputs.cache-hit != 'true'
+      run: |
+        set -eux
+        mkdir -p src/ffmpeg
+        curl -sSL --retry 5 --retry-all-errors "https://github.com/$FFMPEG_REPO/archive/$FFMPEG_SHA.tar.gz" | tar -xz --strip-components=1 -C src/ffmpeg
+        bash .github/ipk/chroot.sh "$PWD/rootfs.tar.zst"
+        rc=0
+        sudo chroot $R /usr/bin/env ARCH=$ARCH FFMPEG_VERSION=$FFMPEG_VERSION /bin/bash /w/.github/ipk/ffmpeg.sh || rc=$?
+        sudo chown -R "$(id -u)" out || true
+        [ $rc = 0 ]
+        sudo tar --numeric-owner -C $R/opt/ffstage -c . | zstd -T0 -6 > ffstage.tar.zst
+        ls -la ffstage.tar.zst
+    - name: Into the cache
+      if: steps.cache.outputs.cache-hit != 'true'
+      uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ffstage.tar.zst
+        key: ${{ steps.cache.outputs.cache-primary-key }}
+    - name: Keep the logs
+      if: failure()
+      uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+      with:
+        name: ffmpeg${{ matrix.ffmpeg_major }}-logs-${{ matrix.arch }}
+        path: out/ffmpeg
+        if-no-files-found: ignore
+        retention-days: 14
+
+  # exteplayer3 compiled in that userland (player.sh), smoke tests under
+  # qemu-user, ipk (package.sh)
+  package:
+    name: ipk FFmpeg ${{ matrix.ffmpeg }} ${{ matrix.label }}
+    needs: [setup, ffmpeg]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    # FFmpeg 9 or aarch64 with an older version of the player: a failure
+    # does not stop the release, it is made with the other packages
+    continue-on-error: ${{ matrix.optional == 'true' }}
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.setup.outputs.matrix) }}
+    env:
+      ARCH: ${{ matrix.arch }}
+    steps:
+    - name: Check out this repository
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+    - name: Check out the player source
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      with:
+        ref: ${{ needs.setup.outputs.sha }}
+        path: player-src
+    - name: Build environment from the cache
+      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: rootfs.tar.zst
+        key: jessie-${{ matrix.arch }}-${{ hashFiles('.github/ipk/rootfs.sh', '.github/ipk/deps.sh', '.github/ipk/versions.sh', '.github/ipk/binfmt.sh') }}
+        fail-on-cache-miss: true
+    - name: FFmpeg from the cache
+      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ffstage.tar.zst
+        key: ffstage-${{ matrix.ffmpeg }}-${{ matrix.ffmpeg_sha }}-${{ matrix.arch }}-${{ hashFiles('.github/ipk/rootfs.sh', '.github/ipk/deps.sh', '.github/ipk/versions.sh', '.github/ipk/binfmt.sh') }}-${{ hashFiles('.github/ipk/ffmpeg.sh') }}
+        fail-on-cache-miss: true
+    - name: Environment and test media
+      run: |
+        set -eux
+        bash .github/ipk/chroot.sh "$PWD/rootfs.tar.zst" "$PWD/ffstage.tar.zst"
+        sudo apt-get install -y -q ffmpeg
+        S=/tmp/samples
+        mkdir -p $S/hls
+        ffmpeg -v error -f lavfi -i testsrc2=size=320x180:rate=25 -f lavfi -i sine=frequency=440:sample_rate=48000 \
+            -t 6 -c:v libx264 -preset veryfast -g 25 -pix_fmt yuv420p -c:a aac -b:a 64k $S/sample.mp4
+        ffmpeg -v error -i $S/sample.mp4 -c copy -f mpegts $S/sample.ts
+        ffmpeg -v error -i $S/sample.mp4 -c copy -f hls -hls_time 2 -hls_playlist_type vod \
+            -master_pl_name master.m3u8 $S/hls/stream.m3u8
+        openssl req -x509 -newkey rsa:2048 -nodes -subj /CN=localhost \
+            -addext 'subjectAltName=DNS:localhost,IP:127.0.0.1' -days 30 \
+            -keyout $S/key.pem -out $S/crt.pem 2> /dev/null
+        cat $S/key.pem $S/crt.pem > $S/cert.pem
+        sudo cp -r $S $R/samples
+    - name: Compile, bundle, smoke tests
+      id: build
+      run: |
+        set -ux
+        python3 .github/ipk/https_server.py /tmp/samples /tmp/samples/cert.pem 8443 > /tmp/https.log 2>&1 &
+        sleep 2
+        rc=0
+        sudo chroot $R /usr/bin/env ARCH="$ARCH" HTTPS_PORT=8443 PLAYER_SRC=/w/player-src /bin/bash /w/.github/ipk/player.sh || rc=$?
+        sudo chown -R "$(id -u)" out || true
+        echo "smoke=$rc" >> "$GITHUB_OUTPUT"
+        test -x out/player/bundle/bin/exteplayer3
+    - name: Manifest, GLIBC check, ipk
+      env:
+        VERSION: ${{ needs.setup.outputs.version }}
+        REPOSITORY: ${{ github.repository }}
+        PLAYER_SHA: ${{ needs.setup.outputs.sha }}
+        FFMPEG_VERSION: ${{ matrix.ffmpeg }}
+        FFMPEG_BRANCH: ${{ matrix.ffmpeg_branch }}
+        FFMPEG_SHA: ${{ matrix.ffmpeg_sha }}
+      run: bash .github/ipk/package.sh out/player dist
+    - name: Smoke tests passed?
+      run: |
+        cat out/player/smoke.txt
+        [ "${{ steps.build.outputs.smoke }}" = 0 ]
+    - name: Keep the ipk with the run
+      uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+      with:
+        name: exteplayer3_${{ needs.setup.outputs.version }}_ffmpeg${{ matrix.ffmpeg_major }}_${{ matrix.label }}
+        path: dist
+        retention-days: 30
+    - name: Keep the logs
+      if: ${{ !cancelled() }}
+      uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+      with:
+        name: logs-ffmpeg${{ matrix.ffmpeg_major }}-${{ matrix.label }}
+        path: |
+          out/player
+          !out/player/bundle
+        if-no-files-found: ignore
+        retention-days: 14
+
+  # creates the tag and release (version push, "release", "version") or
+  # attaches the ipks to the release of the tag; only this job may write,
+  # and only when every required package was built and passed its tests
+  release:
+    name: Release
+    needs: [setup, package]
+    if: ${{ !cancelled() && needs.setup.result == 'success' && needs.setup.outputs.build == 'true' && needs.setup.outputs.mode != '' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+    - name: Check out this repository
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      with:
+        # the changes since the previous version
+        fetch-depth: 0
+    - name: The ipks of this run
+      uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+      with:
+        pattern: exteplayer3_*
+        path: dist
+        merge-multiple: true
+    - name: All required packages there?
+      env:
+        REQUIRED: ${{ needs.setup.outputs.required }}
+        EXPECTED: ${{ needs.setup.outputs.expected }}
+      run: |
+        ls -la dist || true
+        rc=0
+        for f in $EXPECTED; do
+          if [ -f "dist/$f" ]; then continue; fi
+          case " $REQUIRED " in
+            *" $f "*) echo "::error::$f was not built"; rc=1 ;;
+            *) echo "::warning title=Not built::$f (FFmpeg 9 or aarch64 with this version of the player); the release is made without it." ;;
+          esac
+        done
+        exit $rc
+    - name: Release notes
+      if: needs.setup.outputs.mode == 'create'
+      env:
+        VERSION: ${{ needs.setup.outputs.version }}
+        TAG: ${{ needs.setup.outputs.tag }}
+        SHA: ${{ needs.setup.outputs.sha }}
+        EXPECTED: ${{ needs.setup.outputs.expected }}
+      run: |
+        set -eu
+        # the commit of an older version may not be in the history of this
+        # branch ("ref")
+        git cat-file -e "$SHA^{commit}" 2> /dev/null || git fetch -q origin "$SHA"
+        python3 .github/ipk/release_notes.py --dist dist --sha "$SHA" --version "$VERSION" --tag "$TAG" \
+            --repo "$GITHUB_REPOSITORY" --ffmpeg-repo "$FFMPEG_REPO" --expected "$EXPECTED" notes.md
+        cat notes.md
+    - name: Create the release or attach
+      env:
+        GH_TOKEN: ${{ github.token }}
+        MODE: ${{ needs.setup.outputs.mode }}
+        VERSION: ${{ needs.setup.outputs.version }}
+        TAG: ${{ needs.setup.outputs.tag }}
+        SHA: ${{ needs.setup.outputs.sha }}
+      run: |
+        set -eu
+        if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
+          # --clobber: replaces files of the same name (tag push and release)
+          gh release upload "$TAG" dist/*.ipk --clobber --repo "$GITHUB_REPOSITORY"
+          what="Attached to release $TAG"
+        elif [ "$MODE" = create ]; then
+          # creates the tag on the commit of the version as well
+          gh release create "$TAG" dist/*.ipk --repo "$GITHUB_REPOSITORY" --target "$SHA" \
+              --title "exteplayer3 $VERSION" --notes-file notes.md
+          what="Created tag and release $TAG"
+        else
+          echo "::notice title=No release yet::There is no release for $TAG; the ipks are attached to this run. Publishing a release for the tag builds and attaches them."
+          exit 0
+        fi
+        {
+          echo "$what: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/releases/tag/$TAG"
+          for f in dist/*.ipk; do echo "- $(basename "$f")"; done
+        } >> "$GITHUB_STEP_SUMMARY"
