@@ -1,7 +1,8 @@
 #!/bin/bash
 # Build environment of the ipk, made on the runner: a Debian 8 "jessie"
-# armhf or mipsel userland that runs under qemu-user (GCC 4.9.2, glibc 2.19,
-# binutils 2.25, kernel headers 3.16), the toolchain generation of OpenPLi 4
+# armhf, mipsel or arm64 userland that runs under qemu-user (GCC 4.9.2,
+# glibc 2.19, binutils 2.25, kernel headers 3.16), the toolchain generation
+# of OpenPLi 4
 # (GCC 4.9.1, glibc 2.20) the packages in ipk/ were built with. Everything
 # built in it needs glibc <= 2.19, so it runs on old and new images alike.
 #
@@ -11,8 +12,8 @@
 # Not installed on purpose: libssl-dev, libxml2-dev, librtmp-dev,
 # libbluray-dev (the versions of /opt/deps must be the only ones).
 #
-# usage: rootfs.sh <directory> <archive.tar.zst>   (environment: ARCH, armhf
-#        or mipsel, armhf by default)
+# usage: rootfs.sh <directory> <archive.tar.zst>   (environment: ARCH, armhf,
+#        mipsel or arm64, armhf by default)
 set -eux
 R=$1
 TARBALL=$2
@@ -37,7 +38,7 @@ sudo cp -L /etc/resolv.conf "$R/etc/resolv.conf"
 sudo mount -t proc proc "$R/proc"
 sudo chroot "$R" apt-get update -q
 sudo chroot "$R" env DEBIAN_FRONTEND=noninteractive apt-get install -y -q --force-yes \
-    build-essential pkg-config perl file chrpath binutils make \
+    build-essential pkg-config perl file chrpath binutils make cmake \
     zlib1g-dev libbz2-dev liblzma-dev libasound2-dev libfreetype6-dev libtheora-dev
 sudo chroot "$R" apt-get clean
 
@@ -57,6 +58,7 @@ fetch "$OPENSSL_URL" "$OPENSSL_SHA256"
 fetch "$LIBXML2_URL" "$LIBXML2_SHA256"
 fetch "$UDFREAD_URL" "$UDFREAD_SHA256"
 fetch "$BLURAY_URL" "$BLURAY_SHA256"
+fetch "$SRT_URL" "$SRT_SHA256"
 git init -q $SRCS/rtmpdump
 # git.ffmpeg.org answers with an HTTP error now and then: a few attempts
 for i in 1 2 3 4 5; do

@@ -5,7 +5,7 @@
 #   /w/src/ffmpeg   source tree
 #   /opt/ffstage    installation (DESTDIR, prefix /usr)
 #   /w/out/ffmpeg   logs, config.h, the options used
-# environment: ARCH (armhf or mipsel), FFMPEG_VERSION (6.1 or 9)
+# environment: ARCH (armhf, mipsel or arm64), FFMPEG_VERSION (6.1 or 9)
 #
 # Differences to the line of the package:
 #   left out, cross compilation (this is a native build in the chroot):
@@ -22,6 +22,9 @@
 #     of the package (Debian's GCC defaults to Thumb-2 and VFPv3-D16);
 #     MIPS: the flags of the package unchanged (-mel -mabi=32 -mhard-float
 #     -march=mips32, no hash style)
+#     AArch64 (no package in ipk/): --arch=aarch64 with the options of
+#     OE-Alliance (--enable-armv8 --enable-vfp --enable-neon), -march=armv8-a
+#     FFmpeg 9: --enable-libsrt (libsrt 1.5.4 from /opt/deps)
 #     --extra-ldflags: -L/-rpath-link of /opt/deps added
 #     OpenSSL 3.5 instead of 1.0.1j, librtmp 2.6, libbluray 1.3.4,
 #     libxml2 2.9.14 (all from /opt/deps)
@@ -49,11 +52,19 @@ case ${ARCH:-armhf} in
                   --disable-loongson2 --disable-loongson3 --disable-mmi --disable-msa)
         LATEOPTS=()
         ;;
+    arm64)
+        # as OE-Alliance for AArch64 machines (TUNE_FEATURES aarch64)
+        FFARCH=aarch64
+        ARCHOPTS=(--enable-armv8 --enable-vfp --enable-neon)
+        LATEOPTS=()
+        ;;
 esac
-# the two options of the 6.1 line that FFmpeg 9 does not know any more
+# the two options of the 6.1 line that FFmpeg 9 does not know any more;
+# SRT in the FFmpeg 9 packages only (as OE-Alliance: srt in the PACKAGECONFIG
+# of its FFmpeg 9 recipe, not of ffmpeg-ext 6.1)
 case ${FFMPEG_VERSION:-6.1} in
-    6.1) YASMOPTS=(--disable-yasm); POSTPROCOPTS=(--enable-postproc) ;;
-    *) YASMOPTS=(); POSTPROCOPTS=() ;;
+    6.1) YASMOPTS=(--disable-yasm); POSTPROCOPTS=(--enable-postproc); SRTOPT=--disable-libsrt; SRTWANT="" ;;
+    *) YASMOPTS=(); POSTPROCOPTS=(); SRTOPT=--enable-libsrt; SRTWANT=libsrt ;;
 esac
 
 ARGS=(--disable-stripping --enable-pic --enable-shared --enable-pthreads --enable-nonfree
@@ -82,7 +93,7 @@ ARGS=(--disable-stripping --enable-pic --enable-shared --enable-pthreads --enabl
       --enable-avformat --enable-bzlib --disable-libdav1d --disable-libfdk-aac --enable-gpl --disable-libgsm
       --disable-indev=jack --enable-libbluray --enable-protocol=bluray --enable-libfreetype --disable-libopus
       --enable-librtmp --disable-libv4l2 --disable-libvorbis --enable-libxml2 --enable-lzma --disable-libmfx
-      --disable-libmp3lame --enable-openssl ${POSTPROCOPTS[@]+"${POSTPROCOPTS[@]}"} --disable-sdl2 --disable-libspeex --disable-libsrt
+      --disable-libmp3lame --enable-openssl ${POSTPROCOPTS[@]+"${POSTPROCOPTS[@]}"} --disable-sdl2 --disable-libspeex $SRTOPT
       --enable-swresample --enable-swscale --enable-libtheora --disable-libv4l2 --disable-vaapi
       --disable-vdpau --disable-libvpx --disable-libx265 --disable-libxcb --disable-outdev=xv --enable-zlib)
 printf '%s\n' "${ARGS[@]}" > $OUT/options.txt
@@ -99,9 +110,15 @@ cp ffbuild/config.log config.h ffbuild/config.mak $OUT/
 grep -E '^(ARCH|C compiler|C library|runtime cpu detection|standalone assembly|inline assembly|ARMv|VFP|NEON|THUMB|MIPS|MMI|MSA|License|network support)' $OUT/configure.log
 sed -n '/^External libraries:/,/^$/p' $OUT/configure.log
 # what the line asks for and configure did not enable
-for want in alsa bzlib libbluray libfreetype librtmp libtheora libxml2 lzma openssl zlib; do
+for want in alsa bzlib libbluray libfreetype librtmp libtheora libxml2 lzma openssl zlib $SRTWANT; do
     grep -q "^#define CONFIG_$(echo $want | tr a-z A-Z) 1" config.h || { echo "ERROR: $want not enabled"; exit 1; }
 done
+# libavformat/libsrt.c uses IN6_IS_ADDR_* (via srt.h); in glibc 2.19 these
+# macros need s6_addr32, which <netinet/in.h> only defines with __USE_MISC,
+# not with the _XOPEN_SOURCE=600 of FFmpeg: _GNU_SOURCE for this file only
+if [ -n "$SRTWANT" ]; then
+    echo 'libavformat/libsrt.o: CPPFLAGS += -D_GNU_SOURCE' >> ffbuild/config.mak
+fi
 
 echo "======== make"
 START=$(date +%s)

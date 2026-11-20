@@ -9,7 +9,7 @@
 #   /samples        test media, crt.pem of the HTTPS test server
 #   /w/out/player   bundle/ (bin/exteplayer3, lib/exteplayer3_deps/), logs,
 #                   smoke.txt
-# environment: ARCH (armhf or mipsel), HTTPS_PORT, PLAYER_SRC
+# environment: ARCH (armhf, mipsel or arm64), HTTPS_PORT, PLAYER_SRC
 # Exit status 1 when compiling, bundling or a smoke test fails.
 set -u
 . /w/.github/ipk/versions.sh
@@ -22,14 +22,29 @@ BD=$OUT/bundle
 L=$BD/lib/exteplayer3_deps
 # NEEDED libraries the image has to provide (the packages in ipk/ take the
 # same ones from the image); everything else is bundled. The MIPS
-# package bundles liblzma itself, so does this one.
+# package bundles liblzma itself, so does this one. libstdc++ (needed by
+# libsrt of the FFmpeg 9 packages): every Enigma2 image has it (Enigma2 is
+# C++); the one of jessie (GCC 4.9) sets the highest GLIBCXX_ version used.
+# Player sources and defines per architecture: the AArch64 receivers with
+# Enigma2 are the Dreambox One/Two, their video output is the DreamNextGen
+# backend (HAVE_DREAMNEXTGEN, output/dream_video.c), as OE-Alliance builds
+# it for dreamone/dreamtwo.
+PLAYER_DEFS=""
+PLAYER_EXTRA=""
 case ${ARCH:-armhf} in
     armhf)
         IMAGE_LIBS="ld-linux-armhf.so.3 libc.so.6 libm.so.6 libdl.so.2 libpthread.so.0 librt.so.1 libgcc_s.so.1
-                    libz.so.1 liblzma.so.5 libasound.so.2 libfreetype.so.6" ;;
+                    libstdc++.so.6 libz.so.1 liblzma.so.5 libasound.so.2 libfreetype.so.6" ;;
     mipsel)
         IMAGE_LIBS="ld.so.1 libc.so.6 libm.so.6 libdl.so.2 libpthread.so.0 librt.so.1 libgcc_s.so.1
-                    libz.so.1 libasound.so.2 libfreetype.so.6" ;;
+                    libstdc++.so.6 libz.so.1 libasound.so.2 libfreetype.so.6" ;;
+    arm64)
+        IMAGE_LIBS="ld-linux-aarch64.so.1 libc.so.6 libm.so.6 libdl.so.2 libpthread.so.0 librt.so.1 libgcc_s.so.1
+                    libstdc++.so.6 libz.so.1 liblzma.so.5 libasound.so.2 libfreetype.so.6"
+        # -std=gnu11: dream_video.c declares variables in for loops; GCC
+        # 4.9 defaults to gnu89, the GCC of OE-Alliance to gnu17
+        PLAYER_DEFS="-std=gnu11 -DHAVE_DREAMNEXTGEN"
+        PLAYER_EXTRA="output/dream_video.c" ;;
 esac
 rm -rf $OUT
 mkdir -p $OUT $BD/bin $L
@@ -56,7 +71,7 @@ for f in main/*.c tools/*.c container/container.c container/container_ffmpeg.c \
     manager/*.c playback/*.c \
     output/output.c output/output_subtitle.c output/graphic_subtitle.c output/linuxdvb_buffering.c \
     output/writer/common/*.c external/ffmpeg/src/*.c external/flv2mpeg4/src/*.c external/plugins/src/*.c \
-    output/linuxdvb_mipsel.c output/writer/mipsel/*.c; do
+    output/linuxdvb_mipsel.c output/writer/mipsel/*.c $PLAYER_EXTRA; do
     if [ -f "$f" ]; then
         SOURCES="$SOURCES $f"
     else
@@ -64,8 +79,15 @@ for f in main/*.c tools/*.c container/container.c container/container_ffmpeg.c \
     fi
 done
 echo "$SOURCES" | tr ' ' '\n' | sed '/^$/d' > $OUT/sources.txt
+for f in $PLAYER_EXTRA; do
+    if [ ! -f "$f" ]; then
+        res compile "FAILED: $f is not in this tree ($PLAYER_DEFS for $ARCH)"
+        exit 1
+    fi
+done
+echo "defines: ${PLAYER_DEFS:-none}"
 gcc $ARCHFLAGS -Os -pipe -O2 -Wl,-O1 $HASHSTYLE -Wl,--as-needed -Wl,--disable-new-dtags \
-    -D_FILE_OFFSET_BITS=64 -D_LARGEFILE64_SOURCE -D_LARGEFILE_SOURCE -DHAVE_FLV2MPEG4_CONVERTER \
+    -D_FILE_OFFSET_BITS=64 -D_LARGEFILE64_SOURCE -D_LARGEFILE_SOURCE -DHAVE_FLV2MPEG4_CONVERTER $PLAYER_DEFS \
     "-DAUDIO_GET_PTS=_IOR('o', 19, __u64)" \
     -Iinclude -Iexternal -Iexternal/flv2mpeg4 -I$FF/usr/include \
     $SOURCES \
@@ -78,7 +100,7 @@ if [ $rc != 0 ]; then
     grep -E 'error|undefined reference' $OUT/compile.log | head -40
     exit 1
 fi
-grep -E 'warning: (implicit declaration|.*incompatible pointer|.*makes (integer|pointer))' $OUT/compile.log | head -20
+grep -E 'warning: (implicit declaration|.*incompatible pointer|.*makes (integer|pointer)|cast (to|from) pointer|format .* expects)' $OUT/compile.log | head -30
 
 echo "======== bundle"
 cp $FF/FFMPEG_RELEASE $OUT/ 2> /dev/null
@@ -207,7 +229,10 @@ run ffmpeg_input_mp4 'Stream #0:1.*Audio: aac' $FFM -hide_banner -i /samples/sam
 run decode_h264 '' $FFM -v error -i /samples/sample.mp4 -map 0:v -c:v rawvideo -f rawvideo -y /dev/null
 run decode_aac '' $FFM -v error -i /samples/sample.ts -map 0:a -c:a aac -f adts -y /dev/null
 run probe_hls_file '^h264' $FFP -v error -show_entries stream=codec_name -of csv=p=0 /samples/hls/master.m3u8
-run protocols 'https' sh -c "$FFM -hide_banner -protocols 2>/dev/null | tr -d ' ' | grep -xE 'https|tls|rtmp|rtmps|ffrtmp|librtmp|bluray' | sort -u | tr '\n' ' '"
+run protocols 'https' sh -c "$FFM -hide_banner -protocols 2>/dev/null | tr -d ' ' | grep -xE 'https|tls|rtmp|rtmps|ffrtmp|librtmp|bluray|srt' | sort -u | tr '\n' ' '"
+if grep -q -- '--enable-libsrt' $FF/FFMPEG_OPTIONS 2> /dev/null; then
+    run protocol_srt '^srt$' sh -c "$FFM -hide_banner -protocols 2>/dev/null | tr -d ' ' | grep -x srt"
+fi
 U=https://127.0.0.1:${HTTPS_PORT:-8443}
 run https_noverify '^h264' $FFP -v error -tls_verify 0 -show_entries stream=codec_name -of csv=p=0 $U/hls/master.m3u8
 # default verification with the CA file of OPENSSLDIR (/etc/ssl/cert.pem),
