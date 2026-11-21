@@ -4,7 +4,7 @@ set -eu
 : "${FFMPEG_BUILD:?Set FFMPEG_BUILD to the configured native FFmpeg build}"
 cd "$(dirname "$0")/.."
 tmp=$(mktemp -d)
-trap 'rm -f "$tmp/manager" "$tmp/container" "$tmp/output" "$tmp/dvb" "$tmp/pts" "$tmp/pcm_export" "$tmp/playback" "$tmp/buffering"; rmdir "$tmp"' EXIT HUP INT TERM
+trap 'rm -f "$tmp/manager" "$tmp/container" "$tmp/output" "$tmp/dvb" "$tmp/pts" "$tmp/pcm_export" "$tmp/playback" "$tmp/buffering" "$tmp/writer_wait"; rmdir "$tmp"' EXIT HUP INT TERM
 # Graphic subtitles without exteplayer3png.so: the PNG encoder of libavcodec,
 # read back with its decoder; LeakSanitizer checks the encoder of each picture.
 ${CC:-cc} -g -fsanitize=address,undefined -ffunction-sections -fdata-sections \
@@ -44,7 +44,7 @@ $cc -g -fsanitize=undefined -ffunction-sections -fdata-sections \
     "$FFMPEG_BUILD/libavutil/libavutil.a" -lm ${FFMPEG_EXTRA_LIBS:-} -o "$tmp/live_sync"
 timeout 20 "$tmp/live_sync"
 rm -f "$tmp/live_sync"
-for test in manager container output dvb pts pcm_export playback buffering; do
+for test in manager container output dvb pts pcm_export playback buffering writer_wait; do
     sources="tests/${test}_test.c tools/debug.c"
     if [ "$test" = manager ]; then
         sources="$sources manager/manager.c manager/audio.c manager/video.c manager/subtitle.c"
@@ -59,6 +59,10 @@ for test in manager container output dvb pts pcm_export playback buffering; do
         sources="$sources output/writer/mipsel/writer.c output/writer/common/writer.c"
         # WriteWithRetry() asks GetSTBType()
         sources="$sources output/writer/common/misc.c"
+    fi
+    if [ "$test" = writer_wait ]; then
+        # writev_with_retry() on a full pipe; WaitForRoom() asks GetSTBType()
+        sources="$sources output/writer/mipsel/writer.c output/writer/common/misc.c"
     fi
     libs=""
     if [ "$test" = container ]; then

@@ -93,6 +93,8 @@ Writer_t* getWriter(char* encoding);
 Writer_t* getDefaultVideoWriter();
 Writer_t* getDefaultAudioWriter();
 ssize_t writev_with_retry(int fd, const struct iovec *iov, int ic);
+/* ends a wait of writev_with_retry() for room in the device */
+void WriterWakeUp(void);
 
 ssize_t WriteWithRetry(Context_t *context, int pipefd, int fd, void *pDVBMtx, const void *buf, int size, int is_video);
 void FlushPipe(int pipefd);

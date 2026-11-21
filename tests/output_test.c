@@ -16,6 +16,12 @@ int8_t PlaybackDieNow(int8_t value)
     return stopped;
 }
 
+bool PlaybackDieNowRegisterCallback(PlaybackDieNowCallback callback)
+{
+    (void)callback;
+    return true;
+}
+
 ssize_t writev(int fd, const struct iovec *iov, int count)
 {
     size_t remaining = 13, result = 0;

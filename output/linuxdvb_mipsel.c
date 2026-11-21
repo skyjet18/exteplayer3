@@ -1107,6 +1107,10 @@ int LinuxDvbStop(Context_t  *context __attribute__((unused)), char * type)
 
     releaseLinuxDVBMutex();
 
+    /* a write that waits for room tries again now, and ends at a stop */
+    if (!isBufferedOutput)
+        WriterWakeUp();
+
     return ret;
 }
 
@@ -1169,9 +1173,11 @@ int LinuxDvbContinue(Context_t  *context __attribute__((unused)), char * type) {
     
     if (isBufferedOutput)
         LinuxDvbBuffResume(context);
+    else
+        WriterWakeUp();
 
     linuxdvb_printf(10, "exiting\n");
-    
+
     return ret;
 }
 
@@ -1333,6 +1339,10 @@ int LinuxDvbClear(Context_t  *context __attribute__((unused)), char *type)
 
         releaseLinuxDVBMutex();
     }
+
+    /* the buffer is empty: a write that waits for room tries again now */
+    if (!isBufferedOutput)
+        WriterWakeUp();
 
     linuxdvb_printf(10, "exiting\n");
 
