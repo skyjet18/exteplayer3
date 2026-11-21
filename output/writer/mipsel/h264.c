@@ -261,7 +261,7 @@ static void LimitSpsLevel(unsigned char *sps, unsigned int len)
     static const char *const profile_str[] = { "baseline", "main", "extended", "high" };
     unsigned int i;
 
-    if (len <= 3 || sps[0] != 0x67)
+    if (len <= 3 || (sps[0] & 0x1f) != 7)
     {
         return;
     }
@@ -297,8 +297,9 @@ static void LimitSpsLevel(unsigned char *sps, unsigned int len)
 
 #define SPS_CONSTRAINT_SET45 0x0c
 
-/* room for the cleared constraint bytes of the parameter sets in a packet */
-#define CONSTRAINT_BYTES_MAX 32
+/* room for the patched constraint and level bytes of the parameter sets in
+ * a packet, two for each of up to 32 SPS */
+#define CONSTRAINT_BYTES_MAX (2 * 32)
 
 static int ConstrainedHighLogged;
 
@@ -358,29 +359,72 @@ static int SpsConstraintByte(const uint8_t *sps, unsigned int len)
     return sps[2] & ~SPS_CONSTRAINT_SET45;
 }
 
-/* Cleared constraint bytes of the parameter sets inside a packet. The packet
- * is not changed (its data can be shared with other references): the iovec
- * takes the byte from here instead. */
+/* The level byte to write for the SPS NAL unit "sps" of "len" bytes, or -1
+ * when it stays as it is: the limit of LimitSpsLevel() for the SPS of the
+ * stream (in-band, Annex B), without its log line for every SPS. */
+static int SpsLevelByte(const uint8_t *sps, unsigned int len)
+{
+    if (len < 4 || (sps[0] & 0x1f) != 7 || sps[3] <= 0x29 || !LimitSpsLevelWanted())
+    {
+        return -1;
+    }
+    switch (sps[1])
+    {
+    case 66:
+    case 77:
+    case 88:
+    case 100:
+        return 0x29;
+    default:
+        return -1;
+    }
+}
+
+/* Patched constraint and level bytes of the parameter sets inside a packet.
+ * The packet is not changed (its data can be shared with other references):
+ * the iovec takes the two bytes from here instead. */
 typedef struct
 {
     uint8_t      byte[CONSTRAINT_BYTES_MAX];
     unsigned int count;
 } ConstraintBytes_t;
 
+/* The constraint byte and the level byte to write for a SPS, see
+ * SpsConstraintByte() and SpsLevelByte(), into the next two bytes of
+ * "bytes": 0 when both stay as they are or there is no room. Both are
+ * RBSP bytes (see SpsConstraintByte()), and a level of 4.1 is not 0. */
+static int SpsPatch(const uint8_t *sps, unsigned int len, ConstraintBytes_t *bytes)
+{
+    int constraint;
+    int level;
+    if (bytes->count + 2 > CONSTRAINT_BYTES_MAX)
+    {
+        return 0;
+    }
+    constraint = SpsConstraintByte(sps, len);
+    level = SpsLevelByte(sps, len);
+    if (constraint < 0 && level < 0)
+    {
+        return 0;
+    }
+    bytes->byte[bytes->count] = constraint >= 0 ? (uint8_t)constraint : sps[2];
+    bytes->byte[bytes->count + 1] = level >= 0 ? (uint8_t)level : sps[3];
+    return 1;
+}
+
 /* Adds the NAL unit "nal" of "len" bytes to the iovec, a SPS whose
- * constraint byte is cleared in three parts when "room" has them. */
+ * constraint or level byte is patched in three parts when "room" has them. */
 static int AddNal(struct iovec *iov, int ic, int room, uint8_t *nal, uint32_t len, ConstraintBytes_t *bytes)
 {
-    int byte = room >= 3 ? SpsConstraintByte(nal, len) : -1;
-    if (byte >= 0 && bytes->count < CONSTRAINT_BYTES_MAX)
+    if (room >= 3 && SpsPatch(nal, len, bytes))
     {
-        bytes->byte[bytes->count] = (uint8_t)byte;
         iov[ic].iov_base = nal;
         iov[ic++].iov_len = 2;
-        iov[ic].iov_base = &bytes->byte[bytes->count++];
-        iov[ic++].iov_len = 1;
-        iov[ic].iov_base = nal + 3;
-        iov[ic++].iov_len = len - 3;
+        iov[ic].iov_base = &bytes->byte[bytes->count];
+        iov[ic++].iov_len = 2;
+        bytes->count += 2;
+        iov[ic].iov_base = nal + 4;
+        iov[ic++].iov_len = len - 4;
         return ic;
     }
     iov[ic].iov_base = nal;
@@ -389,8 +433,8 @@ static int AddNal(struct iovec *iov, int ic, int room, uint8_t *nal, uint32_t le
 }
 
 /* Adds the Annex B data "buf" to the iovec. Each SPS in front of the first
- * slice whose constraint byte is cleared splits it around that byte; at most
- * "room" entries are used. */
+ * slice whose constraint or level byte is patched splits it around these
+ * two bytes; at most "room" entries are used. */
 static int AddAnnexB(struct iovec *iov, int ic, int room, uint8_t *buf, uint32_t len, ConstraintBytes_t *bytes)
 {
     uint32_t start = 0;
@@ -409,16 +453,15 @@ static int AddAnnexB(struct iovec *iov, int ic, int room, uint8_t *buf, uint32_t
             /* slice data: the parameter sets are in front of it */
             break;
         }
-        int byte = SpsConstraintByte(buf + nal, len - nal);
-        if (byte >= 0 && bytes->count < CONSTRAINT_BYTES_MAX)
+        if (SpsPatch(buf + nal, len - nal, bytes))
         {
-            bytes->byte[bytes->count] = (uint8_t)byte;
             iov[ic].iov_base = buf + start;
             iov[ic++].iov_len = nal + 2 - start;
-            iov[ic].iov_base = &bytes->byte[bytes->count++];
-            iov[ic++].iov_len = 1;
+            iov[ic].iov_base = &bytes->byte[bytes->count];
+            iov[ic++].iov_len = 2;
+            bytes->count += 2;
             room -= 2;
-            start = nal + 3;
+            start = nal + 4;
             i = start - 1;
         }
     }
