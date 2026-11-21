@@ -245,6 +245,12 @@ int main(void)
     assert(pts_clock_update(&clock, 0, &video, PTS_CLOCK_JUMP, 2) == PTS_CLOCK_JUMP);
     assert(pts_clock_update(&clock, 0, &video, PTS_CLOCK_JUMP * 2 + 1, 3) == PTS_CLOCK_JUMP);
     assert(pts_clock_difference(10, PTS_CLOCK_WRAP - 10) == 20);
+    /* The DTS of packets read again by a live TS (-v): after the last one
+     * also behind the wrap of the PES field, none before the first. */
+    assert(pts_clock_after(500, PTS_CLOCK_WRAP - 1000));
+    assert(!pts_clock_after(PTS_CLOCK_WRAP - 1000, 500));
+    assert(!pts_clock_after(500, 500) && !pts_clock_after(400, 500));
+    assert(pts_clock_after(0, -1));
     pts_clock_reset(&clock, 0);
     clock.preserve_timeline = 1;
     assert(pts_clock_update(&clock, 0, &video, 900000, 1) == 0);

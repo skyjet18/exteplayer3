@@ -51,6 +51,13 @@ static inline int64_t pts_clock_difference(int64_t a, int64_t b)
                      (PTS_CLOCK_WRAP - 1)) - PTS_CLOCK_WRAP / 2;
 }
 
+/* A 33-bit DTS after the last one (none yet when last < 0), also across the
+ * wrap of the PES field after 26.5 hours. */
+static inline int pts_clock_after(int64_t dts, int64_t last)
+{
+    return last < 0 || pts_clock_difference(dts, last) > 0;
+}
+
 static inline void pts_clock_reset(PtsClock *clock, int keep_base)
 {
     int ready = keep_base && clock->base_ready;
