@@ -1,5 +1,8 @@
 #include <assert.h>
 #include <poll.h>
+#include <pthread.h>
+#include <time.h>
+#include <unistd.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <sys/ioctl.h>
@@ -53,9 +56,18 @@ static int pts_requests, size_requests, frame_rate_requests, progressive_reads;
 /* what the player has sent */
 static char sent[1024];
 
+/* set in a thread whose polls sleep as the Vu+ driver's do while the decoder buffer is full */
+static __thread int full_decoder;
+static volatile int in_driver_poll;
+
 int test_poll(struct pollfd *fds, nfds_t count, int timeout)
 {
     assert(count == 1 && fds[0].fd == videofd && fds[0].events == POLLPRI && !timeout);
+    if (full_decoder)
+    {
+        in_driver_poll = 1;
+        usleep(300000);
+    }
     fds[0].revents = event_next < event_count ? POLLPRI : 0;
     return event_next < event_count;
 }
@@ -498,6 +510,44 @@ static void decoder_without_pts_is_not_asked(void)
     assert(pts_requests == 1 && !size_requests && !frame_rate_requests && !progressive_reads);
 }
 
+static void *frame_into_full_decoder(void *unused)
+{
+    (void)unused;
+    full_decoder = 1;
+    frame(1920, 1080, 25000, 800000);
+    return NULL;
+}
+
+/*
+ * The Vu+ driver sleeps in its poll for up to 200 ms while the decoder buffer
+ * is full, also with a timeout of 0. The play thread sits in the poll for a
+ * video event of a frame: a position request of the command thread is
+ * answered meanwhile, it does not wait for the end of that sleep.
+ */
+static void position_is_answered_while_the_play_thread_sleeps_in_the_driver_poll(void)
+{
+    pthread_t thread;
+    struct timespec start, end;
+    unsigned long long reported = 0;
+    long ms;
+    int i;
+    video_track(1920, 1080, 25000);
+    value_event(16, 1);
+    frame(1920, 1080, 25000, 575550);
+    assert(!videoInfoWanted);
+    assert(!pthread_create(&thread, NULL, frame_into_full_decoder, NULL));
+    for (i = 0; i < 2000 && !in_driver_poll; i++)
+        usleep(1000);
+    assert(in_driver_poll);
+    clock_gettime(CLOCK_MONOTONIC, &start);
+    assert(!LinuxDvbOutput.Command(&context, OUTPUT_PTS, &reported));
+    clock_gettime(CLOCK_MONOTONIC, &end);
+    assert(!pthread_join(thread, NULL));
+    ms = (end.tv_sec - start.tv_sec) * 1000 + (end.tv_nsec - start.tv_nsec) / 1000000;
+    fprintf(stderr, "video_info_test: position answered after %ld ms while the play thread sleeps in the poll\n", ms);
+    assert(ms < 100);
+}
+
 /* The output keeps its state for the process: every case gets a process of its own. */
 static int failed(const char *name, void (*test)(void))
 {
@@ -535,5 +585,7 @@ int main(void)
     failures += failed("event_and_decoder_values_are_combined", event_and_decoder_values_are_combined);
     failures += failed("silent_decoder_sends_nothing", silent_decoder_sends_nothing);
     failures += failed("decoder_without_pts_is_not_asked", decoder_without_pts_is_not_asked);
+    failures += failed("position_is_answered_while_the_play_thread_sleeps_in_the_driver_poll",
+                       position_is_answered_while_the_play_thread_sleeps_in_the_driver_poll);
     return failures != 0;
 }

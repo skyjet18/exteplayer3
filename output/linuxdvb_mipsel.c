@@ -1614,26 +1614,36 @@ audio_switch_done:
 }
 
 /*
- * Reads one video event the driver has queued; the caller holds
- * videoInfoMutex. progressive is set for a progressive event, values when
- * the events have delivered all values ("v_e"). Returns true when an event
- * was read.
+ * Tells whether the driver has a video event queued. Not under
+ * videoInfoMutex: the Vu+ (Broadcom) driver sleeps in its poll for up to
+ * 200 ms while the decoder buffer is full, also with a timeout of 0, and the
+ * position requests of the command thread wait for that mutex.
+ */
+static bool LinuxDvbVideoEventPending(void)
+{
+    struct pollfd pfd[1];
+    pfd[0].fd = videofd;
+    pfd[0].events = POLLPRI;
+    pfd[0].revents = 0;
+    return poll(pfd, 1, 0) > 0 && (pfd[0].revents & POLLPRI);
+}
+
+/*
+ * Reads one video event the driver has queued (LinuxDvbVideoEventPending());
+ * the caller holds videoInfoMutex. progressive is set for a progressive
+ * event, values when the events have delivered all values ("v_e"). Returns
+ * true when an event was read.
  */
 static bool LinuxDvbReadVideoEvent(bool *progressive, bool *values)
 {
-    struct pollfd pfd[1];
     struct video_event evt;
     bool changed = false;
-    pfd[0].fd = videofd;
-    pfd[0].events = POLLPRI;
-    int pollret = poll(pfd, 1, 0);
-    if (!(pollret > 0 && pfd[0].revents & POLLPRI))
-    {
-        return false;
-    }
 
     if (ioctl(videofd, VIDEO_GET_EVENT, &evt) == -1)
     {
+        /* the other thread has read it since the poll */
+        if (errno == EAGAIN || errno == EWOULDBLOCK)
+            return false;
         linuxdvb_err("ioctl failed with errno %d\n", errno);
         linuxdvb_err("VIDEO_GET_EVENT: %s\n", strerror(errno));
         return false;
@@ -1900,7 +1910,7 @@ static void LinuxDvbVideoInfoPoll(Context_t *context, unsigned long long pts)
         return;
     }
     known = videoInfo;
-    for (i = 0; i < 8 && LinuxDvbReadVideoEvent(&progressive, &values); i++)
+    for (i = 0; i < 8 && LinuxDvbVideoEventPending() && LinuxDvbReadVideoEvent(&progressive, &values); i++)
     {
     }
     now = videoInfo;
@@ -1977,10 +1987,13 @@ static int Write(void  *_context, void *_out)
             bool complete = out->width == 0 || out->height == 0;
             bool progressive = false, values = false, report = false;
             struct DVBApiVideoInfo_s known, now;
+            /* before the mutex: the driver may sleep in its poll, see there */
+            bool pending = LinuxDvbVideoEventPending();
 
             pthread_mutex_lock(&videoInfoMutex);
             known = videoInfo;
-            LinuxDvbReadVideoEvent(&progressive, &values);
+            if (pending)
+                LinuxDvbReadVideoEvent(&progressive, &values);
             now = videoInfo;
             /* a known picture still waits for the progressive flag */
             videoInfoNoSize = complete;
