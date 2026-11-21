@@ -717,6 +717,8 @@ def main():
         encodings, failures, content_types, compressed = [], {}, {}, set()
         # Paths whose answer waits: (set when it is asked for, set to answer).
         held = {}
+        # Paths answered in full without Accept-Ranges, whatever the Range.
+        no_ranges = set()
         # Paths whose body stops at byte n, the connection kept open without
         # another byte until released (also for requests that start there).
         stalls, stall_release = {}, threading.Event()
@@ -765,6 +767,8 @@ def main():
                     data = gzip.compress(data)
                 start = 0
                 header = self.headers.get("Range")
+                if self.path in no_ranges:
+                    header = None
                 if header:
                     start = int(header.split("=")[1].split("-")[0])
                 requests.append((self.path, start))
@@ -795,7 +799,8 @@ def main():
                     answer.wait(8)
                 self.send_response(206 if header else 200)
                 self.send_header("Content-Length", str(len(data) - start))
-                self.send_header("Accept-Ranges", "bytes")
+                if self.path not in no_ranges:
+                    self.send_header("Accept-Ranges", "bytes")
                 if self.path in content_types:
                     self.send_header("Content-Type", content_types[self.path])
                 if gzipped:
@@ -822,6 +827,32 @@ def main():
             assert seek["position"] % seek["packet_size"] == 0
             assert abs(seek["actual_us"] - seek["target_us"]) < 3_000_000, seek
             print("PASS HTTP TS: exact aligned Range request and approximate media position")
+
+            # An http input without ranges cannot seek back: the seek is
+            # refused, the playback goes on where it is.
+            norange = root / "norange.ts"
+            run(args.ffmpeg, "-y", "-stream_loop", "-1", "-i", str(media), "-c", "copy",
+                "-t", "40", str(norange))
+            resources["/norange.ts"] = norange.read_bytes()
+            no_ranges.add("/norange.ts")
+            player = Player(args.player, base + "/norange.ts")
+            try:
+                assert player.wait("PLAYBACK_PLAY")["sts"] == 0
+                position, deadline = 0, time.monotonic() + 15
+                while position < 4000:
+                    assert time.monotonic() < deadline, position
+                    time.sleep(0.25)
+                    player.command("j")
+                    position = player.wait("J")["ms"]
+                player.command("kf -3")
+                seek = player.wait("PLAYBACK_SEEK")
+                time.sleep(0.5)
+                player.command("j")
+                after = player.wait("J")["ms"]
+            finally:
+                player.stop()
+            assert seek["sts"] != 0 and position <= after < position + 3000, (seek, position, after)
+            print("PASS HTTP without ranges: a seek back is refused, the playback goes on")
 
             for options, chosen, excluded in (([], "high", "low"), (["-Q", "1"], "low", "high")):
                 requests.clear()
