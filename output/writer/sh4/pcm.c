@@ -250,6 +250,12 @@ static int32_t writeData(void *_call)
     uint8_t *injectBuffer = malloc(SubFrameLen);
     uint32_t pos;
 
+    if (!injectBuffer)
+    {
+        pcm_err("allocating the inject buffer failed\n");
+        return 0;
+    }
+
     for(pos = 0; pos < size; )
     {
         //printf("PCM %s - Position=%d\n", __FUNCTION__, pos);

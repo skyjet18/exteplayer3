@@ -106,8 +106,10 @@ static uint8_t updateCodecData(uint8_t *data, int32_t size)
             free(oldData);
         }
         oldData = malloc(size);
-        memcpy(oldData, data, size);
-        oldSize = size;
+        if (oldData)
+            memcpy(oldData, data, size);
+        /* without a copy the next codec data counts as new */
+        oldSize = oldData ? size : 0;
     }
 
     return update;

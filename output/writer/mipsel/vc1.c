@@ -127,6 +127,13 @@ static int writeData(void* _call)
 
         videocodecdata.length = call->private_size + 8;
         videocodecdata.data  = malloc(videocodecdata.length);
+        if (!videocodecdata.data)
+        {
+            /* the codec data again with the next frame */
+            vc1_err("allocating codec data failed\n");
+            initialHeader = 1;
+            return 0;
+        }
         memset(videocodecdata.data, 0, videocodecdata.length);
         memcpy(videocodecdata.data + 8, call->private_data, call->private_size);
         if(STB_DREAMBOX == GetSTBType() || 0 != ioctl(call->fd, VIDEO_SET_CODEC_DATA, &videocodecdata))

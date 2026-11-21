@@ -287,9 +287,12 @@ static int writeDataLATM(void *_call)
     if (!pLATMCtx)
     {
         pLATMCtx = malloc(sizeof(LATMContext));
-        memset(pLATMCtx, 0x00, sizeof(LATMContext));
-        pLATMCtx->mod = 14;
-        pLATMCtx->counter = 0;
+        if (pLATMCtx)
+        {
+            memset(pLATMCtx, 0x00, sizeof(LATMContext));
+            pLATMCtx->mod = 14;
+            pLATMCtx->counter = 0;
+        }
     }
     
     if (!pLATMCtx)

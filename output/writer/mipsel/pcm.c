@@ -215,6 +215,13 @@ static int32_t writeData(void *_call)
                 free(fixed_buffer);
             }
             fixed_buffer = malloc(fixed_buffersize);
+            if (NULL == fixed_buffer)
+            {
+                /* again with the next packet */
+                pcm_err("allocating the block buffer failed\n");
+                fixed_buffersize = 0;
+                return 0;
+            }
         }
         fixed_bufferfilled = 0;
         pcm_printf(40, "PCM fixed_buffersize [%u] [%s]\n", fixed_buffersize, LE ? "LE":"BE");

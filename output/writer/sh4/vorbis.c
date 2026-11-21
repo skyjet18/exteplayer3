@@ -123,6 +123,11 @@ static int writeData(void* _call)
     int HeaderLength = InsertPesHeader (PesHeader, call->len , MPEG_AUDIO_PES_START_CODE, call->Pts, 0);
 
     unsigned char* PacketStart = malloc(call->len + HeaderLength);
+    if (!PacketStart)
+    {
+        vorbis_err("allocating the packet failed\n");
+        return 0;
+    }
 
     memcpy (PacketStart, PesHeader, HeaderLength);
     memcpy (PacketStart + HeaderLength, call->data, call->len);

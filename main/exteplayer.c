@@ -1274,7 +1274,7 @@ static int ParseParams(int argc,char* argv[], PlayFiles_t *playbackFiles, int *p
         case 'f':
         {
             char *ffopt = strdup(optarg);
-            char *ffval = strchr(ffopt, '=');
+            char *ffval = ffopt ? strchr(ffopt, '=') : NULL;
             if (ffval)
             {
                 *ffval = '\0';

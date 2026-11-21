@@ -3,6 +3,7 @@
 #include <string.h>
 #include <libavcodec/avcodec.h>
 #include "common.h"
+#include "pcm.h"
 #include "writer.h"
 
 /* run.sh builds this program with -Dmalloc=test_malloc: the writers allocate here. */
@@ -135,6 +136,56 @@ static void h265_hvcc_without_sets(void)
     WriterVideoH265.reset();
 }
 
+/* VC-1 and WMV: without memory for the codec data the frame is dropped, the
+ * next one brings the codec data (written in front of the frame, as the
+ * ioctl on fd 1 fails). */
+static void codec_data_no_memory(Writer_t *writer, int size)
+{
+    uint8_t extra[] = {1, 2, 3, 4};
+    uint8_t frame[] = {9, 8, 7, 6, 5};
+    WriterAVCallData_t call = packet(frame, sizeof(frame), extra, sizeof(extra), 1);
+    writer->reset();
+    assert(!writer->writeData(&call) && allocations == 1 && !calls);
+    call = packet(frame, sizeof(frame), extra, sizeof(extra), 0);
+    assert(writer->writeData(&call) == 14 + 4 + size + 5 && part_count == 3);
+    writer->reset();
+}
+
+/* PCM: without memory for the 30 ms block the packet is dropped; the next
+ * one (two blocks of 48 kHz stereo 16 bit) is written. */
+static void pcm_no_memory_for_the_block(void)
+{
+    static uint8_t samples[2 * 5760];
+    pcmPrivateData_t private = {.codec_id = AV_CODEC_ID_PCM_S16LE, .channels = 2,
+                                .sample_rate = 48000, .bResampling = 1};
+    WriterAVCallData_t call = packet(samples, sizeof(samples), &private, sizeof(private), 1);
+    WriterAudioPCM.reset();
+    assert(!WriterAudioPCM.writeData(&call) && allocations == 1 && !calls);
+    call = packet(samples, sizeof(samples), &private, sizeof(private), 0);
+    assert(!WriterAudioPCM.writeData(&call) && calls == 2);
+    WriterAudioPCM.reset();
+}
+
+/* DVD LPCM: either of its two buffers missing drops the packet; the next
+ * one (one frame of 80 samples, 48 kHz stereo) is written. */
+static void lpcm_no_memory_for_the_buffers(void)
+{
+    static uint8_t samples[80 * 2 * 2];
+    pcmPrivateData_t private = {.codec_id = AV_CODEC_ID_PCM_S16LE, .channels = 2,
+                                .sample_rate = 48000, .bResampling = 1};
+    WriterAVCallData_t call;
+    int fail;
+    for (fail = 1; fail <= 2; fail++)
+    {
+        call = packet(samples, sizeof(samples), &private, sizeof(private), fail);
+        WriterAudioLPCM.reset();
+        assert(!WriterAudioLPCM.writeData(&call) && allocations == 2 && !calls);
+    }
+    call = packet(samples, sizeof(samples), &private, sizeof(private), 0);
+    assert(WriterAudioLPCM.writeData(&call) > 0 && calls == 1);
+    WriterAudioLPCM.reset();
+}
+
 int main(void)
 {
     h265_no_memory_for_the_codec_data();
@@ -143,5 +194,9 @@ int main(void)
     h264_no_memory_for_the_codec_data();
     h264_no_memory_for_the_sets_of_the_stream();
     aac_latm_no_memory_for_the_context();
+    codec_data_no_memory(&WriterVideoVC1, 8 + 4);
+    codec_data_no_memory(&WriterVideoWMV, 33);
+    pcm_no_memory_for_the_block();
+    lpcm_no_memory_for_the_buffers();
     return 0;
 }

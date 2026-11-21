@@ -139,6 +139,11 @@ static int PlaybackOpen(Context_t  *context, PlayFiles_t *pFiles)
     char * extension = NULL;
 
     context->playback->uri = strdup(uri);
+    if (!context->playback->uri)
+    {
+        playback_err("cannot allocate the uri\n");
+        return cERR_PLAYBACK_ERROR;
+    }
 
     context->playback->isFile = 0;
     context->playback->isHttp = 0;
@@ -171,6 +176,11 @@ static int PlaybackOpen(Context_t  *context, PlayFiles_t *pFiles)
         {
             // mms is in reality called rtsp, and ffmpeg expects this
             char * tUri = (char*)malloc(strlen(uri) + 2);
+            if (!tUri)
+            {
+                playback_err("cannot allocate the uri\n");
+                return cERR_PLAYBACK_ERROR;
+            }
             strncpy(tUri+1, uri, strlen(uri)+1);
             strncpy(tUri, "rtsp", 4);
             free(context->playback->uri);
