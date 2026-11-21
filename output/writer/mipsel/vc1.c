@@ -137,9 +137,12 @@ static int writeData(void* _call)
         }
     }
 
+    /* A frame without a start code gets one. A packet that starts with any
+     * start code (sequence header, entry point, frame) has its own: a frame
+     * start code in front of a sequence header would be an empty frame. */
     uint8_t needFrameStartCode = 0;
     if( sizeof(Vc1FrameStartCode) >= call->len
-        || memcmp(call->data, Vc1FrameStartCode, sizeof(Vc1FrameStartCode)) != 0 )
+        || memcmp(call->data, Vc1FrameStartCode, 3) != 0 )
     {
         needFrameStartCode = 1;
         PacketLength += sizeof(Vc1FrameStartCode);
