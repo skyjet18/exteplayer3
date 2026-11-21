@@ -16,6 +16,9 @@ void *test_malloc(size_t size)
 {
     if (++allocations == failing)
         return NULL;
+    /* malloc(0) may give NULL (uClibc does); glibc gives a pointer */
+    if (!size)
+        return NULL;
     /* The command thread resets the writer while it prepares its codec data. */
     if (resetting)
         resetting->reset();
@@ -120,10 +123,23 @@ static void aac_latm_no_memory_for_the_context(void)
     WriterAudioAACLATM.reset();
 }
 
+/* hvcC without parameter sets (they come in-band): the frame is written with
+ * empty codec data on every C library, no malloc(0) */
+static void h265_hvcc_without_sets(void)
+{
+    static uint8_t empty_hvcc[23] = {[0] = 1, [21] = 3};
+    uint8_t frame[] = {0, 0, 0, 2, 0x26, 1};
+    WriterAVCallData_t call = packet(frame, sizeof(frame), empty_hvcc, sizeof(empty_hvcc), 0);
+    WriterVideoH265.reset();
+    assert(WriterVideoH265.writeData(&call) == 14 + 4 + 2 && part_count == 4 && allocations == 2);
+    WriterVideoH265.reset();
+}
+
 int main(void)
 {
     h265_no_memory_for_the_codec_data();
     h265_reset_while_the_codec_data_is_prepared();
+    h265_hvcc_without_sets();
     h264_no_memory_for_the_codec_data();
     h264_no_memory_for_the_sets_of_the_stream();
     aac_latm_no_memory_for_the_context();
