@@ -422,6 +422,26 @@ static void vp9_frame_without_pts(void)
     assert(written[4] == 0 && written[5] == 19 - 6 + 10 && !memcmp(written + 19, frame, 10));
 }
 
+/* No channels, no sample rate or a format without a width: the packet is
+ * dropped instead of dividing the block duration by a byte rate of 0. */
+static void pcm_without_a_byte_rate(void)
+{
+    static uint8_t samples[256];
+    pcmPrivateData_t cases[3] = {
+        {.codec_id = AV_CODEC_ID_PCM_S16LE, .channels = 0, .sample_rate = 48000, .bResampling = 1},
+        {.codec_id = AV_CODEC_ID_PCM_S16LE, .channels = 2, .sample_rate = 0, .bResampling = 1},
+        {.codec_id = AV_CODEC_ID_PCM_F32LE, .channels = 2, .sample_rate = 48000, .bResampling = 1},
+    };
+    int i;
+    for (i = 0; i < 3; i++)
+    {
+        WriterAVCallData_t call = packet(samples, sizeof(samples), &cases[i], sizeof(cases[i]), record);
+        WriterAudioPCM.reset();
+        assert(!WriterAudioPCM.writeData(&call) && calls == 0);
+    }
+    WriterAudioPCM.reset();
+}
+
 static void pcm_block_duration(void)
 {
     static uint8_t samples[2 * 51840]; /* Two 30 ms blocks: 96 kHz, 6 channels, 24 bit. */
@@ -1016,6 +1036,7 @@ int main(void)
     mpeg2_sequence_header_after_a_seek();
     vc1_wmv_codec_data();
     vc1_frame_start_code();
+    pcm_without_a_byte_rate();
     vorbis_headers();
     vp9_frame();
     vp9_frame_without_pts();
