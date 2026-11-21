@@ -95,10 +95,13 @@ static inline void dts_core_align(uint8_t *output, size_t padded, const uint8_t 
             }
             if (id == 0 && sync == UINT32_C(0x5a5a5a5a))
             {
-                /* XChFSIZE: 10 bits */
-                if ((((size_t)input[pos + 4] << 2) | (input[pos + 5] >> 6)) + 1 != size - pos)
+                /* XChFSIZE: 10 bits. Some encoders write the distance
+                 * plus one, which decoders take as well (FFmpeg
+                 * dca_core.c); the field is raised by the padding then. */
+                size_t xch = (((size_t)input[pos + 4] << 2) | (input[pos + 5] >> 6)) + 1;
+                if (xch != size - pos && xch - 1 != size - pos)
                     continue;
-                field = padded - pos - 1;
+                field = xch - 1 + (padded - size);
                 if (field > 0x3ff)
                     break;
                 output[pos + 4] = (uint8_t)(field >> 2);
