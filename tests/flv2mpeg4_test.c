@@ -11,7 +11,8 @@
  *   I and P pictures. The DC values are rounded by the conversion here;
  * - DQUANT that takes the quantiser below 1 or above 31 (clamped as in the
  *   H.263 decoder) and a header with the quantiser 0 (picture dropped);
- * - cut and damaged pictures from buffers without padding, under ASan. */
+ * - cut and damaged pictures from buffers without padding, under ASan;
+ * - a picture whose MPEG-4 form does not fit into the packet buffer. */
 
 #include <assert.h>
 #include <math.h>
@@ -525,6 +526,38 @@ static void broken_pictures(void)
     printf("damaged pictures: %d dropped, %d converted\n", dropped, whole);
 }
 
+/* A 640x480 I picture with all 64 coefficients of every block coded, the
+ * AC levels +-100 as 8 bit escapes (22 bits each): about 1.3 MB of FLV1.
+ * In MPEG-4 each level needs the third escape (30 bits), about 1.7 MB,
+ * more than the 1 MB packet buffer of the converter: the picture is
+ * dropped instead of written behind the buffer. */
+static void oversized_picture(void)
+{
+    int ac[63][2];
+    Bits b;
+    AVPacket *pkt;
+    int i, mb, n, written;
+
+    for (i = 0; i < 63; i++)
+    {
+        ac[i][0] = 0;
+        ac[i][1] = i & 1 ? -100 : 100;
+    }
+    bits_init(&b, 2 * 1024 * 1024);
+    put_header(&b, 640, 480, 10);
+    for (mb = 0; mb < 40 * 30; mb++)
+    {
+        put(&b, 3, 3);   /* MCBPC: intra, both chroma blocks coded */
+        put(&b, 2, 3);   /* CBPY: all luma blocks coded */
+        for (n = 0; n < 6; n++)
+            put_block(&b, 100, (const int (*)[2])ac, 63);
+    }
+    pkt = bits_packet(&b);
+    printf("oversized picture: %d bytes of FLV1\n", pkt->size);
+    assert(convert_exact(pkt->data, pkt->size, 640, 480, &written) < 0 && written == 0);
+    av_packet_free(&pkt);
+}
+
 int main(void)
 {
     AVPacket *packets[MAX_PACKETS];
@@ -544,6 +577,7 @@ int main(void)
 
     quantiser_limits();
     broken_pictures();
+    oversized_picture();
 
     printf("flv2mpeg4 tests passed\n");
     return 0;
