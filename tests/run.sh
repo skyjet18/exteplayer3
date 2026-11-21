@@ -124,8 +124,9 @@ ASAN_OPTIONS=detect_leaks=0 timeout 20 "$tmp/dts_pad"
 $cc -g -fsanitize=address,undefined -Iinclude tests/dts_frame_test.c -o "$tmp/dts_frame"
 ASAN_OPTIONS=detect_leaks=0 timeout 20 "$tmp/dts_frame"
 # The FLV1 to MPEG-4 converter: the MPEG-4 decode of converted pictures against
-# the FLV1 decode of the source, for 8 bit escapes and changing quantisers.
-$cc -g -fsanitize=address,undefined -ffunction-sections -fdata-sections \
+# the FLV1 decode of the source, for 8 bit escapes and changing quantisers,
+# and broken pictures. Every UBSan report ends the test.
+$cc -g -fsanitize=address,undefined -fno-sanitize-recover=undefined -ffunction-sections -fdata-sections \
     -Wno-deprecated-declarations -Iinclude -Iexternal -I"$FFMPEG_BUILD" -I"$FFMPEG_SOURCE" \
     tests/flv2mpeg4_test.c external/flv2mpeg4/src/*.c \
     -Wl,--gc-sections -pthread "$FFMPEG_BUILD/libavcodec/libavcodec.a" \

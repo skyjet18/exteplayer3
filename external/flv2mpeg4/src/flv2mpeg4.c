@@ -166,6 +166,17 @@ static int requant(int qscale, int *m4v_qscale)
     return dquant;
 }
 
+/* DQUANT keeps the quantiser within 1..31, as the H.263 decoder does;
+ * outside it the DC scale tables have no entry (0: division by zero) */
+static int clip_qscale(int qscale)
+{
+    if (qscale < 1)
+        return 1;
+    if (qscale > 31)
+        return 31;
+    return qscale;
+}
+
 static int write_m4v_picture_frame(flv2mpeg4_CTX *pub_ctx, CONVCTX *c, BR *br, BW *bw, PICTURE *flvpic, uint32 time)
 {
     MICROBLOCK mb;
@@ -195,7 +206,7 @@ static int write_m4v_picture_frame(flv2mpeg4_CTX *pub_ctx, CONVCTX *c, BR *br, B
             {
                 mb.intra = 1;
                 if (decode_I_mb(br, &mb, flvpic->escape_type, qscale) < 0) return -1;
-                qscale += mb.dquant;
+                qscale = clip_qscale(qscale + mb.dquant);
                 mb.dquant = requant(qscale, &m4v_qscale);
                 m4v_mb.qscale = m4v_qscale;
                 copy_microblock(&mb, &m4v_mb);
@@ -205,7 +216,7 @@ static int write_m4v_picture_frame(flv2mpeg4_CTX *pub_ctx, CONVCTX *c, BR *br, B
             else
             {
                 if (decode_P_mb(br, &mb, flvpic->escape_type, qscale) < 0) return -1;
-                qscale += mb.dquant;
+                qscale = clip_qscale(qscale + mb.dquant);
                 /* a skipped macroblock carries no DQUANT */
                 mb.dquant = mb.skip ? 0 : requant(qscale, &m4v_qscale);
                 m4v_mb.qscale = m4v_qscale;
