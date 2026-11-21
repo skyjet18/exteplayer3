@@ -177,7 +177,7 @@ static int writeData(void* _call)
         iov[1].iov_base = PesPayload;
         iov[1].iov_len = PesPtr - PesPayload;
         iov[0].iov_len = InsertPesHeader (PesHeader, iov[1].iov_len, VC1_VIDEO_PES_START_CODE, INVALID_PTS_VALUE, 0);
-        len = call->WriteV(call->fd, iov, 2);
+        call->WriteV(call->fd, iov, 2);
 
         /* For VC1 the codec private data is a standard vc1 sequence header so we just copy it to the output */
         iov[0].iov_base = PesHeader;

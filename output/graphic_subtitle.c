@@ -254,7 +254,7 @@ static int32_t Write(WriterSubCallData_t *subPacket)
     pkt.size = subPacket->len;
     pkt.pts  = subPacket->pts;
 
-    int used = avcodec_decode_subtitle2(g_sys->p_context, &subtitle, &has_subtitle, &pkt);
+    avcodec_decode_subtitle2(g_sys->p_context, &subtitle, &has_subtitle, &pkt);
 #else
     AVPacket* pkt;
     pkt = av_packet_alloc();
@@ -264,7 +264,7 @@ static int32_t Write(WriterSubCallData_t *subPacket)
     pkt->size = subPacket->len;
     pkt->pts  = subPacket->pts;
 
-    int used = avcodec_decode_subtitle2(g_sys->p_context, &subtitle, &has_subtitle, pkt);
+    avcodec_decode_subtitle2(g_sys->p_context, &subtitle, &has_subtitle, pkt);
     /* the data belongs to subPacket (pkt->buf is NULL): this frees only the packet itself */
     av_packet_free(&pkt);
 #endif

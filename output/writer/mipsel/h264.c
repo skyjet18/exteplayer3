@@ -799,8 +799,6 @@ static int writeData(void* _call)
 
 static int writeReverseData(void* _call)
 {
-    WriterAVCallData_t* call = (WriterAVCallData_t*) _call;
-    
     return 0;
 }
 /* ***************************** */

@@ -85,8 +85,6 @@ static int writeData(void* _call)
 {
     WriterAVCallData_t* call = (WriterAVCallData_t*) _call;
 
-    int len = 0;
-
     vc1_printf(10, "\n");
 
     if (call == NULL) 
