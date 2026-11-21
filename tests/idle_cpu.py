@@ -9,7 +9,14 @@ voluntary context switches of all threads of the player, playing and paused,
 unbuffered, with the write buffer (-b) and with EP3_OUTPUT_PACING_MS. A
 paused player waits for the continue or for room in a decoder, it does not
 wake up to look again every few milliseconds. The continue and the quit of a
-paused player are timed as well."""
+paused player are timed as well.
+
+Commands right after a continue, unbuffered and with -b 8: the longest answer
+to `j` in the 1.5 s after each of three continues, and a seek back sent at
+once after a continue (its answer, the first position at the new place). The
+host outputs have no driver that sleeps in its poll; the delay that caused on
+the Vu+ is covered by tests/video_info_test.c, here the command path is
+timed."""
 
 import argparse
 import fcntl
@@ -32,6 +39,11 @@ PAUSED = 5.0
 # voluntary context switches of all threads during PAUSED seconds: a 1 ms
 # retry makes thousands, a 10 ms poll hundreds
 MAX_PAUSED_SWITCHES = 150
+# commands right after a continue: the longest answer to j, a seek back of
+# SEEK s (back: the host video output paces a jump ahead in real time)
+MAX_ANSWER_MS = 250
+MAX_SEEK_POSITION_MS = 1500
+SEEK = 6
 
 
 def cpu_ticks(pid):
@@ -153,6 +165,61 @@ def case(args, media, name, options, env_extra):
     return result
 
 
+def timed(player, command, name):
+    start = time.monotonic()
+    player.command(command)
+    answer = player.wait(name)
+    return answer, (time.monotonic() - start) * 1000
+
+
+def responsiveness(args, media, name, options):
+    env = dict(os.environ)
+    env.pop("EP3_OUTPUT_PACING_MS", None)
+    decoders = Decoders([Path(args.audio_output), Path(args.video_output)])
+    player = None
+    result = {"name": name, "j_ms": []}
+    try:
+        player = Player(args.player, *options, str(media), env=env)
+        assert player.wait("PLAYBACK_PLAY")["sts"] == 0
+        time.sleep(WARMUP)
+        for _ in range(3):
+            player.command("p")
+            assert player.wait("PLAYBACK_PAUSE")["sts"] == 0
+            decoders.running.clear()
+            time.sleep(1.0)
+            player.command("c")
+            assert player.wait("PLAYBACK_CONTINUE")["sts"] == 0
+            decoders.running.set()
+            worst, until = 0.0, time.monotonic() + 1.5
+            while time.monotonic() < until:
+                worst = max(worst, timed(player, "j", "J")[1])
+                time.sleep(0.03)
+            result["j_ms"].append(worst)
+        # a seek sent at once after the continue
+        player.command("p")
+        assert player.wait("PLAYBACK_PAUSE")["sts"] == 0
+        decoders.running.clear()
+        time.sleep(1.0)
+        before = timed(player, "j", "J")[0]["ms"]
+        player.command("c")
+        assert player.wait("PLAYBACK_CONTINUE")["sts"] == 0
+        decoders.running.set()
+        start = time.monotonic()
+        answer, result["seek_ack_ms"] = timed(player, f"kc -{SEEK}", "PLAYBACK_SEEK")
+        assert answer["sts"] == 0
+        result["seek_pos_ms"] = None
+        while time.monotonic() - start < 5:
+            if timed(player, "j", "J")[0]["ms"] <= before - (SEEK - 2) * 1000:
+                result["seek_pos_ms"] = (time.monotonic() - start) * 1000
+                break
+            time.sleep(0.02)
+    finally:
+        if player:
+            player.stop()
+        decoders.close()
+    return result
+
+
 def describe(label, sample):
     ticks, switches, elapsed = sample
     hz = os.sysconf("SC_CLK_TCK")
@@ -183,6 +250,10 @@ def main():
             case(args, media, "write buffer -b 1", ["-b", "1"], {}),
             case(args, media, "EP3_OUTPUT_PACING_MS=500", [], {"EP3_OUTPUT_PACING_MS": "500"}),
         ]
+        answers = [
+            responsiveness(args, media, "unbuffered", []),
+            responsiveness(args, media, "write buffer -b 8", ["-b", "8"]),
+        ]
 
     failed = []
     for result in results:
@@ -196,11 +267,25 @@ def main():
             failed.append(f"{result['name']}: no data {result['continue_ms']:.0f} ms after the continue")
         if result["quit_ms"] > 2000:
             failed.append(f"{result['name']}: quit took {result['quit_ms']:.0f} ms")
+    for result in answers:
+        position = result["seek_pos_ms"]
+        print(f"{result['name']}, commands after a continue: longest j answer "
+              + ", ".join(f"{ms:.0f}" for ms in result["j_ms"]) + " ms; seek at once after it: answer "
+              + f"{result['seek_ack_ms']:.0f} ms, new position "
+              + (f"{position:.0f} ms" if position is not None else "not within 5 s"))
+        if max(result["j_ms"]) > MAX_ANSWER_MS:
+            failed.append(f"{result['name']}: j answered after {max(result['j_ms']):.0f} ms after a continue"
+                          f" (at most {MAX_ANSWER_MS})")
+        if result["seek_ack_ms"] > MAX_ANSWER_MS:
+            failed.append(f"{result['name']}: seek after a continue answered after {result['seek_ack_ms']:.0f} ms")
+        if position is None or position > MAX_SEEK_POSITION_MS:
+            failed.append(f"{result['name']}: no new position {MAX_SEEK_POSITION_MS} ms after a seek after a continue")
     sys.stdout.flush()
     if failed:
         print("FAIL " + "; ".join(failed))
         sys.exit(1)
-    print("PASS a paused player waits without polling; continue and quit react at once")
+    print("PASS a paused player waits without polling; continue, quit and the commands after a continue"
+          " react at once")
 
 
 if __name__ == "__main__":
