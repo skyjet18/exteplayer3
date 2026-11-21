@@ -149,7 +149,9 @@ static int32_t PreparCodecData(unsigned char *data, unsigned int cd_len, unsigne
                 }
                 tmp_len = sets.len;
 
-                CodecData = malloc(tmp_len);
+                /* no VPS, SPS or PPS (they come in-band): empty codec data,
+                 * not a malloc(0) that may give NULL and drop the frame */
+                CodecData = malloc(tmp_len ? tmp_len : 1);
                 if (!CodecData)
                 {
                     h264_err("allocating codec data failed\n");
