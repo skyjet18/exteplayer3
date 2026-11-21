@@ -3127,8 +3127,14 @@ static void FFMPEGThread(Context_t *context)
         }
         if (do_seek_target_seconds || do_seek_target_bytes) 
         {
-            if (!zero_seek || do_seek_target_bytes)
+            /* The read again of a live TS (-v) goes on with its clock: the
+             * stream goes on, what is read twice is skipped by its DTS. A
+             * reset there put the DTS behind the last one written. */
+            if (do_seek_target_seconds ? !zero_seek : !context->playback->isTSLiveMode)
+            {
                 pts_clock_reset(&ptsClock, 1);
+                lastVideoDts = lastAudioDts = -1;
+            }
             isWaitingForFinish = 0;
             seek_finish_timeout();
             if (do_seek_target_seconds)
@@ -3174,7 +3180,10 @@ static void FFMPEGThread(Context_t *context)
                             if (avformat_seek_file(avContextTab[i], -1, INT64_MIN, target_us, INT64_MAX, 0) < 0)
                                 ffmpeg_err("timestamp seek failed for context %u\n", i);
                             else if (zero_seek)
+                            {
                                 pts_clock_reset(&ptsClock, 1);
+                                lastVideoDts = lastAudioDts = -1;
+                            }
                         }
                     }
                     else
@@ -3505,7 +3514,7 @@ static void FFMPEGThread(Context_t *context)
                     {
                         if (dts != INVALID_PTS_VALUE)
                         {   
-                            if (dts > lastVideoDts)
+                            if (pts_clock_after(dts, lastVideoDts))
                             {
                                 lastVideoDts = dts;
                             }
@@ -3639,7 +3648,7 @@ static void FFMPEGThread(Context_t *context)
                 {
                     if (dts != INVALID_PTS_VALUE)
                     {
-                        if (dts > lastAudioDts)
+                        if (pts_clock_after(dts, lastAudioDts))
                         {
                             lastAudioDts = dts;
                         }
