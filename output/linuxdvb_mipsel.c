@@ -151,7 +151,14 @@ static volatile int videoPtsWritten;
  * clock ran on for good. A value more than POS_BOUND_TOLERANCE after all
  * data written since the start is no position of it, so until the decoder
  * is seen within the data the lowest PTS written since the start is
- * reported instead. PTS are compared as 33 bit values.
+ * reported instead. Right after the start VIDEO_GET_PTS still answers what
+ * the previous playback left, also that of another process (13.3 s, 0.1 s
+ * after the start of a file at 0), and that can lie anywhere: until data is
+ * written since the start the position is 0, and a value further before the
+ * data than POS_BOUND_CATCH_UP, or POS_BOUND_LIMIT and more after it, is
+ * reported as the lowest PTS written as well, until the decoder is seen
+ * within the data or for POS_BOUND_START_MS after the first write.
+ * PTS are compared as 33 bit values.
  * A decoder restarted by OUTPUT_SWITCH (the video output after a long gap,
  * an audio track switch) reports stale or unrelated values until it shows
  * what is written after the restart: until then, at most for
@@ -166,6 +173,9 @@ static volatile int videoPtsWritten;
 #define POS_BOUND_LIMIT      (600ULL * 90000) /* 10 min: further is no stall */
 #define POS_BOUND_RESTART_MS 5000
 #define POS_BOUND_FLOWING    360000ULL        /* 4 s */
+#ifndef POS_BOUND_START_MS
+#define POS_BOUND_START_MS   10000
+#endif
 typedef struct
 {
     bool have_max;              /* max holds a PTS written since the last reset */
@@ -182,6 +192,7 @@ typedef struct
     unsigned long long first;   /* lowest PTS written since the reset */
     unsigned long long reported;
     struct timespec restart_time;
+    struct timespec first_time; /* when the first PTS since the reset was written */
 } PosBound_t;
 static PosBound_t videoPosBound, audioPosBound;
 /* written by the play thread, read by the position requests */
@@ -213,6 +224,8 @@ static void PosBoundWritten(PosBound_t *bound, unsigned long long pts)
     }
     if (!bound->have_first || !PosBoundNotBefore(pts, bound->first))
     {
+        if (!bound->have_first)
+            clock_gettime(CLOCK_MONOTONIC, &bound->first_time);
         bound->first = pts;
         bound->have_first = true;
     }
@@ -298,7 +311,13 @@ static unsigned long long PosBoundApply(PosBound_t *bound, unsigned long long pt
 
     pthread_mutex_lock(&posBoundMutex);
     if (!bound->have_max)
+    {
+        /* nothing written since the start: the decoder answers with what
+         * an earlier playback left */
+        if (bound->started)
+            reported = 0;
         goto out;
+    }
     ahead = PosBoundAhead(pts, bound->max);
     if (bound->restarting)
     {
@@ -332,9 +351,35 @@ static unsigned long long PosBoundApply(PosBound_t *bound, unsigned long long pt
          * a decoder that shows nothing of the data yet, which goes past 0
          * when the data starts at 0 (2^33 - 600 was reported as 95443711
          * ms). The first PTS until the decoder is within the data. An older
-         * clock further before the data is left as it is. */
+         * clock further before the data is left as it is, except after a
+         * start, see below. */
         reported = bound->first;
         goto out;
+    }
+    if (!bound->inside && bound->started && bound->have_first)
+    {
+        /* Since the start the decoder has shown nothing of the data. A
+         * value further before the first PTS written, or further after it
+         * than the time since that write (and a second) allows, is what an
+         * earlier playback left: the first PTS written instead, for
+         * POS_BOUND_START_MS after it. */
+        unsigned long long before = PosBoundAhead(bound->first, pts);
+        unsigned long long after = PosBoundAhead(pts, bound->first);
+        struct timespec now;
+        int64_t ms;
+
+        clock_gettime(CLOCK_MONOTONIC, &now);
+        ms = (int64_t)(now.tv_sec - bound->first_time.tv_sec) * 1000 +
+             (now.tv_nsec - bound->first_time.tv_nsec) / 1000000;
+        if (ms < 0)
+            ms = 0;
+        if (ms < POS_BOUND_START_MS &&
+            ((before > POS_BOUND_CATCH_UP && before < (1ULL << 32)) ||
+             (after < (1ULL << 32) && after > (unsigned long long)ms * 90 + POS_BOUND_CATCH_UP)))
+        {
+            reported = bound->first;
+            goto out;
+        }
     }
     if (ahead > POS_BOUND_TOLERANCE && ahead < POS_BOUND_LIMIT)
     {
