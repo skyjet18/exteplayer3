@@ -1,0 +1,378 @@
+name: Static analysis
+
+# Four static analysers over the player sources, each in its own job:
+#   - gcc -fanalyzer       GCC's static analyzer (GCC 14 of ubuntu-24.04)
+#   - clang-tidy           bugprone, cert, clang-analyzer, concurrency, misc
+#   - cppcheck             --enable=all --inconclusive, unusedFunction included
+#   - scan-build           the Clang Static Analyzer around the host build
+#
+# The sources and flags are those of the host player of tests/build.sh (the
+# files the receiver build compiles, with output/linuxdvb_fake.c in place of
+# the device output) against a native build of the patched FFmpeg, plus the
+# receiver-only files that compile on the host (output/linuxdvb_mipsel.c,
+# the mipsel and sh4 writers) with the flags of exteplayer3_git.bb.
+# The compile commands are recorded with bear. Bundled third-party code
+# (external/) and the tests (tests/) are compiled, their findings dropped.
+#
+# The workflow never fails because of findings, only when an analyser
+# itself fails (a file does not compile, a tool crashes). Results:
+#   - the "Summary" page of a run: findings per tool and per check; with a
+#     base (pull requests: the target branch), first the findings that are
+#     new compared with the base;
+#   - artifacts "static-analysis-<tool>-ffmpeg-<version>": one SARIF file
+#     per tool (for any SARIF viewer, e.g. the VS Code "SARIF Viewer"), the
+#     same findings as a tab-separated list, the raw tool output;
+#   - optionally GitHub code scanning (Security tab), see code_scanning.
+#
+# Actions -> Static analysis -> Run workflow: ref = a branch or commit of
+# this repository to analyse (empty = the branch the workflow runs from),
+# ffmpeg = the FFmpeg to build against: 6.1 (the default, and the one for
+# pushes and pull requests) or 9, base = a branch or commit to compare with
+# (empty = no comparison). Helpers: .github/static-analysis/sa.py.
+#
+# New findings: with a base, every analyser also runs over the base commit,
+# in parallel jobs of their own (the "(base)" jobs: same wall time, twice
+# the runner minutes). A finding counts as old when the base has one of the
+# same tool and check in the same file with the same message and the same
+# source line text, whatever its line number. A base job that fails does
+# not fail the run; that tool is then not compared.
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Branch or commit to analyse (empty = the selected branch)
+        default: ''
+      base:
+        description: Branch or commit to compare with, new findings first (empty = no comparison)
+        default: ''
+      ffmpeg:
+        description: FFmpeg to build against
+        type: choice
+        options: ['6.1', '9']
+        default: '6.1'
+      code_scanning:
+        description: Also upload the SARIF files to GitHub code scanning (Security tab)
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+# bash -eo pipefail: a tool that fails in front of "| tee" fails the step
+defaults:
+  run:
+    shell: bash
+
+# a newer push to the same branch / pull request cancels the older run
+concurrency:
+  group: static-analysis-${{ github.event.pull_request.number || inputs.ref || github.ref }}-${{ inputs.ffmpeg || '6.1' }}
+  cancel-in-progress: true
+
+env:
+  # clang-tidy checks. Disabled, with the reason:
+  #  misc-unused-parameters             callbacks with a fixed signature
+  #  cert-err33-c                       every unchecked printf/fclose/...
+  #  bugprone-easily-swappable-parameters  any two adjacent int parameters
+  #  misc-include-cleaner               include hygiene; FFmpeg's umbrella
+  #                                     headers make it wrong more than right
+  #  bugprone-reserved-identifier,      header guards and helper names with
+  #  cert-dcl37-c, cert-dcl51-cpp       a leading underscore (style)
+  #  bugprone-assignment-in-if-condition  if ((x = f()) ...) is the idiom here
+  #  concurrency-mt-unsafe              every strerror/getenv/... call; the
+  #                                     player calls them from known threads
+  #  bugprone-narrowing-conversions     every int64 -> int and double -> int
+  #                                     assignment (hundreds, by design)
+  #  clang-analyzer-security.insecureAPI.DeprecatedOrUnsafeBufferHandling
+  #                                     every memcpy/memset/sprintf: asks for
+  #                                     the Annex K *_s functions glibc lacks
+  #  bugprone-multi-level-implicit-pointer-conversion
+  #                                     free()/memcpy() of pointer-to-pointer
+  #  cert-err34-c                       atoi/sscanf on command line and stdin
+  #                                     commands (style, not a defect)
+  CLANG_TIDY_CHECKS: >-
+    bugprone-*,cert-*,clang-analyzer-*,concurrency-*,misc-*,
+    -misc-unused-parameters,-cert-err33-c,
+    -bugprone-easily-swappable-parameters,-misc-include-cleaner,
+    -bugprone-reserved-identifier,-cert-dcl37-c,-cert-dcl51-cpp,
+    -bugprone-assignment-in-if-condition,-concurrency-mt-unsafe,
+    -bugprone-narrowing-conversions,
+    -clang-analyzer-security.insecureAPI.DeprecatedOrUnsafeBufferHandling,
+    -bugprone-multi-level-implicit-pointer-conversion,-cert-err34-c
+  # bugprone-suspicious-string-compare: report misuse of the result (e.g.
+  # compared with 1), not the "if (!memcmp(...))" idiom
+  CLANG_TIDY_CONFIG: >-
+    {CheckOptions: {bugprone-suspicious-string-compare.WarnOnImplicitComparison: false}}
+
+jobs:
+  # The FFmpeg to compile against, built once and kept in the Actions cache.
+  # Repository, commit, configure options and cache key are the same as in
+  # the host tests and the SonarCloud workflow, so the caches are shared.
+  ffmpeg:
+    name: FFmpeg ${{ inputs.ffmpeg || '6.1' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    outputs:
+      repo: ${{ steps.select.outputs.repo }}
+      commit: ${{ steps.select.outputs.commit }}
+      libs: ${{ steps.select.outputs.libs }}
+      dir: ${{ steps.select.outputs.dir }}
+      key: ${{ steps.select.outputs.key }}
+      base: ${{ steps.select.outputs.base }}
+      sides: ${{ steps.select.outputs.sides }}
+    steps:
+    - name: Select FFmpeg
+      id: select
+      env:
+        VARIANT: ${{ inputs.ffmpeg || '6.1' }}
+        BASE: ${{ inputs.base || github.event.pull_request.base.sha }}
+      run: |
+        if [ "$VARIANT" = 9 ]; then
+          # skyjet18/FFmpeg, branch release/9.0-patched; with OpenSSL
+          repo=skyjet18/FFmpeg
+          commit=4ab44292c9cd5543ba9de17594c32d88f09506c7
+          configure="--disable-autodetect --disable-doc --disable-ffplay --disable-debug --enable-version3 --enable-libxml2 --enable-openssl --enable-zlib"
+          libs="-lxml2 -lssl -lcrypto -lz"
+          dir=/home/runner/ffmpeg9-host
+          programs=""
+        else
+          # skyjet18/FFmpeg, branch release/6.1-patched (the FFmpeg of ipk/);
+          # with the test programs the host tests need, so that the cached
+          # directory is the same whichever workflow saved it
+          repo=skyjet18/FFmpeg
+          commit=0da0223cd1add40eabaad04e1ce609f05670a1de
+          configure="--disable-autodetect --disable-doc --disable-ffplay --disable-debug --enable-libxml2 --enable-zlib"
+          libs="-lxml2 -lz"
+          dir=/home/runner/ffmpeg-host
+          programs="libavformat/tests/hls_http libavformat/tests/dash_http libavformat/tests/hls_selection libavformat/tests/dash_live libavformat/tests/mpegts_probe"
+        fi
+        sum=$(printf '%s\n' "$configure" "$programs" "$ImageOS" | sha256sum | cut -c1-16)
+        {
+          echo "repo=$repo"
+          echo "commit=$commit"
+          echo "configure=$configure"
+          echo "libs=$libs"
+          echo "programs=$programs"
+          echo "dir=$dir"
+          echo "key=$(basename "$dir")-$commit-$sum"
+          # the analyse jobs: the tree itself, and the base to compare with
+          echo "base=$BASE"
+          if [ -n "$BASE" ]; then echo 'sides=["head","base"]'; else echo 'sides=["head"]'; fi
+        } | tee -a "$GITHUB_OUTPUT"
+
+    - name: FFmpeg from the cache
+      id: cache
+      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ${{ steps.select.outputs.dir }}
+        key: ${{ steps.select.outputs.key }}
+
+    # only when the cache has no build yet (about 10 minutes); out of tree
+    - name: Build FFmpeg
+      if: steps.cache.outputs.cache-hit != 'true'
+      env:
+        REPO: ${{ steps.select.outputs.repo }}
+        COMMIT: ${{ steps.select.outputs.commit }}
+        CONFIGURE: ${{ steps.select.outputs.configure }}
+        PROGRAMS: ${{ steps.select.outputs.programs }}
+        DIR: ${{ steps.select.outputs.dir }}
+      run: |
+        sudo apt-get update -q
+        sudo apt-get install -y -q build-essential pkg-config nasm libxml2-dev libssl-dev zlib1g-dev
+        mkdir -p "$DIR/src" "$DIR/build"
+        curl -sSL --retry 5 --retry-all-errors "https://github.com/$REPO/archive/$COMMIT.tar.gz" -o "$RUNNER_TEMP/ff.tar.gz"
+        tar -xzf "$RUNNER_TEMP/ff.tar.gz" --strip-components=1 -C "$DIR/src"
+        cd "$DIR/build"
+        "$DIR/src/configure" $CONFIGURE
+        make -j$(nproc)
+        if [ -n "$PROGRAMS" ]; then make -j$(nproc) $PROGRAMS; fi
+
+  analyse:
+    name: ${{ matrix.tool }}${{ matrix.side == 'base' && ' (base)' || '' }}
+    needs: ffmpeg
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    # the base only serves the comparison
+    continue-on-error: ${{ matrix.side == 'base' }}
+    permissions:
+      contents: read
+      # only used by the optional upload to code scanning
+      security-events: write
+    strategy:
+      # findings never fail a job; a broken analyser does not stop the others
+      fail-fast: false
+      matrix:
+        tool: [gcc-fanalyzer, clang-tidy, cppcheck, scan-build]
+        side: ${{ fromJSON(needs.ffmpeg.outputs.sides) }}
+    env:
+      FFMPEG_SOURCE: ${{ needs.ffmpeg.outputs.dir }}/src
+      FFMPEG_BUILD: ${{ needs.ffmpeg.outputs.dir }}/build
+      FFMPEG_EXTRA_LIBS: ${{ needs.ffmpeg.outputs.libs }}
+    steps:
+    # the tree under analysis (or the base it is compared with)
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      with:
+        ref: ${{ matrix.side == 'base' && needs.ffmpeg.outputs.base || inputs.ref }}
+
+    # the helper script, from the commit the workflow runs from (the
+    # analysed ref may not have it); moved out of the analysed tree below
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      with:
+        ref: ${{ github.sha }}
+        path: static-analysis-tools
+        sparse-checkout: .github/static-analysis
+
+    - name: Prepare
+      id: prep
+      run: |
+        mv static-analysis-tools "$RUNNER_TEMP/"
+        # results (OUT) and helper (SA) outside the analysed tree
+        echo "OUT=$RUNNER_TEMP/static-analysis-out" >> "$GITHUB_ENV"
+        echo "SA=$RUNNER_TEMP/static-analysis-tools/.github/static-analysis/sa.py" >> "$GITHUB_ENV"
+        mkdir -p "$RUNNER_TEMP/static-analysis-out"
+        sudo apt-get update -q
+        case "${{ matrix.tool }}" in
+          gcc-fanalyzer) pkgs="gcc-14" ;;
+          clang-tidy) pkgs="clang clang-tidy" ;;
+          cppcheck) pkgs="cppcheck" ;;
+          scan-build) pkgs="clang clang-tools" ;;
+        esac
+        sudo apt-get install -y -q build-essential bear libxml2-dev libssl-dev zlib1g-dev $pkgs
+        git rev-parse HEAD > "$RUNNER_TEMP/static-analysis-out/commit"
+        echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+        echo "ref=$(git symbolic-ref -q HEAD || echo "$GITHUB_REF")" >> "$GITHUB_OUTPUT"
+
+    - name: FFmpeg from the cache
+      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ${{ needs.ffmpeg.outputs.dir }}
+        key: ${{ needs.ffmpeg.outputs.key }}
+        fail-on-cache-miss: true
+
+    # compile_commands.json of the host build, plus the receiver-only
+    # sources that compile on the host (AUDIO_GET_PTS as in the recipe)
+    - name: Compilation database
+      if: matrix.tool != 'scan-build'
+      env:
+        EXTRA_FLAGS: -DAUDIO_GET_PTS="_IOR('o', 19, __u64)"
+      run: |
+        test -f tests/build.sh || { echo "::error::tests/build.sh not found in the analysed tree"; exit 1; }
+        bear --output "$OUT/bear.json" -- sh tests/build.sh "$RUNNER_TEMP/exteplayer3-host"
+        mkdir -p "$OUT/db"
+        python3 "$SA" compdb "$OUT/bear.json" . "$OUT/db/compile_commands.json" \
+          output/linuxdvb_mipsel.c output/writer/mipsel/*.c output/linuxdvb_sh4.c output/writer/sh4/*.c \
+          2>&1 | tee "$OUT/sources.txt"
+        test -s "$OUT/db/compile_commands.json"
+
+    - name: gcc -fanalyzer
+      if: matrix.tool == 'gcc-fanalyzer'
+      env:
+        ANALYZER_CC: gcc-14
+      run: python3 "$SA" gcc "$OUT/db/compile_commands.json" . "$OUT/gcc-fanalyzer.sarif" 2>&1 | tee "$OUT/gcc-fanalyzer.log"
+
+    - name: clang-tidy
+      if: matrix.tool == 'clang-tidy'
+      run: |
+        checks=$(echo "$CLANG_TIDY_CHECKS" | tr -d ' \n')
+        python3 "$SA" tidy "$OUT/db/compile_commands.json" . "$OUT/clang-tidy.sarif" "$checks" 2>&1 | tee "$OUT/clang-tidy.log"
+
+    # single job: unusedFunction needs the whole program at once
+    - name: cppcheck
+      if: matrix.tool == 'cppcheck'
+      run: |
+        cppcheck --version
+        python3 "$SA" cppdb "$OUT/db/compile_commands.json" "$OUT/db/cppcheck.json"
+        rc=0
+        cppcheck --project="$OUT/db/cppcheck.json" --enable=all --inconclusive --std=c11 \
+          --check-level=exhaustive --library=posix --platform=unix64 --inline-suppr \
+          --suppress=missingIncludeSystem --suppress="*:${FFMPEG_SOURCE%/src}/*" \
+          --xml --output-file="$OUT/cppcheck.xml" 2> "$OUT/cppcheck-stderr.log" > "$OUT/cppcheck.log" || rc=$?
+        if [ "$rc" != 0 ]; then echo "::error title=cppcheck::exit $rc"; tail -50 "$OUT/cppcheck-stderr.log"; exit $rc; fi
+        python3 "$SA" cppcheck "$OUT/cppcheck.xml" . "$OUT/cppcheck.sarif"
+
+    # scan-build replaces CC for tests/build.sh; findings of external/ and
+    # tests/ are not reported
+    - name: scan-build
+      if: matrix.tool == 'scan-build'
+      run: |
+        scan-build -sarif -o "$OUT/scan-build" --exclude "$PWD/external" --exclude "$PWD/tests" \
+          sh tests/build.sh "$RUNNER_TEMP/exteplayer3-host" 2>&1 | tee "$OUT/scan-build.log"
+        python3 "$SA" scanbuild "$OUT/scan-build" . "$OUT/scan-build.sarif"
+
+    # the findings themselves go to the summary of the Summary job, so that
+    # the new ones are at the top of the run's page
+    - name: Result
+      id: summary
+      if: ${{ !cancelled() }}
+      run: |
+        [ -f "$OUT/${{ matrix.tool }}.sarif" ] || exit 0
+        echo "sarif=true" >> "$GITHUB_OUTPUT"
+        python3 "$SA" summary "$OUT"
+
+    - name: Artifact
+      if: ${{ !cancelled() }}
+      uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+      with:
+        name: static-analysis-${{ matrix.side == 'base' && 'base-' || '' }}${{ matrix.tool }}-ffmpeg-${{ inputs.ffmpeg || '6.1' }}
+        path: ${{ runner.temp }}/static-analysis-out
+        if-no-files-found: ignore
+
+    # Code scanning shows the findings in the Security tab and on pull
+    # requests. On request only: it fills the Security tab, and the token of
+    # a pull request from a fork may not write there.
+    - name: Code scanning
+      if: ${{ !cancelled() && inputs.code_scanning && matrix.side == 'head' && steps.summary.outputs.sarif == 'true' }}
+      continue-on-error: true
+      uses: github/codeql-action/upload-sarif@33d7b85da1a04171e211befe2c739303b9a4c066 # v4.39.3
+      with:
+        sarif_file: ${{ runner.temp }}/static-analysis-out/${{ matrix.tool }}.sarif
+        category: ${{ matrix.tool }}-ffmpeg-${{ inputs.ffmpeg || '6.1' }}
+        ref: ${{ steps.prep.outputs.ref }}
+        sha: ${{ steps.prep.outputs.sha }}
+
+  summary:
+    name: Summary
+    needs: [ffmpeg, analyse]
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      with:
+        sparse-checkout: .github/static-analysis
+
+    - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+      with:
+        pattern: static-analysis-*-ffmpeg-${{ inputs.ffmpeg || '6.1' }}
+        path: ${{ runner.temp }}/results
+
+    # the base artifacts (static-analysis-base-*) apart from the others
+    - name: Findings per tool
+      env:
+        REF: ${{ inputs.ref || github.ref_name }}
+        BASE: ${{ needs.ffmpeg.outputs.base }}
+        BASE_LABEL: ${{ inputs.base || github.event.pull_request.base.ref }}
+      run: |
+        compare=()
+        if [ -n "$BASE" ]; then
+          mkdir -p "$RUNNER_TEMP/base"
+          find "$RUNNER_TEMP/results" -mindepth 1 -maxdepth 1 -name 'static-analysis-base-*' -exec mv -t "$RUNNER_TEMP/base" {} +
+          compare=("$RUNNER_TEMP/base" "$BASE_LABEL")
+        fi
+        {
+          echo "### Static analysis of \`$REF\` (FFmpeg ${{ inputs.ffmpeg || '6.1' }})"
+          echo
+          python3 .github/static-analysis/sa.py summary "$RUNNER_TEMP/results" "${compare[@]}"
+        } >> "$GITHUB_STEP_SUMMARY"
+
+    - name: Artifact
+      if: ${{ needs.ffmpeg.outputs.base != '' }}
+      uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+      with:
+        name: static-analysis-new-ffmpeg-${{ inputs.ffmpeg || '6.1' }}
+        path: ${{ runner.temp }}/results/new-findings.tsv
+        if-no-files-found: ignore
