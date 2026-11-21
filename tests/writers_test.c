@@ -366,6 +366,30 @@ static void vc1_wmv_codec_data(void)
     codec_data_with_first_frame(&WriterVideoWMV, 33, 22);
 }
 
+/* VC-1 with start codes in the packets (m2ts): a frame start code only in
+ * front of a frame without any, not in front of a sequence header. */
+static void vc1_frame_start_code(void)
+{
+    uint8_t extra[] = {1, 2, 3, 4};
+    uint8_t sequence[] = {0, 0, 1, 0x0f, 0xca, 0x86, 0, 0, 1, 0x0e, 0x48, 0, 0, 1, 0x0d, 0x5a};
+    uint8_t entry[] = {0, 0, 1, 0x0e, 0x48, 0, 0, 1, 0x0d, 0x5a};
+    uint8_t frame[] = {0, 0, 1, 0x0d, 0x5a, 0x11};
+    uint8_t bare[] = {0x5a, 0x11, 0x22};
+    WriterAVCallData_t call = packet(sequence, sizeof(sequence), extra, sizeof(extra), capture);
+    WriterVideoVC1.reset();
+    /* PES header, the codec data block, the packet */
+    assert(WriterVideoVC1.writeData(&call) == (int)(14 + 8 + 4 + sizeof(sequence)) && part_count == 3);
+    assert(parts[0].iov_len == 14 && !memcmp(written + 26, sequence, sizeof(sequence)));
+    call = packet(entry, sizeof(entry), extra, sizeof(extra), capture);
+    assert(WriterVideoVC1.writeData(&call) == (int)(14 + sizeof(entry)) && parts[0].iov_len == 14);
+    call = packet(frame, sizeof(frame), extra, sizeof(extra), capture);
+    assert(WriterVideoVC1.writeData(&call) == (int)(14 + sizeof(frame)) && parts[0].iov_len == 14);
+    call = packet(bare, sizeof(bare), extra, sizeof(extra), capture);
+    assert(WriterVideoVC1.writeData(&call) == (int)(14 + 4 + sizeof(bare)));
+    assert(!memcmp(written + 14, "\0\0\1\x0d", 4) && !memcmp(written + 18, bare, sizeof(bare)));
+    WriterVideoVC1.reset();
+}
+
 static void vorbis_headers(void)
 {
     pcmPrivateData_t private = {.codec_id = AV_CODEC_ID_VORBIS, .channels = 2, .sample_rate = 48000,
@@ -768,6 +792,7 @@ int main(void)
     mpeg2_packet_shorter_than_a_start_code();
     mpeg2_sequence_header_after_a_seek();
     vc1_wmv_codec_data();
+    vc1_frame_start_code();
     vorbis_headers();
     vp9_frame();
     vp9_frame_without_pts();
