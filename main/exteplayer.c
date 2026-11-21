@@ -2414,6 +2414,21 @@ int main(int argc, char* argv[])
     
     if(NULL != g_player)
     {
+        int32_t playThreadRuns = 0;
+
+        if (g_player->container && g_player->container->selectedContainer)
+        {
+            g_player->container->selectedContainer->Command(g_player, CONTAINER_STATUS, &playThreadRuns);
+        }
+        if (playThreadRuns)
+        {
+            /* The play thread has not ended within the wait of the stop (a
+             * read the interrupt callback cannot end). It still uses
+             * g_player and FFmpeg: no free, and no exit handlers beside it. */
+            fflush(stdout);
+            fflush(stderr);
+            _exit(0);
+        }
         free(g_player);
     }
     

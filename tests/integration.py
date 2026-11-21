@@ -2255,6 +2255,44 @@ def main():
             assert not any("PLAYBACK_OPEN" in message for message in player.messages), player.messages
             print("PASS stop signal during the open: the player ends as on q")
 
+            # q while the play thread waits in a read that the interrupt
+            # callback cannot end: a FIFO whose writer sends nothing more. The
+            # stop gives up after its wait and the player still ends with 0.
+            stuck = root / "stuck.ts"
+            os.mkfifo(stuck)
+            stuck_data = media.read_bytes()[:len(media.read_bytes()) * 2 // 3]
+            stuck_release = threading.Event()
+
+            def stuck_feed():
+                with open(stuck, "wb") as fifo:
+                    fifo.write(stuck_data)
+                    fifo.flush()
+                    stuck_release.wait(60)
+
+            feeder = threading.Thread(target=stuck_feed, daemon=True)
+            feeder.start()
+            player = Player(args.player, str(stuck))
+            try:
+                assert player.wait("PLAYBACK_PLAY")["sts"] == 0
+                position, deadline = 0, time.monotonic() + 20
+                while position < 7000:  # all that was written has been read
+                    assert time.monotonic() < deadline, position
+                    time.sleep(0.25)
+                    player.command("j")
+                    position = player.wait("J")["ms"]
+                time.sleep(0.5)
+                started = time.monotonic()
+                player.command("q")
+                assert player.wait("PLAYBACK_STOP")["sts"] == 0
+                player.process.wait(timeout=10)
+                assert time.monotonic() - started < 5
+            finally:
+                stuck_release.set()
+                player.stop()
+                feeder.join(timeout=5)
+                stuck.unlink()
+            print("PASS q while the play thread waits in a read: the player ends with code 0")
+
             # The player started by a thread of a helper process: the end of
             # that thread is no reason to stop, the end of the process is.
             helper = (
