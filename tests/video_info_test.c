@@ -20,13 +20,16 @@
 #define ioctl test_ioctl
 #define poll test_poll
 #define fopen test_fopen
+#define dup test_dup
 int test_ioctl(int fd, unsigned long request, ...);
 int test_poll(struct pollfd *fds, nfds_t count, int timeout);
 FILE *test_fopen(const char *path, const char *mode);
+int test_dup(int fd);
 #include "../output/linuxdvb_mipsel.c"
 #undef ioctl
 #undef poll
 #undef fopen
+#undef dup
 
 #define VC(w, h, f, p) \
     "{\"v_c\":{\"id\":1,\"e\":\"V_MPEG4/ISO/AVC\",\"n\":\"und\",\"w\":" #w ",\"h\":" #h \
@@ -55,15 +58,29 @@ static int pts_requests, size_requests, frame_rate_requests, progressive_reads;
 
 /* what the player has sent */
 static char sent[1024];
+static volatile int reports;
 
 /* set in a thread whose polls sleep as the Vu+ driver's do while the decoder buffer is full */
 static __thread int full_decoder;
-static volatile int in_driver_poll;
+/* the same for every thread */
+static volatile int all_full;
+static volatile int in_driver_poll, polls;
+
+/* the copy of videofd the event thread polls (-b) */
+#define EVENT_THREAD_FD_OFFSET 100
+
+int test_dup(int fd)
+{
+    assert(fd == videofd);
+    return fd + EVENT_THREAD_FD_OFFSET;
+}
 
 int test_poll(struct pollfd *fds, nfds_t count, int timeout)
 {
-    assert(count == 1 && fds[0].fd == videofd && fds[0].events == POLLPRI && !timeout);
-    if (full_decoder)
+    assert(count == 1 && fds[0].events == POLLPRI && !timeout);
+    assert(fds[0].fd == videofd || fds[0].fd == videofd + EVENT_THREAD_FD_OFFSET);
+    __sync_fetch_and_add(&polls, 1);
+    if (full_decoder || all_full)
     {
         in_driver_poll = 1;
         usleep(300000);
@@ -128,6 +145,9 @@ int test_ioctl(int fd, unsigned long request, ...)
         *(unsigned int *)argument = driver_frame_rate;
         return 0;
     }
+    /* the pause and continue of a case */
+    if (request == VIDEO_FREEZE || request == VIDEO_CONTINUE)
+        return 0;
     assert(!"unexpected ioctl");
     return -1;
 }
@@ -161,6 +181,8 @@ static void report_video_track(void)
     free(track->Encoding);
     free(track->Name);
     free(track);
+    /* after the message: the event thread may report while a case waits */
+    __sync_fetch_and_add(&reports, 1);
 }
 
 int32_t container_ffmpeg_update_tracks(Context_t *ctx, char *filename, int initial)
@@ -549,6 +571,59 @@ static void position_is_answered_while_the_play_thread_sleeps_in_the_driver_poll
     assert(ms < 100);
 }
 
+static long ms_since(const struct timespec *start)
+{
+    struct timespec now;
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    return (now.tv_sec - start->tv_sec) * 1000 + (now.tv_nsec - start->tv_nsec) / 1000000;
+}
+
+/*
+ * -b: the play thread only fills the write buffer. While the decoder is full
+ * every poll of the driver sleeps (here 300 ms): the frames go to the buffer
+ * without such a poll, and the progressive event the driver has queued is
+ * still read and reported, after the last frame, within half a second plus
+ * one sleep of the poll. In a pause nothing is polled.
+ */
+static void buffered_frames_do_not_wait_for_the_driver_poll(void)
+{
+    struct timespec start, written;
+    long ms;
+    int i, before;
+    isBufferedOutput = true;
+    video_track(1920, 1080, 25000);
+    value_event(16, 1);
+    all_full = 1;
+    clock_gettime(CLOCK_MONOTONIC, &start);
+    for (i = 0; i < 25; i++)
+        frame(1920, 1080, 25000, 575550 + i * 3600);
+    ms = ms_since(&start);
+    clock_gettime(CLOCK_MONOTONIC, &written);
+    fprintf(stderr, "video_info_test: -b, 25 frames into a full decoder in %ld ms\n", ms);
+    assert(ms < 150);
+    for (i = 0; i < 2000 && !reports; i++)
+        usleep(1000);
+    ms = ms_since(&written);
+    fprintf(stderr, "video_info_test: -b, progressive event reported %ld ms after the last frame\n", ms);
+    assert(reports == 1 && videoInfo.progressive == 1);
+    assert(ms < 900);
+    assert(!strcmp(sent, VC(1920, 1080, 25000, 1)));
+    /* a pause: no more polls (one may still sleep in the driver) */
+    assert(!LinuxDvbOutput.Command(&context, OUTPUT_PAUSE, "video"));
+    usleep(400000);
+    before = polls;
+    usleep(1000000);
+    assert(polls == before);
+    /* playing again: the next event is read without a frame */
+    value_event(16, 0);
+    sent[0] = 0;
+    assert(!LinuxDvbOutput.Command(&context, OUTPUT_CONTINUE, "video"));
+    for (i = 0; i < 2000 && reports < 2; i++)
+        usleep(1000);
+    assert(reports == 2 && videoInfo.progressive == 0);
+    assert(!strcmp(sent, VC(1920, 1080, 25000, 0)));
+}
+
 /* The output keeps its state for the process: every case gets a process of its own. */
 static int failed(const char *name, void (*test)(void))
 {
@@ -588,5 +663,7 @@ int main(void)
     failures += failed("decoder_without_pts_is_not_asked", decoder_without_pts_is_not_asked);
     failures += failed("position_is_answered_while_the_play_thread_sleeps_in_the_driver_poll",
                        position_is_answered_while_the_play_thread_sleeps_in_the_driver_poll);
+    failures += failed("buffered_frames_do_not_wait_for_the_driver_poll",
+                       buffered_frames_do_not_wait_for_the_driver_poll);
     return failures != 0;
 }
