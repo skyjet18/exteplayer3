@@ -1779,11 +1779,15 @@ static int64_t doCalcPts(int64_t start_time, const AVRational time_base, int64_t
     if (time_base.den > 0)
     {
         pts = av_rescale(pts, (int64_t)time_base.num * 90000, time_base.den);
+        /* av_rescale() gives INT64_MIN on an overflow: the cue FFmpeg puts
+         * at the end of a WebVTT stream has the PTS INT64_MAX - 2 */
+        if (pts == INT64_MIN)
+            return INVALID_PTS_VALUE;
     }
     
     if (start_time != AV_NOPTS_VALUE)
     {
-        pts -= 90000 * start_time / AV_TIME_BASE;
+        pts = av_sat_sub64(pts, 90000 * start_time / AV_TIME_BASE);
     }
 
     if (pts & 0x8000000000000000ull)
@@ -2943,6 +2947,8 @@ static void FFMPEGThread(Context_t *context)
     int64_t lastAudioDts = -1;
     
     int64_t multiContextLastPts[IPTV_AV_CONTEXT_MAX_NUM] = {INVALID_PTS_VALUE, INVALID_PTS_VALUE};
+    /* the second input (-x) has ended: the playback goes on with the first */
+    int8_t multiContextEnded[IPTV_AV_CONTEXT_MAX_NUM] = {0, 0};
 
     AacPtsDejitter_t aacPtsDejitter;
     aac_pts_dejitter_reset(&aacPtsDejitter);
@@ -3150,6 +3156,7 @@ static void FFMPEGThread(Context_t *context)
                 {
                     readErrorSince[i] = 0;
                     multiContextLastPts[i] = INVALID_PTS_VALUE;
+                    multiContextEnded[i] = 0;
                     if(NULL != avContextTab[i])
                     {
                         int64_t target_us = relative_us;
@@ -3283,7 +3290,7 @@ static void FFMPEGThread(Context_t *context)
         int ffmpegStatus = 0;
         if(!isWaitingForFinish)
         {
-            if(NULL != avContextTab[1])
+            if(NULL != avContextTab[1] && !multiContextEnded[1])
             {
                 if (prev_seek_time_sec >= 0)
                 {
@@ -4218,6 +4225,19 @@ static void FFMPEGThread(Context_t *context)
                     continue;
                 }
                 endError = ffmpegStatus;
+            }
+            if (cAVIdx > 0 && !isWaitingForFinish && ffmpegStatus < 0 &&
+                ffmpegStatus != AVERROR_EXIT && !PlaybackDieNow(0))
+            {
+                /* the end of the second input is not the end of the playback */
+                ffmpeg_printf(10, "context %u ended (%d), going on with context 0\n", cAVIdx, ffmpegStatus);
+                multiContextEnded[cAVIdx] = 1;
+                readStallFired = 0;
+                endError = 0;
+                cAVIdx = 0;
+                wrapped_packet_unref(&packet);
+                releaseMutex(__FILE__, __FUNCTION__,__LINE__);
+                continue;
             }
             if (readStallFired)
             {

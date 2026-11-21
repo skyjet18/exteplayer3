@@ -1477,6 +1477,24 @@ def main():
                 player.stop()
             print("PASS WebVTT: no cue without a time at the end; empty mov_text cues still sent")
 
+            # -x: the end of the second input is not the end of the playback.
+            # Subtitle files with their last cue at 2 s; the video runs 12 s.
+            short_srt = root / "short.srt"
+            short_srt.write_text("1\n00:00:01,000 --> 00:00:02,000\nShort\n", encoding="utf-8")
+            short_vtt = root / "short.vtt"
+            short_vtt.write_text("WEBVTT\n\n00:00:00.000 --> 00:00:02.000\nZero\n", encoding="utf-8")
+            for side in (short_srt, short_vtt):
+                player = Player(args.player, "-x", str(side), str(media))
+                try:
+                    assert player.wait("PLAYBACK_PLAY")["sts"] == 0
+                    started = time.monotonic()
+                    player.process.wait(timeout=30)
+                    elapsed = time.monotonic() - started
+                finally:
+                    player.stop()
+                assert elapsed >= 9, (side.name, elapsed)
+            print("PASS -x: SubRip and WebVTT files that end early, the video plays to its end")
+
             player = Player(args.player, str(worded))
             try:
                 assert len(player.wait("s_l")) == 1
