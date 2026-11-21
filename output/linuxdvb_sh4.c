@@ -147,9 +147,6 @@ int LinuxDvbOpen(Context_t  *context __attribute__((unused)), char * type) {
         {
             linuxdvb_err("failed to open %s - errno %d\n", AUDIODEV, errno);
             linuxdvb_err("%s\n", strerror(errno));
-
-            if (videofd < 0)
-                close(videofd);
             return cERR_LINUXDVB_ERROR;
         }
 
