@@ -121,7 +121,6 @@ static int writeData(void* _call)
         uint32_t sheader_data_len = 0;
         while (pos < data_len && ok)
         {
-            if (pos >= data_len) break;
             pos += 7;
             if (pos >=data_len) break;
             sheader_data_len = 12;

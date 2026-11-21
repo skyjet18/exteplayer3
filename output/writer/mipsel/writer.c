@@ -228,50 +228,6 @@ ssize_t WriteWithRetry(Context_t *context, int pipefd, int fd, void *pDVBMtx, co
     return 0;
 }
 
-ssize_t write_with_retry(int fd, const void *buf, int size)
-{
-    ssize_t ret;
-    int retval = 0;
-    while(size > 0 && 0 == PlaybackDieNow(0))
-    {
-        ret = write(fd, buf, size);
-        if (ret < 0)
-        {
-            switch(errno)
-            {
-                case EINTR:
-                case EAGAIN:
-                    usleep(1000);
-                    continue;
-                default:
-                    retval = -3;
-                    break;
-            }
-            if (retval < 0)
-            {
-                break;
-            }
-        }
-            
-        if (ret < 0)
-        {
-            return ret;
-        }
-        
-        size -= ret;
-        buf += ret;
-        
-        if(size > 0)
-        {
-            if( usleep(1000) )
-            {
-                writer_err("usleep error \n");
-            }
-        }
-    }
-    return 0;
-}
-
 ssize_t writev_with_retry(int fd, const struct iovec *iov, int ic) 
 {
     ssize_t len = 0;

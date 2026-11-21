@@ -69,18 +69,6 @@ int strbuffer_free2( strbuffer_t *buffer )
 }
 
 
-int strbuffer_clear( strbuffer_t *buffer )
-{
-	if( !buffer )
-	{
-		return -1;
-	}
-
-	buffer->pos = buffer->buffer;
-
-	return 0;
-}
-
 int strbuffer_add( strbuffer_t *buffer, const char *str )
 {
 	if( !buffer || !str )

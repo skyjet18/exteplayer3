@@ -191,7 +191,6 @@ static int32_t ffmpeg_read_wrapper_base(void *opaque, uint8_t *buf, int32_t buf_
             update_finish_timeout();
             
             usleep(100000);
-            continue;
         }
     }
     //printf("len [%d] finishTimeout[%d]\n", len, finishTimeout);
