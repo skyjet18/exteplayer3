@@ -111,7 +111,27 @@ static pthread_once_t writerWakeOnce = PTHREAD_ONCE_INIT;
 /* ***************************** */
 /*  Functions                    */
 /* ***************************** */
-ssize_t WriteWithRetry(Context_t *context, int pipefd, int fd, void *pDVBMtx, const void *buf, int size, int is_video)
+/* write() under the guard of the caller: *dropped is set, and nothing is
+ * written, when the caller does not want the data any more. */
+static ssize_t GuardedWrite(const WriteGuard_t *guard, int fd, const void *buf, int size, bool *dropped)
+{
+    ssize_t ret;
+    int error;
+
+    if (guard && !guard->wanted(guard->arg, 1))
+    {
+        *dropped = true;
+        return 0;
+    }
+    ret = write(fd, buf, size);
+    error = errno;
+    if (guard)
+        guard->done(guard->arg);
+    errno = error;
+    return ret;
+}
+
+ssize_t WriteWithRetry(Context_t *context, int pipefd, int fd, const WriteGuard_t *guard, const void *buf, int size, int is_video)
 {
     fd_set rfds;
     fd_set wfds;
@@ -121,9 +141,14 @@ ssize_t WriteWithRetry(Context_t *context, int pipefd, int fd, void *pDVBMtx, co
     int maxFd = pipefd > fd ? pipefd : fd;
     struct timeval tv;
     const bool writeFirst = STB_HISILICON == GetSTBType();
+    bool dropped = false;
 
+    /* The guard is asked before each wait as well: a select() can return
+     * long after the data was dropped (the Broadcom driver of the Vu+ sleeps
+     * in its poll callback up to 5 s when a pause comes meanwhile). */
     while(size > 0 && 0 == PlaybackDieNow(0) && !context->playback->isSeeking &&
-          (is_video || !context->playback->isAudioSwitching))
+          (is_video || !context->playback->isAudioSwitching) &&
+          (!guard || guard->wanted(guard->arg, 0)))
     {
         if (writeFirst)
         {
@@ -131,7 +156,9 @@ ssize_t WriteWithRetry(Context_t *context, int pipefd, int fd, void *pDVBMtx, co
              * writable, so do not wait for that: write, and only when the
              * device takes nothing wait for it or for the wake-up pipe,
              * 50 ms at most. */
-            ret = write(fd, buf, size);
+            ret = GuardedWrite(guard, fd, buf, size, &dropped);
+            if (dropped)
+                break;
             if (ret > 0)
             {
                 size -= ret;
@@ -209,7 +236,9 @@ ssize_t WriteWithRetry(Context_t *context, int pipefd, int fd, void *pDVBMtx, co
         
         if(FD_ISSET(fd, &wfds))
         {
-            ret = write(fd, buf, size);
+            ret = GuardedWrite(guard, fd, buf, size, &dropped);
+            if (dropped)
+                break;
             if (ret < 0)
             {
                 if (errno == EINTR || errno == EAGAIN)

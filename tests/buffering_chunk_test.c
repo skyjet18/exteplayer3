@@ -1,7 +1,9 @@
 #include <assert.h>
+#include <poll.h>
 #include <signal.h>
 #include <sys/select.h>
 #include <sys/socket.h>
+#include <sys/syscall.h>
 #include <semaphore.h>
 #include <stdarg.h>
 #include <stdio.h>
@@ -33,8 +35,11 @@ static int stopped, stop_in_flush, interrupts;
 static pthread_t command_thread;
 static const char *hang;
 
+static sem_t write_release;
+
 /* With stop_in_flush the playback is terminated from another thread right
- * after the flush on the command thread has seen it alive. */
+ * after the flush on the command thread has seen it alive; the write() that
+ * sleeps in the driver returns then. */
 static int8_t stop_requested(void)
 {
     if (stop_in_flush && g_bDuringWrite && pthread_equal(pthread_self(), command_thread))
@@ -42,6 +47,7 @@ static int8_t stop_requested(void)
         stop_in_flush = 0;
         stopped = 1;
         WriteWakeUp();
+        sem_post(&write_release);
         return 0;
     }
     return stopped;
@@ -56,15 +62,56 @@ bool PlaybackDieNowRegisterCallback(PlaybackDieNowCallback callback)
     return true;
 }
 
+/* The device of the Vu+ driver model: its poll callback sleeps in the driver
+ * while the device has no room, up to 5 s when a pause comes meanwhile, and
+ * neither the wake-up pipe, the continue nor a clear ends that sleep (box
+ * test, Uno 4K SE). Here a select() with driver_fd in its write set sleeps
+ * while that device is full until driver_wakes is posted, 2 s at most. */
+static int driver_fd = -1, in_driver;
+static sem_t driver_wakes;
+
+/* The device whose write() sleeps in the driver until write_release is
+ * posted: a write that runs. */
+static int write_sleep_fd = -1, in_device_write;
+
+ssize_t write(int fd, const void *data, size_t size)
+{
+    if (fd >= 0 && fd == __atomic_load_n(&write_sleep_fd, __ATOMIC_SEQ_CST))
+    {
+        __atomic_store_n(&in_device_write, 1, __ATOMIC_SEQ_CST);
+        while (sem_wait(&write_release) && errno == EINTR)
+            ;
+        __atomic_store_n(&in_device_write, 0, __ATOMIC_SEQ_CST);
+    }
+    return syscall(SYS_write, fd, data, size);
+}
+
 /* Replaces select() of the C library: WriteWithRetry() can be interrupted. */
 int select(int count, fd_set *readable, fd_set *writable, fd_set *failed, struct timeval *timeout)
 {
     struct timespec limit;
+    int device = __atomic_load_n(&driver_fd, __ATOMIC_SEQ_CST);
     if (interrupts)
     {
         interrupts--;
         errno = EINTR;
         return -1;
+    }
+    if (writable && device >= 0 && device < count && FD_ISSET(device, writable))
+    {
+        struct pollfd room = {device, POLLOUT, 0};
+        if (poll(&room, 1, 0) == 0)
+        {
+            clock_gettime(CLOCK_REALTIME, &limit);
+            limit.tv_sec += 2;
+            __atomic_store_n(&in_driver, 1, __ATOMIC_SEQ_CST);
+            while (sem_timedwait(&driver_wakes, &limit) && errno == EINTR)
+                ;
+            __atomic_store_n(&in_driver, 0, __ATOMIC_SEQ_CST);
+            limit.tv_sec = 0;
+            limit.tv_nsec = 0;
+            return pselect(count, readable, writable, failed, &limit, NULL);
+        }
     }
     if (timeout)
     {
@@ -127,7 +174,7 @@ static void thread_end(void)
     struct iovec vector = {frame, sizeof(frame)};
     PlaybackHandler_t playback = {0};
     Context_t context = {.playback = &playback};
-    int decoder[2];
+    int decoder[2], room[2];
 
     interrupted_select_is_repeated(&context);
     /* A decoder that takes no data: the write of the thread does not return. */
@@ -145,9 +192,13 @@ static void thread_end(void)
     assert(!LinuxDvbBuffClose(&context));
     wait_for(thread_ended, "LinuxDvbBuffClose has not ended the buffering thread\n");
 
-    /* A flush that waits for the write while the playback is terminated. */
-    assert(!LinuxDvbBuffOpen(&context, "video", decoder[1], NULL));
-    assert(BufferingWriteV(decoder[1], &vector, 1) == sizeof(frame));
+    /* A flush that waits for the write while the playback is terminated:
+     * a device with room whose write() sleeps in the driver. */
+    assert(!pipe(room) && fcntl(room[1], F_SETFL, O_NONBLOCK) >= 0);
+    assert(!sem_init(&write_release, 0, 0));
+    __atomic_store_n(&write_sleep_fd, room[1], __ATOMIC_SEQ_CST);
+    assert(!LinuxDvbBuffOpen(&context, "video", room[1], NULL));
+    assert(BufferingWriteV(room[1], &vector, 1) == sizeof(frame));
     wait_for(thread_writes, "the buffering thread does not write the chunk\n");
     command_thread = pthread_self();
     stop_in_flush = 1;
@@ -157,12 +208,16 @@ static void thread_end(void)
     alarm(0);
     assert(stopped && !stop_in_flush);
     wait_for(thread_ended, "the buffering thread has not ended with the playback\n");
+    __atomic_store_n(&write_sleep_fd, -1, __ATOMIC_SEQ_CST);
 
     /* Not queued any more: the result is the size of the data, as for a queued chunk. */
-    assert(BufferingWriteV(decoder[1], &vector, 1) == sizeof(frame));
+    assert(BufferingWriteV(room[1], &vector, 1) == sizeof(frame));
     assert(!bufferingQueueHead && !bufferingDataSize);
     stopped = 0;
     assert(!LinuxDvbBuffClose(&context));
+    close(room[0]);
+    close(room[1]);
+    sem_destroy(&write_release);
     close(decoder[0]);
     close(decoder[1]);
 }
@@ -344,6 +399,127 @@ static void switch_keeps_video(void)
     close(audio[1]);
 }
 
+static bool thread_in_driver(void)
+{
+    return __atomic_load_n(&in_driver, __ATOMIC_SEQ_CST);
+}
+
+static void fill(int fd)
+{
+    static char block[4096];
+    assert(fcntl(fd, F_SETFL, O_NONBLOCK) >= 0);
+    while (write(fd, block, sizeof(block)) > 0)
+        ;
+    assert(errno == EAGAIN);
+}
+
+/* VIDEO_CLEAR_BUFFER / AUDIO_CLEAR_BUFFER */
+static void clear(int fd)
+{
+    static char block[4096];
+    assert(fcntl(fd, F_SETFL, O_NONBLOCK) >= 0);
+    while (read(fd, block, sizeof(block)) > 0)
+        ;
+    assert(errno == EAGAIN);
+}
+
+static double flush_ms(Context_t *context, int32_t (*flush)(Context_t *))
+{
+    struct timespec start, end;
+    clock_gettime(CLOCK_MONOTONIC, &start);
+    assert(!flush(context));
+    clock_gettime(CLOCK_MONOTONIC, &end);
+    return (end.tv_sec - start.tv_sec) * 1000.0 + (end.tv_nsec - start.tv_nsec) / 1e6;
+}
+
+static void quick(double ms, const char *what)
+{
+    if (ms > 200)
+    {
+        fprintf(stderr, "%s waited %.0f ms for the wait for room in the device\n", what, ms);
+        exit(1);
+    }
+}
+
+/* The first chunk that reaches the device: the one queued after the clear. */
+static void next_chunk_is(int fd, uint8_t value)
+{
+    uint8_t arrived[256];
+    struct pollfd data = {fd, POLLIN, 0};
+    assert(poll(&data, 1, 3000) == 1);
+    assert(read(fd, arrived, sizeof(arrived)) == sizeof(arrived));
+    if (arrived[0] != value)
+    {
+        fprintf(stderr, "chunk %u reached the device after the flush and the clear, not chunk %u\n",
+                arrived[0], value);
+        exit(1);
+    }
+    usleep(50000);
+    assert(read(fd, arrived, sizeof(arrived)) == -1 && errno == EAGAIN);
+}
+
+/* -b on the Vu+: the thread waits for room in a full decoder, a pause comes,
+ * then a seek or an audio switch. The flush returns at once instead of
+ * waiting for the end of the driver's sleep, and the chunk the thread was
+ * waiting with does not reach the device after the flush and the clear that
+ * follows it; the data queued after the clear does. */
+static void flush_while_the_driver_sleeps(void)
+{
+    PlaybackHandler_t playback = {0};
+    Context_t context = {.playback = &playback};
+    uint8_t frame[256] = {0};
+    struct iovec vector = {frame, sizeof(frame)};
+    int video[2], audio[2];
+
+    assert(!pipe(video) && !pipe(audio) && !sem_init(&driver_wakes, 0, 0));
+    fill(video[1]);
+    fill(audio[1]);
+    signal(SIGALRM, hung);
+    stopped = 0;
+    maxBufferingDataSize = 65536;
+    playback.stamp = (void *)1;
+    LinuxDvbBuffSetStamp((void *)1);
+    assert(!LinuxDvbBuffOpen(&context, "video", video[1], NULL));
+    assert(!LinuxDvbBuffOpen(&context, "audio", audio[1], NULL));
+
+    /* a seek: new stamp, flush, clear, the data of the new position */
+    __atomic_store_n(&driver_fd, video[1], __ATOMIC_SEQ_CST);
+    frame[0] = 1;
+    assert(BufferingWriteV(video[1], &vector, 1) == sizeof(frame));
+    wait_for(thread_in_driver, "the buffering thread does not wait for room in the video device\n");
+    playback.isSeeking = 1;
+    playback.stamp = (void *)2;
+    quick(flush_ms(&context, LinuxDvbBuffFlush), "LinuxDvbBuffFlush");
+    clear(video[0]);
+    LinuxDvbBuffSetStamp((void *)2);
+    playback.isSeeking = 0;
+    frame[0] = 2;
+    assert(BufferingWriteV(video[1], &vector, 1) == sizeof(frame));
+    sem_post(&driver_wakes);
+    next_chunk_is(video[0], 2);
+
+    /* a DASH audio switch: the audio is flushed and cleared */
+    __atomic_store_n(&driver_fd, audio[1], __ATOMIC_SEQ_CST);
+    frame[0] = 3;
+    assert(BufferingWriteV(audio[1], &vector, 1) == sizeof(frame));
+    wait_for(thread_in_driver, "the buffering thread does not wait for room in the audio device\n");
+    quick(flush_ms(&context, LinuxDvbBuffFlushAudio), "LinuxDvbBuffFlushAudio");
+    clear(audio[0]);
+    frame[0] = 4;
+    assert(BufferingWriteV(audio[1], &vector, 1) == sizeof(frame));
+    sem_post(&driver_wakes);
+    next_chunk_is(audio[0], 4);
+
+    __atomic_store_n(&driver_fd, -1, __ATOMIC_SEQ_CST);
+    LinuxDvbBuffSetStamp(NULL);
+    assert(!LinuxDvbBuffClose(&context));
+    close(video[0]);
+    close(video[1]);
+    close(audio[0]);
+    close(audio[1]);
+    sem_destroy(&driver_wakes);
+}
+
 static void close_and_open(void)
 {
     PlaybackHandler_t playback = {0};
@@ -388,5 +564,6 @@ int main(void)
     close_and_open();
     segments_written_one_by_one();
     switch_keeps_video();
+    flush_while_the_driver_sleeps();
     return 0;
 }

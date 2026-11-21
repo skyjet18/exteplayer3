@@ -16,13 +16,13 @@ bool PlaybackDieNowRegisterCallback(PlaybackDieNowCallback callback)
     return true;
 }
 
-ssize_t WriteWithRetry(Context_t *context, int pipefd, int fd, void *mutex, const void *data,
+ssize_t WriteWithRetry(Context_t *context, int pipefd, int fd, const WriteGuard_t *guard, const void *data,
                        int size, int is_video)
 {
     (void)context;
     (void)pipefd;
     (void)fd;
-    (void)mutex;
+    (void)guard;
     (void)data;
     (void)is_video;
     return size;
