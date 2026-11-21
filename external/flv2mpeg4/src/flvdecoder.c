@@ -507,6 +507,11 @@ int decode_picture_header(BR* p, PICTURE* picture)
 //	printf("deblocking flag: %d\n", tmp);
 
 	tmp = get_bits(p, 5);
+	/* QUANT 0 is not allowed; the conversion divides by its DC scale */
+	if (tmp == 0)
+	{
+		return -1;
+	}
 	picture->qscale = tmp;
 //	printf("qscale: %d\n", tmp);
 	

@@ -8,7 +8,9 @@
  *   macroblock, so the conversion is exact;
  * - pictures of the FLV1 encoder of libavcodec (version 1, 7 and 11 bit
  *   escapes) with spatial masking, which moves the quantiser per macroblock,
- *   I and P pictures. The DC values are rounded by the conversion here. */
+ *   I and P pictures. The DC values are rounded by the conversion here;
+ * - DQUANT that takes the quantiser below 1 or above 31 (clamped as in the
+ *   H.263 decoder) and a header with the quantiser 0 (picture dropped). */
 
 #include <assert.h>
 #include <math.h>
@@ -192,20 +194,42 @@ static double check(const char *name, AVPacket **packets, int count, int width, 
 
 typedef struct
 {
-    uint8_t buf[1024];
+    uint8_t *buf;
+    int size;
     int bits;
 } Bits;
+
+static void bits_init(Bits *b, int size)
+{
+    b->buf = calloc(1, size);
+    b->size = size;
+    b->bits = 0;
+    assert(b->buf);
+}
 
 static void put(Bits *b, int count, unsigned value)
 {
     int i;
     for (i = count - 1; i >= 0; i--)
     {
-        assert(b->bits < (int)sizeof(b->buf) * 8);
+        assert(b->bits < b->size * 8);
         if (value >> i & 1)
             b->buf[b->bits >> 3] |= 0x80 >> (b->bits & 7);
         b->bits++;
     }
+}
+
+/* the bits as a packet with two zero bytes behind them; frees the bits */
+static AVPacket *bits_packet(Bits *b)
+{
+    AVPacket *pkt = av_packet_alloc();
+    assert(pkt && av_new_packet(pkt, (b->bits + 7) / 8 + 2) == 0);
+    memcpy(pkt->data, b->buf, (b->bits + 7) / 8);
+    memset(pkt->data + (b->bits + 7) / 8, 0, 2);
+    pkt->flags |= AV_PKT_FLAG_KEY;
+    free(b->buf);
+    b->buf = NULL;
+    return pkt;
 }
 
 /* intra DC and the AC coefficients {run, level}, every one an 8 bit escape */
@@ -222,42 +246,47 @@ static void put_block(Bits *b, int dc, const int (*ac)[2], int count)
     }
 }
 
-/* 32x32, four intra macroblocks: quantiser 10, then DQUANT +2, -1, +1.
- * Luma DC * 8 is a multiple of the MPEG-4 DC scale of the macroblock
- * (18, 20, 19, 20) and chroma DC * 8 of its chroma DC scale (11, 12, 12, 12). */
-static AVPacket *escaped_picture(void)
+/* the header of a version 0 I picture */
+static void put_header(Bits *b, int width, int height, int qscale)
 {
-    /* DQUANT code per macroblock: none, +2, -1, +1 */
-    static const int dquant_code[4] = {-1, 3, 0, 2};
-    static const int dc[4][6] = {
-        {90, 99, 108, 117, 121, 110},
-        {100, 105, 110, 115, 126, 120},
-        {95, 114, 76, 133, 117, 129},
-        {120, 125, 80, 85, 123, 132},
-    };
+    put(b, 17, 1);       /* picture start code */
+    put(b, 5, 0);        /* version 0: H.263 escapes */
+    put(b, 8, 0);        /* temporal reference */
+    if (width < 256 && height < 256)
+    {
+        put(b, 3, 0);    /* 8 bit size */
+        put(b, 8, width);
+        put(b, 8, height);
+    }
+    else
+    {
+        put(b, 3, 1);    /* 16 bit size */
+        put(b, 16, width);
+        put(b, 16, height);
+    }
+    put(b, 2, 0);        /* I picture */
+    put(b, 1, 0);        /* deblocking */
+    put(b, 5, qscale);   /* quantiser */
+    put(b, 1, 0);        /* PEI */
+}
+
+/* 32x32, four intra macroblocks with the quantiser of the header, then the
+ * DQUANT codes of the macroblocks 1-3 (0: -1, 1: -2, 2: +1, 3: +2) */
+static AVPacket *escaped_picture(int qscale, const int *dquant_code, const int (*dc)[6])
+{
     static const int ac_a[][2] = {{0, -12}, {2, 9}, {1, -5}};
     static const int ac_b[][2] = {{1, -10}, {0, 6}, {4, -3}};
     static const int ac_c[][2] = {{0, -7}, {0, -6}, {3, 4}, {2, -2}};
     const int (*ac[3])[2] = {ac_a, ac_b, ac_c};
     const int ac_count[3] = {3, 3, 4};
     Bits b;
-    AVPacket *pkt = av_packet_alloc();
     int mb, n;
 
-    memset(&b, 0, sizeof(b));
-    put(&b, 17, 1);      /* picture start code */
-    put(&b, 5, 0);       /* version 0: H.263 escapes */
-    put(&b, 8, 0);       /* temporal reference */
-    put(&b, 3, 0);       /* 8 bit size */
-    put(&b, 8, 32);
-    put(&b, 8, 32);
-    put(&b, 2, 0);       /* I picture */
-    put(&b, 1, 0);       /* deblocking */
-    put(&b, 5, 10);      /* quantiser */
-    put(&b, 1, 0);       /* PEI */
+    bits_init(&b, 1024);
+    put_header(&b, 32, 32, qscale);
     for (mb = 0; mb < 4; mb++)
     {
-        int code = dquant_code[mb];
+        int code = mb ? dquant_code[mb - 1] : -1;
         if (code < 0)
             put(&b, 3, 3);   /* MCBPC: intra, both chroma blocks coded */
         else
@@ -268,11 +297,22 @@ static AVPacket *escaped_picture(void)
         for (n = 0; n < 6; n++)
             put_block(&b, dc[mb][n], ac[(mb + n) % 3], ac_count[(mb + n) % 3]);
     }
-    assert(pkt && av_new_packet(pkt, (b.bits + 7) / 8 + 2) == 0);
-    memcpy(pkt->data, b.buf, (b.bits + 7) / 8);
-    memset(pkt->data + (b.bits + 7) / 8, 0, 2);
-    pkt->flags |= AV_PKT_FLAG_KEY;
-    return pkt;
+    return bits_packet(&b);
+}
+
+/* quantiser 10, then DQUANT +2, -1, +1. Luma DC * 8 is a multiple of the
+ * MPEG-4 DC scale of the macroblock (18, 20, 19, 20) and chroma DC * 8 of
+ * its chroma DC scale (11, 12, 12, 12). */
+static AVPacket *escaped_picture_q10(void)
+{
+    static const int dquant_code[3] = {3, 0, 2};
+    static const int dc[4][6] = {
+        {90, 99, 108, 117, 121, 110},
+        {100, 105, 110, 115, 126, 120},
+        {95, 114, 76, 133, 117, 129},
+        {120, 125, 80, 85, 123, 132},
+    };
+    return escaped_picture(10, dquant_code, dc);
 }
 
 static void fill_picture(AVFrame *frame, int t)
@@ -355,13 +395,77 @@ static int encode_pictures(AVPacket **packets, int width, int height, int pictur
     return count;
 }
 
+/* converts one packet from a buffer of exactly its size, so that ASan sees
+ * every read behind its end; returns what the converter returns and the
+ * number of MPEG-4 packets it wrote in *written */
+static int convert_exact(const uint8_t *data, int size, int width, int height, int *written)
+{
+    flv2mpeg4_CTX *ctx = flv2mpeg4_init_ctx(NULL, width, height, write_packet, write_extradata);
+    uint8_t *copy = malloc(size);
+    int ret;
+
+    assert(ctx && copy);
+    memcpy(copy, data, size);
+    extradata_size = 0;
+    converted_count = 0;
+    assert(flv2mpeg4_prepare_extra_data(ctx) == 0);
+    ret = flv2mpeg4_process_flv_packet(ctx, 0, copy, size, 0);
+    flv2mpeg4_release_ctx(&ctx);
+    free(copy);
+    *written = converted_count;
+    free_packets(converted, converted_count);
+    converted_count = 0;
+    return ret;
+}
+
+/* DQUANT that leaves 1..31 is clamped by the H.263 decoder; the conversion
+ * follows it instead of dividing by the DC scale 0 or reading behind the
+ * DC scale tables. A header with the quantiser 0 drops the picture. */
+static void quantiser_limits(void)
+{
+    /* 2, then -2, -1, +1: 1, 1, 2 (0, -1, 0 without the clamp); DC scale 8 */
+    static const int low_code[3] = {1, 0, 2};
+    static const int low_dc[4][6] = {
+        {90, 99, 108, 117, 121, 110},
+        {100, 105, 110, 115, 126, 120},
+        {95, 114, 76, 133, 117, 129},
+        {120, 125, 80, 85, 123, 132},
+    };
+    /* 30, then +2, +2, -1: 31, 31, 30 (32, 34, 33 without the clamp).
+     * Luma DC * 8 is a multiple of 44 (30) or 46 (31), chroma DC * 8 one
+     * of 24 or 25. */
+    static const int high_code[3] = {3, 3, 0};
+    static const int high_dc[4][6] = {
+        {66, 77, 88, 99, 120, 123},
+        {92, 115, 69, 46, 100, 125},
+        {46, 69, 92, 115, 75, 50},
+        {110, 121, 55, 44, 111, 99},
+    };
+    AVPacket *pkt;
+    int written;
+
+    pkt = escaped_picture(2, low_code, low_dc);
+    check("quantiser below 1", &pkt, 1, 32, 32, 1, 48.0);
+    av_packet_free(&pkt);
+
+    pkt = escaped_picture(30, high_code, high_dc);
+    check("quantiser above 31", &pkt, 1, 32, 32, 1, 48.0);
+    av_packet_free(&pkt);
+
+    pkt = escaped_picture(0, low_code, low_dc);
+    convert_exact(pkt->data, pkt->size, 32, 32, &written);
+    printf("quantiser 0: %d MPEG-4 packets\n", written);
+    assert(written == 0);
+    av_packet_free(&pkt);
+}
+
 int main(void)
 {
     AVPacket *packets[MAX_PACKETS];
     int count;
     double lowest;
 
-    packets[0] = escaped_picture();
+    packets[0] = escaped_picture_q10();
     lowest = check("8 bit escapes", packets, 1, 32, 32, 1, 48.0);
     free_packets(packets, 1);
     printf("8 bit escapes: lowest PSNR %.2f dB\n", lowest);
@@ -371,6 +475,8 @@ int main(void)
     lowest = check("FLV1 encoder", packets, count, 96, 64, 255, 36.0);
     free_packets(packets, count);
     printf("FLV1 encoder: lowest PSNR %.2f dB\n", lowest);
+
+    quantiser_limits();
 
     printf("flv2mpeg4 tests passed\n");
     return 0;
