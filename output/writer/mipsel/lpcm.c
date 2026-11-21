@@ -192,6 +192,16 @@ static int32_t writeData(void *_call)
             free(p_frame_buffer);
         }
         p_frame_buffer = malloc(i_frame_size);
+        if (!p_buffer || !p_frame_buffer)
+        {
+            /* both again with the next packet */
+            lpcm_err("allocating the frame buffers failed\n");
+            free(p_buffer);
+            p_buffer = NULL;
+            free(p_frame_buffer);
+            p_frame_buffer = NULL;
+            return 0;
+        }
         i_buffer_used = 0;
         i_frame_num = 0;
         i_bitspersample = 16;

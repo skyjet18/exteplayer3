@@ -57,6 +57,12 @@ static int flv2mpeg4_context_write_extradata_cb(void *usr_data, int width, int h
     
     free(ctx->extradata);
     ctx->extradata = malloc(extradatasize);
+    if (!ctx->extradata)
+    {
+        ffmpeg_err("cannot allocate the MPEG-4 codec data\n");
+        ctx->extradatasize = 0;
+        return -1;
+    }
     memcpy(ctx->extradata, extradata, extradatasize);
     ctx->extradatasize = extradatasize;
     

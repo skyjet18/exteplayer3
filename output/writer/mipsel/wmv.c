@@ -126,6 +126,13 @@ static int writeData(void* _call)
  
         videocodecdata.length = 33;
         uint8_t *data = videocodecdata.data = malloc(videocodecdata.length);
+        if (!data)
+        {
+            /* the codec data again with the next frame */
+            wmv_err("allocating codec data failed\n");
+            initialHeader = 1;
+            return 0;
+        }
         memset(videocodecdata.data, 0, videocodecdata.length);
         data += 18;
         /* width */

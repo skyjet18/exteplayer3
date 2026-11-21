@@ -5734,6 +5734,12 @@ static int32_t update_tracks(Context_t *context, char *filename, int32_t initial
                         const char marker[] = "LATM";
                         track.aacbuflen = sizeof(marker)/sizeof(char);
                         track.aacbuf = malloc(track.aacbuflen);
+                        if (!track.aacbuf)
+                        {
+                            ffmpeg_err("cannot allocate the AAC header\n");
+                            releaseMutex(__FILE__, __FUNCTION__,__LINE__);
+                            return cERR_CONTAINER_FFMPEG_NOMEM;
+                        }
                         memcpy(track.aacbuf, marker, track.aacbuflen);
                         
                         ffmpeg_printf(10, "AV_CODEC_ID_AAC_LATM no extradata ACC header should be available in each frame\n");
@@ -5751,6 +5757,12 @@ static int32_t update_tracks(Context_t *context, char *filename, int32_t initial
                             const char marker[] = "ADTS";
                             track.aacbuflen = sizeof(marker)/sizeof(char);
                             track.aacbuf = malloc(track.aacbuflen);
+                            if (!track.aacbuf)
+                            {
+                                ffmpeg_err("cannot allocate the AAC header\n");
+                                releaseMutex(__FILE__, __FUNCTION__,__LINE__);
+                                return cERR_CONTAINER_FFMPEG_NOMEM;
+                            }
                             memcpy(track.aacbuf, marker, track.aacbuflen);
                             
                             ffmpeg_printf(10, "AV_CODEC_ID_AAC no extradata ACC header should be available in each frame\n");
@@ -5811,6 +5823,12 @@ static int32_t update_tracks(Context_t *context, char *filename, int32_t initial
 
                             if (off >= 0 && chan_config == 0) { // channel config must be send in the inband PCE
                                 track.aacbuf = malloc(AAC_HEADER_LENGTH + MAX_PCE_SIZE);
+                                if (!track.aacbuf)
+                                {
+                                    ffmpeg_err("cannot allocate the AAC header\n");
+                                    releaseMutex(__FILE__, __FUNCTION__,__LINE__);
+                                    return cERR_CONTAINER_FFMPEG_NOMEM;
+                                }
 
                                 GetBitContext gb;
                                 PutBitContext pb;
@@ -5825,6 +5843,12 @@ static int32_t update_tracks(Context_t *context, char *filename, int32_t initial
                             else {
                                 track.aacbuflen = AAC_HEADER_LENGTH;
                                 track.aacbuf = malloc(AAC_HEADER_LENGTH+1);
+                                if (!track.aacbuf)
+                                {
+                                    ffmpeg_err("cannot allocate the AAC header\n");
+                                    releaseMutex(__FILE__, __FUNCTION__,__LINE__);
+                                    return cERR_CONTAINER_FFMPEG_NOMEM;
+                                }
                             }
 
                             // https://wiki.multimedia.cx/index.php/ADTS
@@ -5882,6 +5906,12 @@ static int32_t update_tracks(Context_t *context, char *filename, int32_t initial
                         
                         track.aacbuflen = 104 + get_codecpar(stream)->extradata_size;
                         track.aacbuf = malloc(track.aacbuflen);
+                        if (!track.aacbuf)
+                        {
+                            ffmpeg_err("cannot allocate the AAC header\n");
+                            releaseMutex(__FILE__, __FUNCTION__,__LINE__);
+                            return cERR_CONTAINER_FFMPEG_NOMEM;
+                        }
                         memset (track.aacbuf, 0, track.aacbuflen);
                         
                         uint8_t ASF_Stream_Properties_Object[16] =

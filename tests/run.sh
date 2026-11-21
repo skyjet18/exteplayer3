@@ -173,6 +173,7 @@ timeout 20 "$tmp/audio_decode_error"
 sources="tests/writers_alloc_test.c tools/debug.c output/writer/common/pes.c output/writer/common/misc.c"
 sources="$sources output/writer/common/writer.c"
 sources="$sources output/writer/mipsel/h264.c output/writer/mipsel/h265.c output/writer/mipsel/aac.c"
+sources="$sources output/writer/mipsel/vc1.c output/writer/mipsel/wmv.c output/writer/mipsel/pcm.c output/writer/mipsel/lpcm.c"
 sources="$sources external/ffmpeg/src/latmenc.c external/ffmpeg/src/mpeg4audio.c external/ffmpeg/src/bitstream.c"
 $cc -g -fsanitize=address,undefined -ffunction-sections -fdata-sections -Dmalloc=test_malloc \
     -Wno-deprecated-declarations -Dff_mpeg4audio_channels=exteplayer3_mpeg4audio_channels \

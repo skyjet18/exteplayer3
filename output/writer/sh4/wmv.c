@@ -219,6 +219,11 @@ static int writeData(void* _call)
             }
 
             PacketStart = malloc(call->len + HeaderLength);
+            if (!PacketStart)
+            {
+                wmv_err("allocating the packet failed\n");
+                break;
+            }
             memcpy (PacketStart, PesHeader, HeaderLength);
             memcpy (PacketStart + HeaderLength, call->data + Position, PacketLength);
 
