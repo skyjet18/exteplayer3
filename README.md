@@ -745,6 +745,23 @@ capture file, fills it, checks recovery after draining, and quits while it is
 full again. This exercises the real writer retry/cancellation path, not a DVB
 driver or physical display. Existing software/export checks remain separate.
 
+The CPU time of a waiting player is measured with the same two isolated, absent
+output paths compiled in; they become FIFOs that the test stops draining while
+the player is paused, as paused decoders take no more data:
+
+```sh
+python3 tests/idle_cpu.py \
+  --player /path/to/test-output/exteplayer3-capture \
+  --ffmpeg "$FFMPEG_BUILD/ffmpeg" \
+  --audio-output /path/to/test-output/audio.pes \
+  --video-output /path/to/test-output/video.pes
+```
+
+It reports CPU time and voluntary context switches playing and paused (without
+and with `-b 1`, and with `EP3_OUTPUT_PACING_MS`), and fails when a paused
+player wakes up more than 150 times in five seconds, or when data does not
+flow again soon after the continue or the quit takes long.
+
 The seven UBSan harnesses cover manager ownership/locking, custom IO and selection,
 PES/H.264/writev, bounded DVB busy-open and PCM recovery, timestamp continuity,
 atomic FIFO framing/backpressure/reconnect/path validation, and playback
