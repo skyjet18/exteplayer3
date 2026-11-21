@@ -129,7 +129,9 @@ ssize_t WriteWithRetry(Context_t *context, int pipefd, int fd, void *pDVBMtx, co
             }
             if (ret < 0 && errno != EINTR && errno != EAGAIN)
             {
-                break;
+                /* a hard error of the device: the caller drops the rest */
+                writer_err("write failed: %s\n", strerror(errno));
+                return -1;
             }
 
             FD_ZERO(&rfds);
@@ -141,7 +143,8 @@ ssize_t WriteWithRetry(Context_t *context, int pipefd, int fd, void *pDVBMtx, co
             retval = select(maxFd + 1, &rfds, &wfds, NULL, &tv);
             if (retval < 0 && errno != EINTR)
             {
-                break;
+                writer_err("select failed: %s\n", strerror(errno));
+                return -1;
             }
             if (retval > 0 && FD_ISSET(pipefd, &rfds))
             {
@@ -176,7 +179,8 @@ ssize_t WriteWithRetry(Context_t *context, int pipefd, int fd, void *pDVBMtx, co
                 /* interrupted by a signal: wait again for the rest */
                 continue;
             }
-            break;
+            writer_err("select failed: %s\n", strerror(errno));
+            return -1;
         }
         
         //if (retval == 0)
@@ -197,21 +201,13 @@ ssize_t WriteWithRetry(Context_t *context, int pipefd, int fd, void *pDVBMtx, co
             ret = write(fd, buf, size);
             if (ret < 0)
             {
-                switch(errno)
+                if (errno == EINTR || errno == EAGAIN)
                 {
-                    case EINTR:
-                    case EAGAIN:
-                        continue;
-                    default:
-                        retval = -3;
-                        break;
+                    continue;
                 }
-                if (retval < 0)
-                {
-                    break;
-                }
-                
-                return ret;
+                /* a hard error of the device: the caller drops the rest */
+                writer_err("write failed: %s\n", strerror(errno));
+                return -1;
             }
             else if (ret == 0)
             {
