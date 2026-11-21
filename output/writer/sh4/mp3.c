@@ -86,7 +86,7 @@ static int writeData(void* _call)
         return 0;
     }
 
-    mp3_printf(10, "AudioPts %lld\n", call->Pts);
+    mp3_printf(10, "AudioPts %llu\n", call->Pts);
 
     if ((call->data == NULL) || (call->len <= 0))
     {

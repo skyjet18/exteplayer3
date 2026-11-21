@@ -127,8 +127,8 @@ static int writeData(void* _call)
         return 0;
     }
 
-    vc1_printf(10, "VideoPts %lld\n", call->Pts);
-    vc1_printf(10, "Got Private Size %d\n", call->private_size);
+    vc1_printf(10, "VideoPts %llu\n", call->Pts);
+    vc1_printf(10, "Got Private Size %u\n", call->private_size);
 
     if (initialHeader)
     {
@@ -139,8 +139,8 @@ static int writeData(void* _call)
         struct iovec    iov[2];
 
         vc1_printf(10, "Framerate: %u\n", call->FrameRate);
-        vc1_printf(10, "biWidth: %d\n",   call->Width);
-        vc1_printf(10, "biHeight: %d\n",  call->Height);
+        vc1_printf(10, "biWidth: %u\n",   call->Width);
+        vc1_printf(10, "biHeight: %u\n",  call->Height);
         
         crazyFramerate = ((10000000.0 / call->FrameRate) * 1000.0);
         vc1_printf(10, "crazyFramerate: %u\n", crazyFramerate);
@@ -202,7 +202,7 @@ static int writeData(void* _call)
 
             int32_t Remaining = call->len - Position - PacketLength;
 
-            vc1_printf(20, "PacketLength=%d, Remaining=%d, Position=%d\n", PacketLength, Remaining, Position);
+            vc1_printf(20, "PacketLength=%d, Remaining=%d, Position=%u\n", PacketLength, Remaining, Position);
 
             uint8_t PesHeader[PES_MAX_HEADER_SIZE];
             int32_t HeaderLength = InsertPesHeader (PesHeader, PacketLength, VC1_VIDEO_PES_START_CODE, call->Pts, 0);

@@ -179,7 +179,7 @@ static int _writeData(void *_call, int type)
     
     unsigned char PesHeader[PES_MAX_HEADER_SIZE];
 
-    aac_printf(10, "AudioPts %lld\n", call->Pts);
+    aac_printf(10, "AudioPts %llu\n", call->Pts);
 
     unsigned int  HeaderLength = InsertPesHeader (PesHeader, call->len, MPEG_AUDIO_PES_START_CODE, call->Pts, 0);
 
@@ -228,7 +228,7 @@ static int writeDataADTS(void *_call)
     uint8_t *pExtraData = &PesHeader[headerSize];
 
     needInitHeader = false;
-    aac_printf(10, "AudioPts %lld\n", call->Pts);
+    aac_printf(10, "AudioPts %llu\n", call->Pts);
     if (call->private_data == NULL) {
         aac_printf(10, "private_data = NULL\n");
         memcpy (pExtraData, DefaultAACHeader, AAC_HEADER_LENGTH);
@@ -282,7 +282,7 @@ static int writeDataLATM(void *_call)
         return _writeData(_call, 1);
     }
 
-    aac_printf(10, "AudioPts %lld\n", call->Pts);
+    aac_printf(10, "AudioPts %llu\n", call->Pts);
     
     if (!pLATMCtx)
     {

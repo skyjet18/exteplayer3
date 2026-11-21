@@ -90,11 +90,11 @@ static int writeData(void *_call)
 
     if (call->data == NULL || call->len <= 0 || call->fd < 0 || \
         !call->private_data || call->private_size != sizeof(pcmPrivateData_t)) {
-        bcma_err("Wrong input call: %p, data: %p, len: %d, fd: %d\n", call, call->data, call->len, call->fd);
+        bcma_err("Wrong input call: %p, data: %p, len: %u, fd: %d\n", call, call->data, call->len, call->fd);
         return 0;
     }
 
-    bcma_printf(10, "AudioPts %lld\n", call->Pts);
+    bcma_printf(10, "AudioPts %llu\n", call->Pts);
     uint8_t PesHeader[PES_MAX_HEADER_SIZE + 22];
     uint32_t i;
     uint32_t private_size = 0;
@@ -108,7 +108,7 @@ static int writeData(void *_call)
     if (pcmPrivateData->codec_id == AV_CODEC_ID_VORBIS) {
 
         if (avpriv_split_xiph_headers(pcmPrivateData->private_data, pcmPrivateData->private_size, 30, vorbis_header_start, vorbis_header_len) < 0) {
-            bcma_err("Wrong VORBIS codec data : %p, len: %d\n", pcmPrivateData->private_data, pcmPrivateData->private_size);
+            bcma_err("Wrong VORBIS codec data : %p, len: %u\n", pcmPrivateData->private_data, pcmPrivateData->private_size);
             return -1;
         }
 

@@ -88,7 +88,7 @@ static int writeData(void* _call)
         return 0;
     }
 
-    mpeg2_printf(10, "VideoPts %lld\n", call->Pts);
+    mpeg2_printf(10, "VideoPts %llu\n", call->Pts);
 
     if ((call->data == NULL) || (call->len <= 0))
     {
@@ -109,7 +109,7 @@ static int writeData(void* _call)
 
         int32_t Remaining = call->len - Position - PacketLength;
 
-        mpeg2_printf(20, "PacketLength=%d, Remaining=%d, Position=%d\n", PacketLength, Remaining, Position);
+        mpeg2_printf(20, "PacketLength=%d, Remaining=%d, Position=%u\n", PacketLength, Remaining, Position);
 
         struct iovec iov[2];
         iov[0].iov_base = PesHeader;

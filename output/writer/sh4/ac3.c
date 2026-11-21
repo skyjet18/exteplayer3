@@ -87,7 +87,7 @@ static int writeData(void* _call)
         return 0;
     }
 
-    ac3_printf(10, "AudioPts %lld\n", call->Pts);
+    ac3_printf(10, "AudioPts %llu\n", call->Pts);
 
     if ((call->data == NULL) || (call->len <= 0))
     {

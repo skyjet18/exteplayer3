@@ -147,10 +147,10 @@ static int writeData(void* _call)
         return 0;
     }
 
-    divx_printf(10, "AudioPts %lld\n", call->Pts);
+    divx_printf(10, "AudioPts %llu\n", call->Pts);
 
     usecPerFrame = 1000000000 / call->FrameRate;
-    divx_printf(10, "Microsecends per frame = %d\n", usecPerFrame);
+    divx_printf(10, "Microsecends per frame = %u\n", usecPerFrame);
 
     memset(FakeHeaders, 0, sizeof(FakeHeaders));
 

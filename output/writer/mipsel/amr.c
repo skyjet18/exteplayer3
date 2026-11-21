@@ -89,11 +89,11 @@ static int writeData(void *_call)
     }
 
     if (call->data == NULL || call->len <= 0 || call->fd < 0) {
-        amr_err("call error wrong data call: %p, data: %p, len: %d, fd: %d\n", call, call->data, call->len, call->fd);
+        amr_err("call error wrong data call: %p, data: %p, len: %u, fd: %d\n", call, call->data, call->len, call->fd);
         return 0;
     }
     
-    amr_printf(10, "AudioPts %lld\n", call->Pts);
+    amr_printf(10, "AudioPts %llu\n", call->Pts);
 
     /* The AMR decoder specific box (size, 'damr', 9 bytes of data) goes in
      * front of each frame behind a 4 byte length that counts the box and the

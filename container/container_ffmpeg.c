@@ -5146,12 +5146,12 @@ int32_t container_ffmpeg_update_tracks(Context_t *context, char *filename, int32
         uint32_t *stream_index = NULL;
         uint32_t nb_stream_indexes = 0;
         
-        ffmpeg_printf(1, "cAVIdx[%d]: number of streams: %d\n", cAVIdx, avContext->nb_streams);
+        ffmpeg_printf(1, "cAVIdx[%u]: number of streams: %u\n", cAVIdx, avContext->nb_streams);
         
         if (avContext->nb_programs > 0)
         {
             uint32_t n = 0;
-            ffmpeg_printf(1, "cAVIdx[%d]: stream with multi programs: num of programs %d\n", cAVIdx, avContext->nb_programs);
+            ffmpeg_printf(1, "cAVIdx[%u]: stream with multi programs: num of programs %u\n", cAVIdx, avContext->nb_programs);
             AVProgram *selected = select_program(avContext);
             if (!selected)
             {
@@ -5199,7 +5199,7 @@ int32_t container_ffmpeg_update_tracks(Context_t *context, char *filename, int32
                 
                 if (!isStreamFromSelProg) {
                     stream->discard = AVDISCARD_ALL;
-                    ffmpeg_printf(1, "cAVIdx[%d]: add DISCARD flag to  stream index[%d]\n", cAVIdx, stream->index);
+                    ffmpeg_printf(1, "cAVIdx[%u]: add DISCARD flag to  stream index[%d]\n", cAVIdx, stream->index);
                     continue; // skip this stream
                 }
             }
@@ -5289,7 +5289,7 @@ int32_t container_ffmpeg_update_tracks(Context_t *context, char *filename, int32
                     ffmpeg_printf(10, "frame_rate den [%d]\n", rateRational.den);
 
                     ffmpeg_printf(10, "frame_rate     [%u]\n", track.frame_rate);
-                    ffmpeg_printf(10, "TimeScale      [%d]\n", track.TimeScale);
+                    ffmpeg_printf(10, "TimeScale      [%u]\n", track.TimeScale);
 
                     track.Name      = "und";
                     track.Encoding  = encoding;
@@ -5309,7 +5309,7 @@ int32_t container_ffmpeg_update_tracks(Context_t *context, char *filename, int32
                         {
                             track.avCodecCtx = wrapped_avcodec_get_context(cAVIdx, stream);
                         }
-                        ffmpeg_printf(1, "cAVIdx[%d]: MANAGER_ADD track VIDEO\n", cAVIdx);
+                        ffmpeg_printf(1, "cAVIdx[%u]: MANAGER_ADD track VIDEO\n", cAVIdx);
                         if( context->manager->video->Command(context, MANAGER_ADD, &track) < 0) 
                         {
                             /* konfetti: fixme: is this a reason to return with error? */
@@ -5662,7 +5662,7 @@ int32_t container_ffmpeg_update_tracks(Context_t *context, char *filename, int32
 #endif
                     if (context->manager->audio)
                     {
-                        ffmpeg_printf(1, "cAVIdx[%d]: MANAGER_ADD track AUDIO\n", cAVIdx);
+                        ffmpeg_printf(1, "cAVIdx[%u]: MANAGER_ADD track AUDIO\n", cAVIdx);
                         if (context->manager->audio->Command(context, MANAGER_ADD, &track) < 0)
                         {
                             /* konfetti: fixme: is this a reason to return with error? */

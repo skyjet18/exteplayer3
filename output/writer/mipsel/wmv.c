@@ -103,8 +103,8 @@ static int writeData(void* _call)
         return 0;
     }
 
-    wmv_printf(10, "VideoPts %lld\n", call->Pts);
-    wmv_printf(10, "Got Private Size %d\n", call->private_size);
+    wmv_printf(10, "VideoPts %llu\n", call->Pts);
+    wmv_printf(10, "Got Private Size %u\n", call->private_size);
     
     unsigned char PesHeader[PES_MAX_HEADER_SIZE + sizeof(Vc1FrameStartCode)];
     int32_t ic = 0;
