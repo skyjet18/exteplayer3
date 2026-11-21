@@ -123,6 +123,10 @@ static void LinuxDvbVideoInfoPoll(Context_t *context, unsigned long long pts);
 /* with -b a thread of its own polls for the video events, see LinuxDvbEventThread() */
 static void LinuxDvbEventThreadPause(bool paused);
 static void LinuxDvbEventThreadStop(void);
+static bool LinuxDvbEventThreadEnd(void);
+/* a thread of the player may still be in a poll of the driver on it: the
+ * device is not closed, the end of the process releases it */
+static bool videoLeftOpen;
 /* the periods are measured with the decoder PTS (90 kHz) */
 #define VIDEO_INFO_QUIET_PTS   9000
 #define VIDEO_INFO_SETTLE_PTS 45000
@@ -885,6 +889,7 @@ int LinuxDvbOpen(Context_t  *context __attribute__((unused)), char *type)
         }
         videoRunning = true;
         videoOnMemory = true;
+        videoLeftOpen = false;
 
         if (isBufferedOutput)
             LinuxDvbBuffOpen(context, type, videofd, &LinuxDVBmutex);
@@ -945,7 +950,7 @@ int LinuxDvbClose(Context_t  *context, char *type)
      */
     LinuxDvbStop(context, type);
 
-    /* from here on the event thread neither reads nor reports */
+    /* the event thread has been ended by the stop; the next open starts one */
     if (video)
         LinuxDvbEventThreadStop();
 
@@ -956,7 +961,10 @@ int LinuxDvbClose(Context_t  *context, char *type)
 
     if (video && videofd != -1)
     {
-        close(videofd);
+        if (videoLeftOpen)
+            linuxdvb_err("video device left open: a thread may still be in a poll of the driver\n");
+        else
+            close(videofd);
         videofd = -1;
     }
     if (audio && audiofd != -1) 
@@ -1144,6 +1152,10 @@ int LinuxDvbStop(Context_t  *context __attribute__((unused)), char * type)
     unsigned char audio = !strcmp("audio", type);
 
     linuxdvb_printf(10, "v%d a%d\n", video, audio);
+
+    /* no poll of the event thread is in the driver when the decoder stops */
+    if (video && !videoLeftOpen && !LinuxDvbEventThreadEnd())
+        videoLeftOpen = true;
 
     getLinuxDVBMutex();
 
@@ -2011,15 +2023,23 @@ static bool LinuxDvbUpdateVideoInfo(bool event, const unsigned long long *knownP
  * ran empty instead of filling up. So with -b a thread of its own polls for
  * the video events while it plays: every VIDEO_EVENT_CHECK_MS, and at once
  * again after an event. It reads and reports them as Write() does, also
- * after the file has been read to the end. It polls a dup() of videofd: the
- * close does not wait for a poll that sleeps in the driver (up to 5 s when a
- * pause comes meanwhile), and the number of a closed videofd may belong to
- * another file by then. What follows the poll runs under eventThreadMutex,
- * and only while the thread is not stopped: videofd and the context are
- * valid there. The thread frees its state itself.
+ * after the file has been read to the end. It polls a dup() of videofd and
+ * closes that copy itself, after its last poll: the number of a closed
+ * videofd may belong to another file by then. What follows the poll runs
+ * under eventThreadMutex, and only while the thread is not stopped: videofd
+ * and the context are valid there. The thread frees its state itself.
+ * Before the video decoder is stopped, LinuxDvbEventThreadEnd() ends the
+ * thread and waits up to VIDEO_EVENT_END_MS for it: the stop is asked for
+ * before every poll, and a stop ends the wait between two polls at once.
+ * A poll that sleeps longer in the driver (up to 5 s when a pause comes
+ * meanwhile) is not waited for; the video device is then left open.
  */
 #ifndef VIDEO_EVENT_CHECK_MS
 #define VIDEO_EVENT_CHECK_MS 200
+#endif
+/* longer than a poll that sleeps in the driver while the decoder is full */
+#ifndef VIDEO_EVENT_END_MS
+#define VIDEO_EVENT_END_MS 500
 #endif
 typedef struct
 {
@@ -2028,13 +2048,48 @@ typedef struct
     Context_t *context;
 } VideoEventThread_t;
 static pthread_mutex_t eventThreadMutex = PTHREAD_MUTEX_INITIALIZER;
-static pthread_cond_t eventThreadCond = PTHREAD_COND_INITIALIZER;
+/* on CLOCK_MONOTONIC, see LinuxDvbEventThreadInit() */
+static pthread_cond_t eventThreadCond;
+static pthread_once_t eventThreadOnce = PTHREAD_ONCE_INIT;
 static VideoEventThread_t *eventThreadState;
 static bool eventThreadPaused;
 /* no thread could be started for this open: Write() polls itself */
 static bool eventThreadFailed;
+/* the decoder is stopped: no thread is started until the close */
+static bool eventThreadEnded;
+/* threads that have not ended yet, also one a stop did not wait for */
+static int eventThreadsRunning;
 /* read without eventThreadMutex under videoInfoMutex (lock order) */
 static volatile bool eventThread;
+
+static void LinuxDvbEventThreadCondInit(void)
+{
+    pthread_condattr_t attr;
+
+    pthread_condattr_init(&attr);
+    pthread_condattr_setclock(&attr, CLOCK_MONOTONIC);
+    pthread_cond_init(&eventThreadCond, &attr);
+    pthread_condattr_destroy(&attr);
+}
+
+/* The timed waits of the thread and of its end do not follow a clock that
+ * is set while they run. Called before every use of eventThreadCond. */
+static void LinuxDvbEventThreadInit(void)
+{
+    pthread_once(&eventThreadOnce, LinuxDvbEventThreadCondInit);
+}
+
+static void LinuxDvbEventThreadDeadline(struct timespec *until, long ms)
+{
+    clock_gettime(CLOCK_MONOTONIC, until);
+    until->tv_sec += ms / 1000;
+    until->tv_nsec += (ms % 1000) * 1000000L;
+    if (until->tv_nsec >= 1000000000L)
+    {
+        until->tv_sec++;
+        until->tv_nsec -= 1000000000L;
+    }
+}
 
 /* One video event, read and reported as Write() does it; called by the
  * event thread under eventThreadMutex. Returns true when one was read. */
@@ -2087,19 +2142,33 @@ static void *LinuxDvbEventThread(void *arg)
             pthread_cond_wait(&eventThreadCond, &eventThreadMutex);
             continue;
         }
-        pthread_mutex_unlock(&eventThreadMutex);
         if (!again)
         {
-            struct timespec wait = {0, VIDEO_EVENT_CHECK_MS * 1000000L};
-            nanosleep(&wait, NULL);
+            /* the wait between two polls, ended by a stop or a pause */
+            struct timespec until;
+            int waited = 0;
+
+            LinuxDvbEventThreadDeadline(&until, VIDEO_EVENT_CHECK_MS);
+            while (!state->stop && !eventThreadPaused && !waited)
+                waited = pthread_cond_timedwait(&eventThreadCond, &eventThreadMutex, &until);
+            if (state->stop || eventThreadPaused)
+                continue;
         }
+        /* not stopped right before the poll; a stop that comes during it
+         * waits for its end, see LinuxDvbEventThreadEnd() */
+        pthread_mutex_unlock(&eventThreadMutex);
         pending = LinuxDvbVideoEventPending(state->fd);
         pthread_mutex_lock(&eventThreadMutex);
         again = pending && !state->stop && LinuxDvbTakeVideoEvent(state->context);
     }
     pthread_mutex_unlock(&eventThreadMutex);
+    /* closed before the thread counts as ended: no poll runs on it now */
     close(state->fd);
     free(state);
+    pthread_mutex_lock(&eventThreadMutex);
+    eventThreadsRunning--;
+    pthread_cond_broadcast(&eventThreadCond);
+    pthread_mutex_unlock(&eventThreadMutex);
     return NULL;
 }
 
@@ -2114,8 +2183,9 @@ static bool LinuxDvbEventThreadPolls(Context_t *context)
     /* running: no wait for the mutex, which the thread holds while it reports */
     if (eventThread)
         return true;
+    LinuxDvbEventThreadInit();
     pthread_mutex_lock(&eventThreadMutex);
-    if (!eventThreadState && !eventThreadFailed && videofd >= 0)
+    if (!eventThreadState && !eventThreadFailed && !eventThreadEnded && videofd >= 0)
     {
         VideoEventThread_t *state = calloc(1, sizeof(*state));
         pthread_attr_t attr;
@@ -2130,7 +2200,10 @@ static bool LinuxDvbEventThreadPolls(Context_t *context)
         {
             pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
             if (!pthread_create(&thread, &attr, LinuxDvbEventThread, state))
+            {
                 eventThreadState = state;
+                eventThreadsRunning++;
+            }
             pthread_attr_destroy(&attr);
         }
         if (!eventThreadState)
@@ -2151,16 +2224,56 @@ static bool LinuxDvbEventThreadPolls(Context_t *context)
 /* A pause or stop of the video decoder ends the polls until it plays again. */
 static void LinuxDvbEventThreadPause(bool paused)
 {
+    LinuxDvbEventThreadInit();
     pthread_mutex_lock(&eventThreadMutex);
     eventThreadPaused = paused;
     pthread_cond_broadcast(&eventThreadCond);
     pthread_mutex_unlock(&eventThreadMutex);
 }
 
-/* The video device is closed: the thread ends after its poll and closes its
- * copy of videofd; the next open starts a new one. */
+/*
+ * Before the video decoder is stopped: the thread ends, and this waits up to
+ * VIDEO_EVENT_END_MS for it, so that no poll of it is in the driver when the
+ * decoder is stopped and its device closed. Until the close no thread is
+ * started again, and with -b neither Write() nor a position request polls,
+ * as while the thread ran. Returns false when a thread has not ended: then
+ * its copy of videofd is still open, and the device is not closed either.
+ */
+static bool LinuxDvbEventThreadEnd(void)
+{
+    struct timespec until;
+    int waited = 0;
+    bool ended;
+
+    LinuxDvbEventThreadInit();
+    pthread_mutex_lock(&eventThreadMutex);
+    if (eventThreadState)
+    {
+        eventThreadState->stop = true;
+        eventThreadState = NULL;
+    }
+    eventThreadEnded = true;
+    if (isBufferedOutput)
+        eventThread = true;
+    pthread_cond_broadcast(&eventThreadCond);
+    if (eventThreadsRunning > 0)
+    {
+        LinuxDvbEventThreadDeadline(&until, VIDEO_EVENT_END_MS);
+        while (eventThreadsRunning > 0 && !waited)
+            waited = pthread_cond_timedwait(&eventThreadCond, &eventThreadMutex, &until);
+    }
+    ended = eventThreadsRunning == 0;
+    pthread_mutex_unlock(&eventThreadMutex);
+    if (!ended)
+        linuxdvb_err("video event thread still in a poll of the driver after %d ms: "
+                     "the video device is left open\n", VIDEO_EVENT_END_MS);
+    return ended;
+}
+
+/* The video device is closed: the next open starts a new thread. */
 static void LinuxDvbEventThreadStop(void)
 {
+    LinuxDvbEventThreadInit();
     pthread_mutex_lock(&eventThreadMutex);
     if (eventThreadState)
     {
@@ -2171,6 +2284,7 @@ static void LinuxDvbEventThreadStop(void)
     eventThread = false;
     eventThreadFailed = false;
     eventThreadPaused = false;
+    eventThreadEnded = false;
     pthread_mutex_unlock(&eventThreadMutex);
 }
 

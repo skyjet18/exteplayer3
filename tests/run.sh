@@ -30,6 +30,13 @@ $cc -g -fsanitize=undefined -ffunction-sections -fdata-sections \
     tests/decoder_stop_test.c tools/debug.c -Wl,--gc-sections -pthread -o "$tmp/decoder_stop"
 timeout 20 "$tmp/decoder_stop"
 rm -f "$tmp/decoder_stop"
+# The stop and close of the DVB output while a thread of the player sleeps
+# in a poll of the driver (stub poll that sleeps, -b event thread).
+$cc -g -fsanitize=undefined -ffunction-sections -fdata-sections \
+    -Wno-deprecated-declarations -Iinclude -Iexternal -I"$FFMPEG_BUILD" -I"$FFMPEG_SOURCE" \
+    tests/close_order_test.c tools/debug.c -Wl,--gc-sections -pthread -o "$tmp/close_order"
+timeout 30 "$tmp/close_order"
+rm -f "$tmp/close_order"
 # The live start hold: the default of the box taken by the play thread, and
 # EP3_LIVE_SYNC, at the first video packet of a stream without a duration.
 # The play thread needs what the player links with the container: all of
