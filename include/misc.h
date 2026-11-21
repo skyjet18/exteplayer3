@@ -67,11 +67,4 @@ static inline uint32_t ReadUint32(uint8_t *buffer)
     return num;
 }
 
-static inline uint16_t ReadUInt16(uint8_t *buffer)
-{
-    uint16_t num = (uint16_t)buffer[0] << 8 |
-                   (uint16_t)buffer[1];
-    return num;
-}
-
 #endif // _exteplayer3_misc_

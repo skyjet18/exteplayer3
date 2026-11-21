@@ -19,8 +19,6 @@ int strbuffer_free( strbuffer_t *buffer );
 int strbuffer_init2( strbuffer_t *buffer, size_t init_size );
 int strbuffer_free2( strbuffer_t *buffer );
 
-int strbuffer_clear( strbuffer_t *buffer );
-
 int strbuffer_add( strbuffer_t *buffer, const char *str );
 int strbuffer_add_len( strbuffer_t *buffer, const char *str, size_t str_len );
 

@@ -184,7 +184,6 @@ stb_type_t GetSTBType()
 {
     static stb_type_t type = STB_UNKNOWN;
     if (type == STB_UNKNOWN) {
-        struct stat buffer;
         if (access("/proc/stb/tpm/0/serial", F_OK) != -1) {
             type = STB_DREAMBOX;
         }

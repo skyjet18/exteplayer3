@@ -240,7 +240,6 @@ static int PlaybackClose(Context_t  *context)
 
 static int PlaybackPlay(Context_t  *context) 
 {
-    pthread_attr_t attr;
     int ret = cERR_PLAYBACK_NO_ERROR;
 
     playback_printf(10, "\n");
