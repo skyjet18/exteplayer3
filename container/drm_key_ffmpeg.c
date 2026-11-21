@@ -164,7 +164,8 @@ int32_t ffmpeg_drm_key_command(const char *line)
         }
         if (drm_key_add_pair(p, len) < 0)
         {
-            ffmpeg_err("dk: \"%.*s\" is not <kid>:<key> or <kid>:- (32 hex digits each)\n", (int)len, p);
+            /* not the pair itself: it may hold a key */
+            ffmpeg_err("dk: pair %d (%d characters) is not <kid>:<key> or <kid>:- (32 hex digits each)\n", (int)count + 1, (int)len);
             return -1;
         }
         count++;
@@ -414,24 +415,27 @@ static void drm_key_prepare(AVFormatContext *ctx, AVDictionary **opts)
     int32_t i, n = 0;
     char *keys;
     char *segKeys;
+    size_t keysSize, segKeysSize;
 
     pthread_mutex_lock(&drmKeyMutex);
-    keys = malloc(drmKeysCount * 66 + 1);
-    segKeys = malloc(drmKeysCount * 68 + 17);
+    keysSize = drmKeysCount * 66 + 1;
+    segKeysSize = drmKeysCount * 68 + 17;
+    keys = malloc(keysSize);
+    segKeys = malloc(segKeysSize);
     if (keys && segKeys)
     {
         /* kid=key:kid=key, and the same with = and : escaped as an option
          * value inside seg_format_options */
         size_t k = 0, s = 0;
-        s += sprintf(segKeys, "decryption_keys=");
+        s += snprintf(segKeys, segKeysSize, "decryption_keys=");
         for (i = 0; i < drmKeysCount; i++)
         {
             if (1 != drmKeys[i].state)
             {
                 continue;
             }
-            k += sprintf(keys + k, "%s%s=%s", n ? ":" : "", drmKeys[i].kid, drmKeys[i].key);
-            s += sprintf(segKeys + s, "%s%s\\=%s", n ? "\\:" : "", drmKeys[i].kid, drmKeys[i].key);
+            k += snprintf(keys + k, keysSize - k, "%s%s=%s", n ? ":" : "", drmKeys[i].kid, drmKeys[i].key);
+            s += snprintf(segKeys + s, segKeysSize - s, "%s%s\\=%s", n ? "\\:" : "", drmKeys[i].kid, drmKeys[i].key);
             n++;
         }
     }
