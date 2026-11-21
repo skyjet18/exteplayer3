@@ -130,5 +130,14 @@ int main(void)
     playback.isPlaying = 0;
     sync_error = -1;
     assert(PlaybackPlay(&context) < 0 && plays == 0 && !playback.isPlaying);
+    /* stop and terminate without a playback handler: checked before it is
+     * used, also in the error message */
+    {
+        Context_t empty = {0};
+        PLAYBACK_SILENT = 0;
+        assert(PlaybackStop(&empty) < 0);
+        assert(PlaybackTerminate(&empty) == 0);
+        PLAYBACK_SILENT = 1;
+    }
     return 0;
 }

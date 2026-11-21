@@ -445,7 +445,8 @@ static int32_t PlaybackStop(Context_t  *context)
     playback_printf(10, "\n");
     
     PlaybackDieNow(1);
-    context->playback->stamp = (void *)-1;
+    if (context && context->playback)
+        context->playback->stamp = (void *)-1;
 
     if (context && context->playback && context->playback->isPlaying) 
     {
@@ -500,7 +501,8 @@ static int32_t PlaybackTerminate(Context_t  *context)
     } 
     else
     {
-        playback_err("%p %p %d\n", context, context->playback, context->playback->isPlaying);
+        playback_err("%p %p %d\n", context, context ? context->playback : NULL,
+                     context && context->playback ? context->playback->isPlaying : -1);
 
         /* fixme: konfetti: we should return an error here but this seems to be a condition which
          * can happen and is not a real error, which leads to a dead neutrino. should investigate
