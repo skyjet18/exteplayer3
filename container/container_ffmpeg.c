@@ -4812,8 +4812,9 @@ int32_t container_ffmpeg_init_av_context(Context_t *context, char *filename, uin
         if( strncmp(filename, "http://127.0.0.1", 16) == 0 )
         {
             /* when using with ArchivCZSK, then indicate DRM support */
-            /* hlavičky odovzdané cez -h nemusia končiť CRLF - doplniť oddeľovač, inak sa
-               nová hlavička zlepí s predchádzajúcou a na server sa nedostane */
+            /* headers passed with -h need not end with CRLF: add the separator,
+               otherwise the new header is glued to the previous one and never
+               reaches the server */
             AVDictionaryEntry *hdr = av_dict_get(avio_opts, "headers", NULL, 0);
             if (hdr && hdr->value && hdr->value[0])
             {

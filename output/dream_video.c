@@ -165,9 +165,9 @@ static void dv_sysfs_write(const char *path, const char *value)
     fclose(f);
 }
 
-/* dreamvideosink fasst freerun_mode / show_first_frame_nosync nicht an
- * (runtime strace bestätigt). Wir auch nicht. disable_video=0 reicht
- * damit das video plane sichtbar wird. */
+/* dreamvideosink does not touch freerun_mode / show_first_frame_nosync
+ * (confirmed with strace at run time), and neither do we. disable_video=0
+ * is enough to make the video plane visible. */
 static void dv_enable_display(void)
 {
     dv_sysfs_write("/sys/class/video/disable_video", "0");
@@ -343,11 +343,11 @@ static void dv_take_events(int fd)
 }
 
 /* dreamvideosink (runtime strace):
- *   - öffnet video0 mit O_NONBLOCK
- *   - öffnet /dev/amvideo_poll als O_RDWR (hat es offen, polled aber selten)
- *   - macht VIDEO_GET_EVENT drain initial
- *   - poll't VIDEO_GET_PTS regelmäßig zwischen SET_FRAMEs
- *   - bei EAGAIN: wartet auf amvideo_poll. */
+ *   - opens video0 with O_NONBLOCK
+ *   - opens /dev/amvideo_poll O_RDWR (keeps it open, but rarely polls it)
+ *   - drains VIDEO_GET_EVENT at the start
+ *   - polls VIDEO_GET_PTS regularly between SET_FRAMEs
+ *   - on EAGAIN: waits on amvideo_poll. */
 static int dv_submit_frame(int fd, const uint8_t *data, size_t size, int64_t pts_90k)
 {
     struct video_frame fr;
@@ -552,7 +552,7 @@ static int DreamVideoOpen(Context_t *context, char *type)
 
     pthread_mutex_lock(&dv_mutex);
     if (dv_fd < 0) {
-        /* dreamvideosink öffnet video0 O_NONBLOCK + amvideo_poll O_RDWR. */
+        /* dreamvideosink opens video0 O_NONBLOCK + amvideo_poll O_RDWR. */
         dv_fd = open(VIDEO_DEV, O_RDWR | O_NONBLOCK);
         if (dv_fd < 0) {
             DV_DBG("open %s failed: %s", VIDEO_DEV, strerror(errno));
