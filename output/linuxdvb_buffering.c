@@ -574,12 +574,22 @@ ssize_t BufferingWriteV(int fd, const struct iovec *iov, int ic)
         buff_printf(60, "AUDIO\n");
         dataType = OUTPUT_AUDIO;
     }
+    else if (PlaybackDieNow(0))
+    {
+        /* the stop has closed the buffering before the play thread ended
+         * (see LinuxDvbStop()): the chunk is dropped, as below */
+        for (i = 0; i < ic; ++i)
+        {
+            chunkSize += iov[i].iov_len;
+        }
+        return chunkSize;
+    }
     else
     {
         buff_err("Unknown output type\n");
         return cERR_LINUX_DVB_BUFFERING_ERROR;
     }
-    
+
     for (i=0; i<ic; ++i)
     {
         chunkSize += iov[i].iov_len;

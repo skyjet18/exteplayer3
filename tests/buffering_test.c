@@ -1,10 +1,12 @@
 #include <assert.h>
 #include "../output/linuxdvb_buffering.c"
 
+static int8_t die_now;
+
 int8_t PlaybackDieNow(int8_t value)
 {
     (void)value;
-    return 0;
+    return die_now;
 }
 
 static BufferingNode_t *node(OutputType_t type)
@@ -67,6 +69,15 @@ int main(void)
         free(bufferingQueueHead);
         bufferingQueueHead = bufferingQueueTail = NULL;
         bufferingDataSize = 0;
+        /* the stop has closed the buffering (LinuxDvbBuffClose() forgets
+         * the devices) while the play thread still writes: dropped without
+         * an error once the playback is terminated, an error before */
+        videofd = -1;
+        assert(BufferingWriteV(output_pipe[1], &vector, 1) < 0);
+        die_now = 1;
+        assert(BufferingWriteV(output_pipe[1], &vector, 1) == 1);
+        assert(!bufferingQueueHead && !bufferingDataSize);
+        die_now = 0;
     }
     close(output_pipe[0]);
     close(output_pipe[1]);
