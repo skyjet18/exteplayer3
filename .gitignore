@@ -8,3 +8,5 @@ SH4Sources.sh
 doall.sh
 make.sh
 
+__pycache__/
+*.pyc
