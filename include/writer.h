@@ -96,7 +96,17 @@ ssize_t writev_with_retry(int fd, const struct iovec *iov, int ic);
 /* ends a wait of writev_with_retry() for room in the device */
 void WriterWakeUp(void);
 
-ssize_t WriteWithRetry(Context_t *context, int pipefd, int fd, void *pDVBMtx, const void *buf, int size, int is_video);
+/* The caller of WriteWithRetry() says through it whether its data is still
+ * wanted: wanted(arg, 0) before each wait for the device, wanted(arg, 1)
+ * right before each write(). When that returns 1, done(arg) follows the
+ * write(). WriteWithRetry() gives up (returns 0) when wanted() returns 0. */
+typedef struct WriteGuard_s {
+    int (*wanted)(void *arg, int writing);
+    void (*done)(void *arg);
+    void *arg;
+} WriteGuard_t;
+
+ssize_t WriteWithRetry(Context_t *context, int pipefd, int fd, const WriteGuard_t *guard, const void *buf, int size, int is_video);
 void FlushPipe(int pipefd);
 
 ssize_t WriteExt(WriteV_t _call, int fd, void *data, size_t size);

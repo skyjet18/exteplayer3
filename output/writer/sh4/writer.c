@@ -25,6 +25,7 @@
 
 #include <stdlib.h>
 #include <string.h>
+#include <errno.h>
 
 #include "misc.h"
 #include "writer.h"
@@ -96,18 +97,20 @@ static Writer_t * AvailableWriter[] = {
 /* ***************************** */
 /*  Functions                    */
 /* ***************************** */
-ssize_t WriteWithRetry(Context_t *context, int pipefd, int fd, void *pDVBMtx, const void *buf, int size, int is_video)
+ssize_t WriteWithRetry(Context_t *context, int pipefd, int fd, const WriteGuard_t *guard, const void *buf, int size, int is_video)
 {
     fd_set rfds;
-    
+
     /* also what is returned when nothing is written: stop, seek, audio
      * switch or a failed select while paused, as on mipsel */
     ssize_t ret = 0;
     int retval = -1;
+    int error;
     struct timeval tv;
 
     while(size > 0 && 0 == PlaybackDieNow(0) && !context->playback->isSeeking &&
-          (is_video || !context->playback->isAudioSwitching))
+          (is_video || !context->playback->isAudioSwitching) &&
+          (!guard || guard->wanted(guard->arg, 0)))
     {
         if (context->playback->isPaused)
         {
@@ -138,7 +141,16 @@ ssize_t WriteWithRetry(Context_t *context, int pipefd, int fd, void *pDVBMtx, co
         }
         
         //printf(">> Before Write fd [%d]\n", fd);
+        if (guard && !guard->wanted(guard->arg, 1))
+        {
+            ret = 0;
+            break;
+        }
         ret = write(fd, buf, size);
+        error = errno;
+        if (guard)
+            guard->done(guard->arg);
+        errno = error;
         //printf(">> After Write ret[%d] size[%d]\n", (int)ret, size);
         if (ret == size)
             ret = 0; // no error

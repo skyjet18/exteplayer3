@@ -90,15 +90,26 @@ static int videofd = -1;
 static int audiofd = -1;
 static int g_pfd[2] = {-1, -1};
 
-static pthread_mutex_t *g_pDVBMtx = NULL;
-
+/* set while the thread is in a write() to a device, not while it waits for
+ * room in it: the flushes wait for the end of that write only */
 static bool g_bDuringWrite = false;
 static bool g_bWritingAudio = false;
 static bool g_bSignalWriteFinish = false;
 /* LinuxDvbBuffClose() asks the thread to end, guarded by bufferingMtx */
 static bool g_bClosing = false;
+/* counted up by each flush (all data / the audio), guarded by bufferingMtx:
+ * a chunk taken from the queue before a flush is not written after it */
+static uint32_t g_flushSerial = 0;
+static uint32_t g_audioFlushSerial = 0;
 
 static void *g_pWriteStamp = NULL;
+
+/* the chunk the thread writes, with the flushes it was taken after */
+typedef struct WriteTicket_s {
+    uint32_t flushSerial;
+    uint32_t audioFlushSerial;
+    bool audio;
+} WriteTicket_t;
 
 /* ***************************** */
 /* Prototypes                    */
@@ -114,6 +125,41 @@ static void WriteWakeUp()
     if (ret != 1) {
         buff_printf(20, "WriteWakeUp write return %d\n", ret);
     }
+}
+
+/* The write guard of the thread (see WriteWithRetry()): the chunk is wanted
+ * while no flush has come since it was taken from the queue. The flushes
+ * wait only for a write() that runs (writing = 1 until ChunkWritten()), not
+ * for a wait for room: in the Vu+ driver that wait cannot be ended early. */
+static int ChunkWanted(void *arg, int writing)
+{
+    const WriteTicket_t *ticket = arg;
+    int wanted;
+
+    pthread_mutex_lock(&bufferingMtx);
+    wanted = !g_bClosing && ticket->flushSerial == g_flushSerial &&
+             (!ticket->audio || ticket->audioFlushSerial == g_audioFlushSerial);
+    if (wanted && writing)
+    {
+        g_bDuringWrite = true;
+        g_bWritingAudio = ticket->audio;
+    }
+    pthread_mutex_unlock(&bufferingMtx);
+    return wanted;
+}
+
+static void ChunkWritten(void *arg)
+{
+    (void)arg;
+    pthread_mutex_lock(&bufferingMtx);
+    g_bDuringWrite = false;
+    g_bWritingAudio = false;
+    if (g_bSignalWriteFinish)
+    {
+        pthread_cond_broadcast(&bufferingWriteFinishedCond);
+        g_bSignalWriteFinish = false;
+    }
+    pthread_mutex_unlock(&bufferingMtx);
 }
 
 /* **************************** */
@@ -222,11 +268,12 @@ static void LinuxDvbBuffThread(Context_t *context)
             continue;
         }
 
-        /* We will write data without mutex
-         * this have some disadvantage because we can 
-         * write some portion of data after LinuxDvbBuffFlush,
-         * for example after seek.
-         */
+        /* The data is written without the mutex. A flush does not wait for
+         * the wait for room in the device, only for a write() that runs:
+         * the ticket of the chunk says whether a flush has come since it
+         * was taken from the queue, and then the rest of it is dropped,
+         * also when the wait for room ends after the flush (and after the
+         * clear of the device that follows it). */
         if (nodePtr && !context->playback->isSeeking &&
             (nodePtr->dataType == OUTPUT_VIDEO || !context->playback->isAudioSwitching) &&
             context->playback->stamp == nodePtr->stamp)
@@ -236,15 +283,19 @@ static void LinuxDvbBuffThread(Context_t *context)
             const uint32_t *segments = NODE_SEGMENTS(nodePtr);
             uint32_t seg;
             int fd = nodePtr->dataType == OUTPUT_VIDEO ? videofd : audiofd;
-            g_bDuringWrite = true;
-            g_bWritingAudio = nodePtr->dataType == OUTPUT_AUDIO;
+            WriteTicket_t ticket = {g_flushSerial, g_audioFlushSerial, nodePtr->dataType == OUTPUT_AUDIO};
+            const WriteGuard_t guard = {ChunkWanted, ChunkWritten, &ticket};
             pthread_mutex_unlock(&bufferingMtx);
             for (seg = 0; seg < nodePtr->segCount; seg++)
             {
-                if (segments[seg] && 0 != WriteWithRetry(context, g_pfd[0], fd, g_pDVBMtx, dataPtr,
+                if (segments[seg] && 0 != WriteWithRetry(context, g_pfd[0], fd, &guard, dataPtr,
                                                          segments[seg], nodePtr->dataType == OUTPUT_VIDEO))
                 {
                     buff_err("Something is WRONG\n");
+                    break;
+                }
+                if (!ChunkWanted(&ticket, 0))
+                {
                     break;
                 }
                 dataPtr += segments[seg];
@@ -302,7 +353,7 @@ int32_t LinuxDvbBuffOpen(Context_t *context, char *type, int outfd, void *mtx)
         pthread_attr_init(&attr);
         pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
 
-        g_pDVBMtx = mtx;
+        (void)mtx;
         g_bClosing = false;
 
         /* init synchronization prymitives, the thread uses them at once */
@@ -428,7 +479,9 @@ int32_t LinuxDvbBuffFlush(Context_t *context)
     /* signal that queue is empty */
     pthread_cond_signal(&bufferingDataConsumedCond);
 
-    while (g_bDuringWrite && !PlaybackDieNow(0)) 
+    /* the chunk the thread holds is not written after this, see ChunkWanted() */
+    g_flushSerial++;
+    while (g_bDuringWrite && !PlaybackDieNow(0))
     {
         g_bSignalWriteFinish = true;
         pthread_cond_wait(&bufferingWriteFinishedCond, &bufferingMtx);
@@ -455,6 +508,7 @@ int32_t LinuxDvbBuffFlushAudio(Context_t *context)
     WriteWakeUp();
     pthread_mutex_lock(&bufferingMtx);
     DropQueuedAudio();
+    g_audioFlushSerial++;
     while (g_bWritingAudio && !PlaybackDieNow(0))
     {
         g_bSignalWriteFinish = true;
