@@ -17,15 +17,19 @@ static stb_type_t stb_type = STB_OTHER;
 stb_type_t GetSTBType(void) { return stb_type; }
 
 /* Neither is external/ffmpeg/src/mpeg4audio.c; Codec2Encoding() asks it for
- * AAC only, which the cases here do not use. */
+ * AAC only: the configuration of the case, when there is one. */
+static MPEG4AudioConfig aac_config;
+static int aac_config_set;
 int avpriv_mpeg4audio_get_config(MPEG4AudioConfig *c, const uint8_t *buf,
                                  int bit_size, int sync_extension)
 {
-    (void)c;
     (void)buf;
     (void)bit_size;
     (void)sync_extension;
-    abort();
+    if (!aac_config_set)
+        abort();
+    *c = aac_config;
+    return 16;
 }
 
 static Track_t seek_track;
@@ -552,6 +556,32 @@ int main(void)
         vorbis_software_decode = opus_software_decode = 1;
         assert(!strcmp(Codec2Encoding(AV_CODEC_ID_VORBIS, AVMEDIA_TYPE_AUDIO, NULL, 0, 0, &version), "A_IPCM"));
         assert(!strcmp(Codec2Encoding(AV_CODEC_ID_OPUS, AVMEDIA_TYPE_AUDIO, NULL, 0, 0, &version), "A_IPCM"));
+        stb_type = STB_OTHER;
+    }
+    {
+        /* AAC: channel configurations 11-13 (6.1, 7.1) do not fit into the
+         * 3 bits of the ADTS header the AAC writer sends: decoded in
+         * software. 0 goes to LATM with its PCE, except on HiSilicon. */
+        static const stb_type_t types[] = {STB_OTHER, STB_VUPLUS, STB_HISILICON};
+        uint8_t asc[2] = {0x12, 0x60}; /* only its size counts, see the stub */
+        int32_t version = 0;
+        unsigned i;
+        aac_config_set = 1;
+        aac_config.object_type = 2;
+        aac_config.sampling_index = 4;
+        for (i = 0; i < sizeof(types) / sizeof(types[0]); i++) {
+            stb_type = types[i];
+            aac_config.chan_config = 2;
+            assert(!strcmp(Codec2Encoding(AV_CODEC_ID_AAC, AVMEDIA_TYPE_AUDIO, asc, 2, 0, &version), "A_AAC"));
+            aac_config.chan_config = 7;
+            assert(!strcmp(Codec2Encoding(AV_CODEC_ID_AAC, AVMEDIA_TYPE_AUDIO, asc, 2, 0, &version), "A_AAC"));
+            for (aac_config.chan_config = 11; aac_config.chan_config <= 13; aac_config.chan_config++)
+                assert(!strcmp(Codec2Encoding(AV_CODEC_ID_AAC, AVMEDIA_TYPE_AUDIO, asc, 2, 0, &version), "A_IPCM"));
+            aac_config.chan_config = 0;
+            assert(!strcmp(Codec2Encoding(AV_CODEC_ID_AAC, AVMEDIA_TYPE_AUDIO, asc, 2, 0, &version),
+                           types[i] == STB_HISILICON ? "A_AAC" : "A_AAC_LATM"));
+        }
+        aac_config_set = 0;
         stb_type = STB_OTHER;
     }
     return 0;
