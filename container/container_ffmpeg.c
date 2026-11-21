@@ -107,6 +107,11 @@ typedef enum {RTMP_NATIVE, RTMP_LIBRTMP, RTMP_NONE} eRTMPProtoImplType;
 
 static pthread_rwlock_t mutex = PTHREAD_RWLOCK_INITIALIZER;
 static pthread_mutex_t seek_mutex = PTHREAD_MUTEX_INITIALIZER;
+/* a track update of a list command that found the lock busy, done by the
+ * play thread before its next read: update_tracks itself, set only there, so
+ * the play thread does not link it (unit tests build the thread without it) */
+typedef int32_t (*UpdateTracksFn)(Context_t *context, char *filename, int32_t initial, int32_t wait);
+static UpdateTracksFn tracksUpdatePending = NULL;
 
 static pthread_t PlayThread;
 static int32_t hasPlayThreadStarted = 0;
@@ -2829,6 +2834,14 @@ static void FFMPEGThread(Context_t *context)
             continue;
         }
 
+        {
+            UpdateTracksFn update = __atomic_exchange_n(&tracksUpdatePending, NULL, __ATOMIC_ACQ_REL);
+            if (update)
+            {
+                update(context, context->playback->uri, 0, 1);
+            }
+        }
+
         getMutex(__FILE__, __FUNCTION__,__LINE__);
 
         if (!context->playback || !context->playback->isPlaying ||
@@ -5076,7 +5089,21 @@ int32_t container_ffmpeg_init(Context_t *context, PlayFiles_t *playFilesNames)
     return res;
 }
 
+/* The track lists of the commands (MANAGER_LIST) refresh the tracks. The play
+ * thread holds the lock while a read waits for the network, and the command
+ * loop must not wait for that: after UPDATE_TRACKS_WAIT_MS the list is the one
+ * of the last update, and the play thread does the update before its next
+ * read. */
+#define UPDATE_TRACKS_WAIT_MS 200
+
+static int32_t update_tracks(Context_t *context, char *filename, int32_t initial, int32_t wait);
+
 int32_t container_ffmpeg_update_tracks(Context_t *context, char *filename, int32_t initial)
+{
+    return update_tracks(context, filename, initial, initial);
+}
+
+static int32_t update_tracks(Context_t *context, char *filename, int32_t initial, int32_t wait)
 {
     Track_t *currAudioTrack = NULL;
     Track_t *currSubtitleTrack = NULL;
@@ -5087,7 +5114,27 @@ int32_t container_ffmpeg_update_tracks(Context_t *context, char *filename, int32
         return cERR_CONTAINER_FFMPEG_NO_ERROR;
     }
     
-    getMutex_wr(__FILE__, __FUNCTION__,__LINE__);
+    if (wait)
+    {
+        getMutex_wr(__FILE__, __FUNCTION__,__LINE__);
+    }
+    else
+    {
+        struct timespec ts;
+        clock_gettime(CLOCK_REALTIME, &ts);
+        ts.tv_nsec += UPDATE_TRACKS_WAIT_MS * 1000000L;
+        if (ts.tv_nsec >= 1000000000L)
+        {
+            ts.tv_sec += 1;
+            ts.tv_nsec -= 1000000000L;
+        }
+        if (0 != pthread_rwlock_timedwrlock(&mutex, &ts))
+        {
+            ffmpeg_printf(10, "tracks busy, listed as they are, updated by the play thread\n");
+            __atomic_store_n(&tracksUpdatePending, update_tracks, __ATOMIC_RELEASE);
+            return cERR_CONTAINER_FFMPEG_NO_ERROR;
+        }
+    }
     
     if (context->manager->subtitle)
     {

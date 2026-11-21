@@ -631,6 +631,20 @@ static void StdinLine(char *line, size_t len)
         ffmpeg_drm_key_command(line);
         return;
     }
+    if ('q' == line[0])
+    {
+        /* The command loop may wait for the container lock, which the
+         * reading thread holds while it waits for the network. abortRequested
+         * makes the interrupt callback end that wait, so the loop gets to the
+         * q, which it handles as always. Before the start the open loop
+         * handles q itself. */
+        pthread_mutex_lock(&playbackStartMtx);
+        if (isPlaybackStarted)
+        {
+            __atomic_store_n(&PlaybackHandler.abortRequested, 1, __ATOMIC_RELEASE);
+        }
+        pthread_mutex_unlock(&playbackStartMtx);
+    }
     while (len > 0)
     {
         ssize_t n = write(g_cmdPipeWr, line, len);
