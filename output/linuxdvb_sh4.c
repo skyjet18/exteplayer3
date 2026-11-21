@@ -691,13 +691,14 @@ int LinuxDvbClear(Context_t  *context __attribute__((unused)), char * type)
 
 int LinuxDvbPts(Context_t  *context __attribute__((unused)), unsigned long long int* pts) {
     int ret = cERR_LINUXDVB_ERROR;
+    unsigned long long int current = 0;
     
     linuxdvb_printf(50, "\n");
 
     // pts is a non writting requests and can be done in parallel to other requests
     //getLinuxDVBMutex();
 
-    if (videofd > -1 && !ioctl(videofd, VIDEO_GET_PTS, (void*)&sCURRENT_PTS))
+    if (videofd > -1 && !ioctl(videofd, VIDEO_GET_PTS, (void*)&current))
     {
         ret = cERR_LINUXDVB_NO_ERROR;
     }
@@ -708,7 +709,7 @@ int LinuxDvbPts(Context_t  *context __attribute__((unused)), unsigned long long 
 
     if (ret != cERR_LINUXDVB_NO_ERROR) 
     {
-        if (audiofd > -1 && !ioctl(audiofd, AUDIO_GET_PTS, (void*)&sCURRENT_PTS))
+        if (audiofd > -1 && !ioctl(audiofd, AUDIO_GET_PTS, (void*)&current))
         {
             ret = cERR_LINUXDVB_NO_ERROR;
         }
@@ -720,10 +721,10 @@ int LinuxDvbPts(Context_t  *context __attribute__((unused)), unsigned long long 
 
     if (ret != cERR_LINUXDVB_NO_ERROR)
     {
-        sCURRENT_PTS = 0;
+        current = 0;
     }
 
-    *((unsigned long long int *)pts)=(unsigned long long int)sCURRENT_PTS;
+    *((unsigned long long int *)pts)=(unsigned long long int)current;
 
     //releaseLinuxDVBMutex();
 

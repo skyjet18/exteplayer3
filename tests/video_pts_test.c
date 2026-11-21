@@ -198,6 +198,23 @@ int main(void)
     audio_fails = 1;
     assert(position(cERR_LINUXDVB_ERROR) == 0);
 
+    /* video from PTS 0 on, the decoder clock just before it, gone past 0
+     * (the position was 95443711 ms): the first PTS written is the
+     * position until the decoder shows the data */
+    video_fails = audio_fails = 0;
+    assert(!Command(&context, OUTPUT_PLAY, "video"));
+    write_video(0);
+    write_video(3600);
+    video_pts = (1ULL << 33) - 600;
+    assert(position(cERR_LINUXDVB_NO_ERROR) == 0);
+    video_pts = 1800;
+    assert(position(cERR_LINUXDVB_NO_ERROR) == 1800);
+    /* a clock further before the data (an earlier playback) is left as it is */
+    assert(!Command(&context, OUTPUT_PLAY, "video"));
+    write_video(900000);
+    video_pts = 90000;
+    assert(position(cERR_LINUXDVB_NO_ERROR) == 90000);
+
     printf("video PTS tests passed\n");
     return 0;
 }
