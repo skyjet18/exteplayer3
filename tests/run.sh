@@ -180,6 +180,9 @@ $cc -g -fsanitize=address,undefined -ffunction-sections -fdata-sections -Dmalloc
     "$FFMPEG_BUILD/libavcodec/libavcodec.a" "$FFMPEG_BUILD/libavutil/libavutil.a" -lm \
     ${FFMPEG_EXTRA_LIBS:-} -o "$tmp/writers_alloc"
 timeout 20 "$tmp/writers_alloc"
+# The string buffer of the subtitle output when realloc() fails.
+$cc -g -fsanitize=address,undefined -Iinclude tests/strbuffer_test.c -o "$tmp/strbuffer"
+ASAN_OPTIONS=detect_leaks=1 timeout 20 "$tmp/strbuffer"
 # The DTS-HD bypass mode: the ioctls of the DVB output before the first DTS frame.
 $cc -g -fsanitize=undefined -ffunction-sections -fdata-sections \
     -Wno-deprecated-declarations -Iinclude -Iexternal -I"$FFMPEG_BUILD" -I"$FFMPEG_SOURCE" \
