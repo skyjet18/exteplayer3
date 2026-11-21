@@ -1,5 +1,6 @@
 #include <assert.h>
 #include <stdarg.h>
+#include <semaphore.h>
 #include "../output/output_subtitle.c"
 
 int __asan_address_is_poisoned(void const volatile *address);
@@ -8,6 +9,10 @@ static char message[16384];
 static const char *encoding;
 static char *encoding_copy;
 static int current_track = 1, closed, graphic_packets;
+/* hold_write: the graphic write waits inside; resets counts the resets
+ * of the writer that came while a write was running */
+static volatile int hold_write, in_write, resets_during_write;
+static sem_t write_entered;
 
 void E2iSendMsg(const char *format, ...)
 {
@@ -39,6 +44,8 @@ static int32_t graphic_close(void)
 
 static int32_t graphic_reset(void)
 {
+    if (in_write)
+        resets_during_write++;
     return 0;
 }
 
@@ -46,6 +53,13 @@ static int32_t graphic_write(WriterSubCallData_t *call)
 {
     assert(call->trackId == 1 && call->codecId == SUBTITLE_CODEC_ID_PGS);
     graphic_packets++;
+    if (hold_write)
+    {
+        in_write = 1;
+        sem_post(&write_entered);
+        usleep(200000);
+        in_write = 0;
+    }
     return 0;
 }
 
@@ -111,6 +125,29 @@ static void ass_text_is_escaped(void)
     const char *event = "1,0,Default,,0,0,0,,He said \"hi\"\\N{\\i1}C:\\dir{\\i0}";
     deliver("S_TEXT/ASS", event, strlen(event));
     expect("He said \\\"hi\\\"\\nC:\\\\dir");
+}
+
+static void *deliver_graphic(void *unused)
+{
+    (void)unused;
+    deliver("S_GRAPHIC/PGS", "p", 1);
+    return NULL;
+}
+
+/* The play thread writes a graphic packet while the command thread flushes
+ * (seek, subtitle switch): the reset of the writer waits for the write. */
+static void flush_waits_for_the_write(void)
+{
+    pthread_t writer;
+    assert(!sem_init(&write_entered, 0, 0));
+    hold_write = 1;
+    assert(!pthread_create(&writer, NULL, deliver_graphic, NULL));
+    assert(!sem_wait(&write_entered));
+    assert(!SubtitleOutput.Command(&context, OUTPUT_SWITCH, NULL));
+    assert(!pthread_join(writer, NULL));
+    hold_write = 0;
+    assert(!resets_during_write);
+    sem_destroy(&write_entered);
 }
 
 static void encoding_is_freed(void)
@@ -220,5 +257,6 @@ int main(void)
     control_characters_are_escaped();
     mov_text_ends_with_the_packet();
     packet_of_previous_text_track();
+    flush_waits_for_the_write();
     return 0;
 }

@@ -414,7 +414,11 @@ static char * ass_line_breaks(char *str)
     return str;
 }
 
-static int Flush()
+/* Write() and the close and reset of the writer run under the mutex: the
+ * play thread writes without the container lock, the command thread flushes
+ * (seek, subtitle switch), and the write of a packet of another track closes
+ * the graphic decoder that the flush would use. */
+static int FlushLocked()
 {
     if (g_subWriter)
         g_subWriter->reset();
@@ -423,7 +427,27 @@ static int Flush()
     return cERR_SUBTITLE_NO_ERROR;
 }
 
+static int Flush()
+{
+    int ret;
+    getMutex(__LINE__);
+    ret = FlushLocked();
+    releaseMutex(__LINE__);
+    return ret;
+}
+
+static int WriteLocked(void *_context, void *data);
+
 static int Write(void *_context, void *data)
+{
+    int ret;
+    getMutex(__LINE__);
+    ret = WriteLocked(_context, data);
+    releaseMutex(__LINE__);
+    return ret;
+}
+
+static int WriteLocked(void *_context, void *data)
 {
     Context_t  *context = (Context_t *)_context;
     char *Encoding      = NULL;
@@ -449,7 +473,7 @@ static int Write(void *_context, void *data)
             g_subWriter = NULL;
         }
 
-        Flush();
+        FlushLocked();
         /* the packet belongs to the track selected before, not to this encoding */
         return cERR_SUBTITLE_NO_ERROR;
     }
