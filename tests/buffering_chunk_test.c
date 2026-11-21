@@ -285,6 +285,65 @@ static void segments_written_one_by_one(void)
     close(decoder[1]);
 }
 
+/* An audio switch without a seek (live, paused) sets isSeeking and keeps the
+ * stamp: the video queued meanwhile reaches the decoder after the switch,
+ * the queued audio of the old track does not. A seek changes the stamp:
+ * the video queued before it is not written. */
+static void switch_keeps_video(void)
+{
+    PlaybackHandler_t playback = {0};
+    Context_t context = {.playback = &playback};
+    uint8_t frame[64] = {0}, arrived[64];
+    struct iovec vector = {frame, sizeof(frame)};
+    int video[2], audio[2];
+
+    assert(!pipe(video) && !pipe(audio));
+    assert(fcntl(audio[0], F_SETFL, O_NONBLOCK) >= 0);
+    signal(SIGALRM, hung);
+    stopped = 0;
+    maxBufferingDataSize = 65536;
+    LinuxDvbBuffSetStamp(NULL);
+    playback.isSeeking = 1;
+    assert(!LinuxDvbBuffOpen(&context, "video", video[1], NULL));
+    assert(!LinuxDvbBuffOpen(&context, "audio", audio[1], NULL));
+    frame[0] = 1;
+    assert(BufferingWriteV(video[1], &vector, 1) == sizeof(frame));
+    frame[0] = 2;
+    assert(BufferingWriteV(audio[1], &vector, 1) == sizeof(frame));
+    frame[0] = 3;
+    assert(BufferingWriteV(video[1], &vector, 1) == sizeof(frame));
+    usleep(100000);
+    playback.isSeeking = 0;
+    hang = "the video queued during an audio switch is not written\n";
+    alarm(5);
+    assert(read(video[0], arrived, sizeof(arrived)) == sizeof(arrived) && arrived[0] == 1);
+    assert(read(video[0], arrived, sizeof(arrived)) == sizeof(arrived) && arrived[0] == 3);
+    alarm(0);
+    assert(read(audio[0], arrived, sizeof(arrived)) == -1 && errno == EAGAIN);
+
+    /* a seek: the stamp changes while the video waits */
+    playback.isSeeking = 1;
+    frame[0] = 4;
+    assert(BufferingWriteV(video[1], &vector, 1) == sizeof(frame));
+    usleep(50000);
+    playback.stamp = (void *)1;
+    usleep(50000);
+    LinuxDvbBuffSetStamp((void *)1);
+    playback.isSeeking = 0;
+    frame[0] = 5;
+    assert(BufferingWriteV(video[1], &vector, 1) == sizeof(frame));
+    hang = "the video queued after a seek is not written\n";
+    alarm(5);
+    assert(read(video[0], arrived, sizeof(arrived)) == sizeof(arrived) && arrived[0] == 5);
+    alarm(0);
+    LinuxDvbBuffSetStamp(NULL);
+    assert(!LinuxDvbBuffClose(&context));
+    close(video[0]);
+    close(video[1]);
+    close(audio[0]);
+    close(audio[1]);
+}
+
 static void close_and_open(void)
 {
     PlaybackHandler_t playback = {0};
@@ -328,5 +387,6 @@ int main(void)
     thread_end();
     close_and_open();
     segments_written_one_by_one();
+    switch_keeps_video();
     return 0;
 }

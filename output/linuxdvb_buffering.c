@@ -103,6 +103,7 @@ static void *g_pWriteStamp = NULL;
 /* ***************************** */
 /* Prototypes                    */
 /* ***************************** */
+static void DropQueuedAudio(void);
 
 /* ***************************** */
 /* MISC Functions                */
@@ -198,6 +199,27 @@ static void LinuxDvbBuffThread(Context_t *context)
                 assert(bufferingDataSize == 0);
                 bufferingDataSize = 0;
             }
+        }
+
+        if (nodePtr && nodePtr->dataType == OUTPUT_VIDEO && context->playback->isSeeking &&
+            context->playback->stamp == nodePtr->stamp)
+        {
+            /* An audio switch without a seek (live, paused, trick, DASH
+             * before its clear) keeps the stamp: the video waits for its end
+             * instead of being dropped. A seek changes the stamp, the node
+             * is dropped then. The audio of the old track goes, as before. */
+            DropQueuedAudio();
+            nodePtr->next = bufferingQueueHead;
+            bufferingQueueHead = nodePtr;
+            if (bufferingQueueTail == NULL)
+            {
+                bufferingQueueTail = nodePtr;
+            }
+            bufferingDataSize += nodePtr->dataSize + sizeof(BufferingNode_t);
+            nodePtr = NULL;
+            pthread_mutex_unlock(&bufferingMtx);
+            usleep(10000);
+            continue;
         }
 
         /* We will write data without mutex
@@ -430,9 +452,22 @@ int32_t LinuxDvbBuffResume(Context_t *context)
 
 int32_t LinuxDvbBuffFlushAudio(Context_t *context)
 {
-    BufferingNode_t **link;
     WriteWakeUp();
     pthread_mutex_lock(&bufferingMtx);
+    DropQueuedAudio();
+    while (g_bWritingAudio && !PlaybackDieNow(0))
+    {
+        g_bSignalWriteFinish = true;
+        pthread_cond_wait(&bufferingWriteFinishedCond, &bufferingMtx);
+    }
+    pthread_mutex_unlock(&bufferingMtx);
+    return 0;
+}
+
+/* The queued audio chunks are freed, the video stays; bufferingMtx is held. */
+static void DropQueuedAudio(void)
+{
+    BufferingNode_t **link;
     bufferingQueueTail = NULL;
     for (link = &bufferingQueueHead; *link; )
     {
@@ -450,13 +485,6 @@ int32_t LinuxDvbBuffFlushAudio(Context_t *context)
         }
     }
     pthread_cond_signal(&bufferingDataConsumedCond);
-    while (g_bWritingAudio && !PlaybackDieNow(0))
-    {
-        g_bSignalWriteFinish = true;
-        pthread_cond_wait(&bufferingWriteFinishedCond, &bufferingMtx);
-    }
-    pthread_mutex_unlock(&bufferingMtx);
-    return 0;
 }
 
 void LinuxDvbBuffSetStamp(void *stamp)
