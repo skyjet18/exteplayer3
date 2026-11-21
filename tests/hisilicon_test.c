@@ -152,14 +152,21 @@ static PlaybackHandler_t playback = {.isPlaying = 1};
 static Context_t context = {.playback = &playback};
 static char data[10] = "123456789";
 
-static void write_packet(void)
+/* 0 when everything was written (or the write was given up for a stop or
+ * a seek), -1 for an error of the device */
+static void write_packet_returns(ssize_t expected)
 {
     int wake[2];
     assert(!pipe(wake));
-    assert(WriteWithRetry(&context, wake[0], 9, NULL, data, sizeof(data), 1) == 0);
+    assert(WriteWithRetry(&context, wake[0], 9, NULL, data, sizeof(data), 1) == expected);
     events[event_count] = '\0';
     close(wake[0]);
     close(wake[1]);
+}
+
+static void write_packet(void)
+{
+    write_packet_returns(0);
 }
 
 /* Written at once although the device never reports that it is writable. */
@@ -203,7 +210,7 @@ static void hard_error(void)
     present[0] = NODE;
     busy = 1;
     failure = EIO;
-    write_packet();
+    write_packet_returns(-1);
     assert(!written && !strcmp(events, "w"));
 }
 
@@ -213,6 +220,17 @@ static void other_receiver_waits(void)
     writable = 1;
     write_packet();
     assert(written == sizeof(data) && !strcmp(events, "sw") && timeouts[0] == -1);
+}
+
+/* The buffering thread drops the rest of its node only when it learns of
+ * the error: no longer 0 as for a complete write. */
+static void other_receiver_hard_error(void)
+{
+    writable = 1;
+    busy = 1;
+    failure = EIO;
+    write_packet_returns(-1);
+    assert(!written && !strcmp(events, "sw"));
 }
 
 static int run(const char *name, void (*test)(void))
@@ -253,5 +271,6 @@ int main(void)
     failed += run("interrupted select", interrupted_select);
     failed += run("hard write error", hard_error);
     failed += run("other receiver waits for the device", other_receiver_waits);
+    failed += run("other receiver, hard write error", other_receiver_hard_error);
     return failed ? 1 : 0;
 }
