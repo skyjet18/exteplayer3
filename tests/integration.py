@@ -1479,6 +1479,42 @@ def main():
                 del held["/two/two4.ts"]
             print("PASS commands during a read that waits for the network: al, ac and j answered")
 
+            # The same with -C, where every list updates the tracks under the
+            # container lock: al and j are answered at once, q ends the
+            # player at once; then q ends a track switch that waits for the
+            # lock.
+            for switch in (False, True):
+                asked, answer = threading.Event(), threading.Event()
+                held["/two/two4.ts"] = (asked, answer)
+                player = Player(args.player, "-C", base + "/two/index.m3u8")
+                try:
+                    assert player.wait("PLAYBACK_PLAY")["sts"] == 0
+                    tracks = player.wait("a_l")
+                    assert len(tracks) == 2, tracks
+                    assert asked.wait(15), requests
+                    time.sleep(1.5)
+                    if switch:
+                        player.command(f"a{tracks[1]['id']}")
+                        time.sleep(0.3)
+                    else:
+                        for command, name in (("al", "a_l"), ("j", "J")):
+                            started = time.monotonic()
+                            player.command(command)
+                            player.wait(name)
+                            waited = time.monotonic() - started
+                            assert waited < 0.5, (command, waited)
+                    started = time.monotonic()
+                    player.command("q")
+                    player.process.wait(timeout=8)
+                    waited = time.monotonic() - started
+                    assert waited < 1.5, waited
+                finally:
+                    answer.set()
+                    player.stop()
+                    del held["/two/two4.ts"]
+            print("PASS -C during a read that waits for the network: al and j answered, q ends at once,"
+                  " also after a track switch that waits")
+
             player = Player(args.player, str(embedded[1]))
             try:
                 assert player.wait("PLAYBACK_PLAY")["sts"] == 0
