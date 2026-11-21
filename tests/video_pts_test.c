@@ -5,6 +5,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <sys/ioctl.h>
+#include <unistd.h>
 #include <linux/types.h>
 #ifndef VIDEO_GET_PTS
 #define VIDEO_GET_PTS _IOR('o', 57, __u64)
@@ -12,6 +13,8 @@
 #ifndef AUDIO_GET_PTS
 #define AUDIO_GET_PTS _IOR('o', 19, __u64)
 #endif
+/* the stale decoder value after a start is replaced this long, see PosBoundApply() */
+#define POS_BOUND_START_MS 300
 #define ioctl test_ioctl
 #define poll test_poll
 #define fopen test_fopen
@@ -139,6 +142,7 @@ static unsigned long long position(int expected_ret)
 
 int main(void)
 {
+    unsigned long long pts;
     assert(!pthread_mutex_init(&LinuxDVBmutex, NULL));
     videofd = VIDEO_FD;
     audiofd = AUDIO_FD;
@@ -210,11 +214,43 @@ int main(void)
     assert(position(cERR_LINUXDVB_NO_ERROR) == 0);
     video_pts = 1800;
     assert(position(cERR_LINUXDVB_NO_ERROR) == 1800);
-    /* a clock further before the data (an earlier playback) is left as it is */
+    /* a clock further before the data (an earlier playback): the first PTS
+     * written, for POS_BOUND_START_MS after it, then as it is */
     assert(!Command(&context, OUTPUT_PLAY, "video"));
     write_video(900000);
     video_pts = 90000;
+    assert(position(cERR_LINUXDVB_NO_ERROR) == 900000);
+    usleep((POS_BOUND_START_MS + 100) * 1000);
     assert(position(cERR_LINUXDVB_NO_ERROR) == 90000);
+
+    /* The previous playback (another process) ended at 13.3 s; right after
+     * the start of a file at 0 VIDEO_GET_PTS still answers that. Nothing
+     * written yet: 0. */
+    assert(!Command(&context, OUTPUT_PLAY, "video"));
+    video_pts = 1197000;
+    assert(position(cERR_LINUXDVB_NO_ERROR) == 0);
+    /* 20 s written at once (-b), the decoder shows nothing of it yet: the
+     * stale value lies within the data, but further after the first PTS
+     * than the time since its write allows */
+    for (pts = 0; pts <= 1800000; pts += 3600)
+        write_video(pts);
+    assert(position(cERR_LINUXDVB_NO_ERROR) == 0);
+    /* the decoder shows the data */
+    video_pts = 9000;
+    assert(position(cERR_LINUXDVB_NO_ERROR) == 9000);
+    video_pts = 18000;
+    assert(position(cERR_LINUXDVB_NO_ERROR) == 18000);
+    /* an earlier playback 90 minutes in, past the stall limit */
+    assert(!Command(&context, OUTPUT_PLAY, "video"));
+    video_pts = 5400ULL * 90000;
+    assert(position(cERR_LINUXDVB_NO_ERROR) == 0);
+    for (pts = 0; pts <= 108000; pts += 3600)
+        write_video(pts);
+    assert(position(cERR_LINUXDVB_NO_ERROR) == 0);
+    /* a decoder in the data as far as the time since the first write allows */
+    usleep(200000);
+    video_pts = 99000;
+    assert(position(cERR_LINUXDVB_NO_ERROR) == 99000);
 
     printf("video PTS tests passed\n");
     return 0;
