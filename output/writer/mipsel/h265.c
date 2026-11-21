@@ -168,6 +168,31 @@ static int32_t PreparCodecData(unsigned char *data, unsigned int cd_len, unsigne
     return ret;
 }
 
+/* An Annex B start code at the start of the data: 00 00 01 or 00 00 00 01. */
+static int HasStartCode(const uint8_t *data, unsigned int size)
+{
+    return (size > 2 && !data[0] && !data[1] && data[2] == 1) ||
+           (size > 3 && !data[0] && !data[1] && !data[2] && data[3] == 1);
+}
+
+/* A VPS, SPS or PPS behind one of the start codes of an Annex B packet. */
+static int HasParameterSets(const uint8_t *data, unsigned int size)
+{
+    unsigned int i;
+    for (i = 0; i + 3 < size; i++)
+    {
+        if (!data[i] && !data[i + 1] && data[i + 2] == 1)
+        {
+            int type = (data[i + 3] >> 1) & 0x3f;
+            if (type == 32 || type == 33 || type == 34)
+            {
+                return 1;
+            }
+        }
+    }
+    return 0;
+}
+
 /* reset() is called from the command thread while the demuxer thread can be
  * inside writeData(): it only leaves a request, the next writeData() takes it. */
 static int reset()
@@ -186,6 +211,7 @@ static int writeData(void* _call)
     unsigned int            TimeScale;
     int                     len = 0;
     int ic = 0;
+    int ts;
     struct iovec iov[IOVEC_SIZE];
     h265_printf(20, "\n");
 
@@ -261,31 +287,34 @@ static int writeData(void* _call)
         call->len > 4 ? call->data[4] : 0,
         call->len > 5 ? call->data[5] : 0 );
 
-    if( (call->InfoFlags & 0x1) &&
-        (
-            (call->private_size == 0) ||
-            (call->private_size > 2 && call->private_data[0] == 0x00 && call->private_data[1] == 0x00 &&
-                (call->private_data[2] == 0x01 || (call->private_size > 3 && call->private_data[2] == 0x00 && call->private_data[3] == 0x01)))
-        )
-    )   // TS Container
+    /* Annex B: from a TS container (InfoFlags), with Annex B extradata, or
+     * without any extradata and a start code at the start of the packet
+     * (raw .hevc, RTSP, AVI and other containers without the TS flag). */
+    ts = (call->InfoFlags & 0x1) &&
+         (call->private_size == 0 || HasStartCode(call->private_data, call->private_size));
+    if (ts || HasStartCode(call->private_data, call->private_size) ||
+        (call->private_size == 0 && CodecData == NULL && HasStartCode(call->data, call->len)))
     {
         h265_printf(10, "H265 simple inject method!\n");
         uint32_t PacketLength = 0;
         uint32_t FakeStartCode = (call->Version << 8) | PES_VERSION_FAKE_START_CODE;
         
         iov[ic++].iov_base = PesHeader;
-        initialHeader = 0;
-        if (initialHeader) 
+
+        iov[ic].iov_base = "";
+        iov[ic++].iov_len = 1;
+
+        /* Outside TS the parameter sets can be in the extradata only (the
+         * sprop sets of RTSP): send them once, unless the packet has its own. */
+        if (!ts && initialHeader && call->private_size &&
+            !HasParameterSets(call->data, call->len))
         {
-            initialHeader = 0;
             iov[ic].iov_base  = call->private_data;
             iov[ic++].iov_len = call->private_size;
             PacketLength     += call->private_size;
         }
+        initialHeader = 0;
 
-        iov[ic].iov_base = "";
-        iov[ic++].iov_len = 1;
-        
         iov[ic].iov_base  = call->data;
         iov[ic++].iov_len = call->len;
         PacketLength     += call->len;

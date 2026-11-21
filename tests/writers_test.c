@@ -262,6 +262,41 @@ static void h265_parameter_sets_without_extradata(void)
     WriterVideoH265.reset();
 }
 
+/* Annex B outside TS (raw .hevc, RTSP, AVI): InfoFlags 0. The sets of the
+ * extradata go once in front of a packet without its own, then the packets
+ * as they are. */
+static void h265_annexb_without_ts_flag(void)
+{
+    uint8_t sets[] = {0, 0, 0, 1, 0x40, 1, 0, 0, 0, 1, 0x42, 1};
+    uint8_t idr[] = {0, 0, 0, 1, 0x26, 1};
+    uint8_t key[] = {0, 0, 0, 1, 0x40, 1, 0, 0, 1, 0x26, 1};
+    uint8_t short_code[] = {0, 0, 1, 0x26, 1};
+    uint8_t lengths[] = {0, 0, 0, 2, 0x26, 1};
+    WriterAVCallData_t call = packet(idr, sizeof(idr), sets, sizeof(sets), record);
+    WriterVideoH265.reset();
+    assert(WriterVideoH265.writeData(&call) == 14 + 5 + 1 + 12 + 6 && part_count == 4);
+    assert(parts[2].iov_base == sets && parts[2].iov_len == sizeof(sets));
+    assert(parts[3].iov_base == idr && parts[3].iov_len == sizeof(idr));
+    call = packet(idr, sizeof(idr), sets, sizeof(sets), record);
+    assert(WriterVideoH265.writeData(&call) == 14 + 5 + 1 + 6 && part_count == 3);
+    assert(parts[2].iov_base == idr);
+    /* after a seek, a packet with its own VPS: the extradata is not sent */
+    WriterVideoH265.reset();
+    call = packet(key, sizeof(key), sets, sizeof(sets), record);
+    assert(WriterVideoH265.writeData(&call) == 14 + 5 + 1 + 11 && part_count == 3);
+    assert(parts[2].iov_base == key);
+    /* no extradata at all: the start code of the packet tells Annex B */
+    WriterVideoH265.reset();
+    call = packet(lengths, sizeof(lengths), NULL, 0, record);
+    assert(WriterVideoH265.writeData(&call) == 0 && !calls);
+    call = packet(short_code, sizeof(short_code), NULL, 0, record);
+    assert(WriterVideoH265.writeData(&call) == 14 + 5 + 1 + 5 && part_count == 3);
+    assert(parts[2].iov_base == short_code && parts[2].iov_len == sizeof(short_code));
+    call = packet(idr, sizeof(idr), NULL, 0, record);
+    assert(WriterVideoH265.writeData(&call) == 14 + 5 + 1 + 6 && part_count == 3);
+    WriterVideoH265.reset();
+}
+
 static void mpeg2_packet_shorter_than_a_start_code(void)
 {
     uint8_t sequence[] = {0, 0, 1, 0xb3, 1, 2, 3, 4};
@@ -850,6 +885,7 @@ int main(void)
     h265_four_byte_start_code_in_extradata();
     h265_new_parameter_sets();
     h265_parameter_sets_without_extradata();
+    h265_annexb_without_ts_flag();
     mpeg2_packet_shorter_than_a_start_code();
     vc1_wmv_codec_data();
     vorbis_headers();
