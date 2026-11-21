@@ -6326,6 +6326,7 @@ static int32_t container_ffmpeg_seek(Context_t *context, int64_t sec, uint8_t ab
     Track_t *audioTrack = NULL;
     Track_t *current = NULL;
     int64_t from_pts = INVALID_PTS_VALUE;
+    int64_t read_us = -1;
 
     if (sec > INT64_MAX / AV_TIME_BASE || sec < INT64_MIN / AV_TIME_BASE)
     {
@@ -6335,6 +6336,17 @@ static int32_t container_ffmpeg_seek(Context_t *context, int64_t sec, uint8_t ab
     target_us = sec * AV_TIME_BASE;
     /* The playback layer holds isSeeking until the output has been reset. */
     getMutex_wr(__FILE__, __FUNCTION__,__LINE__);
+    /* An input that cannot seek (http without ranges, a pipe) only goes
+     * forward, by reading: the seek of the play thread fails for a target
+     * before the read position, after the output has been cleared, and the
+     * playback jumps ahead. Such a seek is refused here. The 0 s seek of a
+     * track switch stays as it is. */
+    if (!zero_seek && avContextTab[0] && avContextTab[0]->pb && !use_custom_io[0] &&
+        !(avContextTab[0]->pb->seekable & AVIO_SEEKABLE_NORMAL) &&
+        !is_hls_input(avContextTab[0]) && !context->playback->isDash)
+    {
+        read_us = av_rescale(latestPts, AV_TIME_BASE, 90000);
+    }
     releaseMutex(__FILE__, __FUNCTION__,__LINE__);
     if (!absolute) 
     {
@@ -6377,7 +6389,12 @@ static int32_t container_ffmpeg_seek(Context_t *context, int64_t sec, uint8_t ab
     ffmpeg_printf(10, "goto %"PRId64" us\n", target_us);
     if (target_us < 0)
         target_us = 0;
-    
+    if (read_us >= 0 && target_us < read_us)
+    {
+        ffmpeg_err("the input cannot seek back to %"PRId64" us, read up to %"PRId64" us\n", target_us, read_us);
+        return cERR_CONTAINER_FFMPEG_ERR;
+    }
+
     context->manager->video->Command(context, MANAGER_GET_TRACK, &videoTrack);
     context->manager->audio->Command(context, MANAGER_GET_TRACK, &audioTrack);
 
