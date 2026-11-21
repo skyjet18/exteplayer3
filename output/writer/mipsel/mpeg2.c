@@ -112,7 +112,9 @@ static int writeData(void* _call)
     uint8_t *data = call->data;
     uint32_t data_len = call->len;
 
-    if (!private_data && !call->private_data && data_len > 3 && !memcmp(data, "\x00\x00\x01\xb3", 4))
+    /* A packet with its own sequence header: keep a copy of it, the latest
+     * one, for the first GOP after a seek that comes without one. */
+    if (!call->private_data && data_len > 3 && !memcmp(data, "\x00\x00\x01\xb3", 4))
     {
         bool ok = true;
         uint32_t pos = 4;
@@ -201,6 +203,13 @@ static int writeData(void* _call)
 
         while (data_len >= 4 && pos <= data_len - 4)
         {
+            /* the sequence header of the packet in front of the GOP applies,
+             * not the one kept from before the seek */
+            if (!memcmp(&data[pos], "\x00\x00\x01\xb3", 4))
+            {
+                must_send_header = false;
+                break;
+            }
             if (memcmp(&data[pos], "\x00\x00\x01\xb8", 4)) /* find group start code */
             {
                 pos++;

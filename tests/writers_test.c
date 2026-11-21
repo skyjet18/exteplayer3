@@ -314,6 +314,38 @@ static void mpeg2_packet_shorter_than_a_start_code(void)
     assert(!memcmp(written + 14, sequence, 8) && !memcmp(written + 22, group, 8));
 }
 
+/* Sequence headers after a seek: the one of the packet applies; the kept
+ * one, the latest, goes only in front of a GOP that comes without one. */
+static void mpeg2_sequence_header_after_a_seek(void)
+{
+    /* sequence header (no matrices) and GOP header: 12 + 8 bytes */
+    uint8_t a[] = {0, 0, 1, 0xb3, 0x2d, 0x02, 0x40, 0x33, 0xff, 0xff, 0xe0, 0x18,
+                   0, 0, 1, 0xb8, 0, 8, 0, 0};
+    uint8_t b[sizeof(a)];
+    uint8_t group[] = {0, 0, 1, 0xb8, 0, 8, 0, 0};
+    WriterAVCallData_t call = packet(a, sizeof(a), NULL, 0, capture);
+    memcpy(b, a, sizeof(a));
+    b[4] = 0x16; /* another width */
+    WriterVideoMPEG2.reset();
+    assert(WriterVideoMPEG2.writeData(&call) == 1 && written_size == 14 + sizeof(a));
+    /* a seek, then a packet with another sequence header: written as it is */
+    WriterVideoMPEG2.reset();
+    call = packet(b, sizeof(b), NULL, 0, capture);
+    assert(WriterVideoMPEG2.writeData(&call) == 1 && written_size == 14 + sizeof(b));
+    assert(!memcmp(written + 14, b, sizeof(b)));
+    /* a seek to a GOP without a sequence header: the latest one in front */
+    WriterVideoMPEG2.reset();
+    call = packet(group, sizeof(group), NULL, 0, capture);
+    assert(WriterVideoMPEG2.writeData(&call) == 14 + 12 + 8 && written_size == 14 + 12 + 8);
+    assert(!memcmp(written + 14, b, 12) && !memcmp(written + 26, group, 8));
+    /* with codec data of the container: not behind the header of the packet */
+    WriterVideoMPEG2.reset();
+    call = packet(a, sizeof(a), b, 12, capture);
+    assert(WriterVideoMPEG2.writeData(&call) == 1 && written_size == 14 + sizeof(a));
+    assert(!memcmp(written + 14, a, sizeof(a)));
+    WriterVideoMPEG2.reset();
+}
+
 /* The codec data block goes out with the first frame when the driver refuses it. */
 static void codec_data_with_first_frame(Writer_t *writer, size_t size, size_t offset)
 {
@@ -957,6 +989,7 @@ int main(void)
     h265_parameter_sets_without_extradata();
     h265_annexb_without_ts_flag();
     mpeg2_packet_shorter_than_a_start_code();
+    mpeg2_sequence_header_after_a_seek();
     vc1_wmv_codec_data();
     vorbis_headers();
     vp9_frame();
