@@ -21,6 +21,7 @@
 #include <poll.h>
 #include <stdint.h>
 #include <pthread.h>
+#include <time.h>
 #include <libavutil/time.h>
 
 #include "playback.h"
@@ -50,6 +51,49 @@ int64_t PlaybackLastContinue(void)
     value = last_continue_us;
     pthread_mutex_unlock(&continue_mutex);
     return value;
+}
+
+/* A change of the play state (continue, stop, seek, audio switch) for the
+ * threads that wait for one in PlaybackWaitChange() instead of polling. */
+static pthread_mutex_t change_mutex = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t change_cond = PTHREAD_COND_INITIALIZER;
+static uint32_t change_serial;
+
+static void PlaybackChanged(void)
+{
+    pthread_mutex_lock(&change_mutex);
+    change_serial++;
+    pthread_cond_broadcast(&change_cond);
+    pthread_mutex_unlock(&change_mutex);
+}
+
+uint32_t PlaybackChangeSerial(void)
+{
+    uint32_t serial;
+    pthread_mutex_lock(&change_mutex);
+    serial = change_serial;
+    pthread_mutex_unlock(&change_mutex);
+    return serial;
+}
+
+/* Returns after a change of the play state since PlaybackChangeSerial() gave
+ * serial, or after timeoutMs. The caller takes the serial before it looks at
+ * the state: a change in between ends the wait at once. */
+void PlaybackWaitChange(uint32_t serial, int32_t timeoutMs)
+{
+    struct timespec until;
+    clock_gettime(CLOCK_REALTIME, &until);
+    until.tv_sec += timeoutMs / 1000;
+    until.tv_nsec += (long)(timeoutMs % 1000) * 1000000L;
+    if (until.tv_nsec >= 1000000000L)
+    {
+        until.tv_sec += 1;
+        until.tv_nsec -= 1000000000L;
+    }
+    pthread_mutex_lock(&change_mutex);
+    while (change_serial == serial &&
+           0 == pthread_cond_timedwait(&change_cond, &change_mutex, &until));
+    pthread_mutex_unlock(&change_mutex);
 }
 
 /* ***************************** */
@@ -83,6 +127,7 @@ int8_t PlaybackDieNow(int8_t val)
             playbackDieNowCallbacks[i]();
             i += 1;
         }
+        PlaybackChanged();
     }
     return dieNow;
 }
@@ -352,6 +397,7 @@ static int32_t PlaybackTrick(Context_t *context, int32_t speed)
     context->playback->isForwarding = speed > 0;
     context->playback->BackWard     = speed < 0;
     context->playback->Speed        = speed;
+    PlaybackChanged();
 
     playback_printf(10, "exiting with value %d\n", ret);
     return ret;
@@ -426,6 +472,7 @@ static int32_t PlaybackContinue(Context_t  *context)
         context->playback->BackWard     = 0;
         context->playback->SlowMotion   = 0;
         context->playback->Speed        = 1;
+        PlaybackChanged();
 
 #ifdef HAVE_DREAMNEXTGEN
         /* play on from the last picture of the trick play */
@@ -534,6 +581,7 @@ static int32_t PlaybackSeek(Context_t  *context, int64_t *pos, uint8_t absolute)
         uint8_t wasSeeking = context->playback->isSeeking;
         void *old_stamp = context->playback->stamp;
         context->playback->isSeeking = 1;
+        PlaybackChanged();
         /* We changing current stamp, so all frames with old stamps will be skipped
          * Without this there could be situation when the ffmpeg thread is 
          * in the av_read_frame(), so, even if we flushed data,  still 
@@ -667,6 +715,7 @@ static int32_t PlaybackSwitchAudio(Context_t  *context, int32_t *track)
         uint8_t wasSeeking = context->playback->isSeeking;
         uint8_t wasSwitching = context->playback->isAudioSwitching;
         context->playback->isSeeking = 1;
+        PlaybackChanged();
         if (context->manager && context->manager->audio) 
         {
             ret = context->manager->audio->Command(context, MANAGER_GET, &curtrackid);

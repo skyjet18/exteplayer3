@@ -60,6 +60,23 @@ static int container_command(void *opaque, ContainerCmd_t command, void *argumen
     return 0;
 }
 
+static int64_t mono_us(void)
+{
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (int64_t)ts.tv_sec * 1000000 + ts.tv_nsec / 1000;
+}
+
+/* waits up to 5 s for a change of the play state after waited_serial,
+ * stores when the wait ended */
+static uint32_t waited_serial;
+static void *wait_change(void *arg)
+{
+    PlaybackWaitChange(waited_serial, 5000);
+    *(int64_t *)arg = mono_us();
+    return NULL;
+}
+
 int main(void)
 {
     PlaybackHandler_t playback = {.isPlaying = 1};
@@ -125,6 +142,30 @@ int main(void)
         assert(PlaybackStop(&empty) < 0);
         assert(PlaybackTerminate(&empty) == 0);
         PLAYBACK_SILENT = 1;
+    }
+    /* a change of the play state (here a seek) wakes a thread that waits for
+     * one; without a change the wait ends at its timeout, after a change since
+     * the serial was taken it does not wait */
+    {
+        pthread_t waiter;
+        int64_t start, woken = 0;
+        uint32_t serial = PlaybackChangeSerial();
+        start = mono_us();
+        PlaybackWaitChange(serial, 100);
+        assert(mono_us() - start >= 90000);
+        waited_serial = serial;
+        assert(!pthread_create(&waiter, NULL, wait_change, &woken));
+        usleep(200000);
+        playback.isPlaying = 1;
+        playback.isDash = 0;
+        seek_error = 0;
+        start = mono_us();
+        assert(!PlaybackSeek(&context, &zero, 0));
+        assert(!pthread_join(waiter, NULL));
+        assert(woken >= start && woken - start < 1000000);
+        start = mono_us();
+        PlaybackWaitChange(serial, 5000);
+        assert(mono_us() - start < 1000000);
     }
     return 0;
 }

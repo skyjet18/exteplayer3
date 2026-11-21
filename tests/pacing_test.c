@@ -46,6 +46,26 @@ int8_t PlaybackDieNow(int8_t value)
     return stopped;
 }
 
+/* The pause waits for a change of the play state, 10 ms of the test clock
+ * per wait; the "other thread" of a case runs after each. */
+static uint32_t change_serial;
+static int change_waits;
+
+uint32_t PlaybackChangeSerial(void)
+{
+    return change_serial;
+}
+
+void PlaybackWaitChange(uint32_t serial, int32_t timeoutMs)
+{
+    assert(serial == change_serial && timeoutMs > 0 && timeoutMs <= 1000);
+    change_waits++;
+    now_us += 10000;
+    slept_us += 10000;
+    if (after_sleep)
+        after_sleep();
+}
+
 static PlaybackHandler_t playback = {.isPlaying = 1};
 static Context_t context = {.playback = &playback};
 
@@ -108,7 +128,10 @@ static int64_t pause_slept;
 static void end_pause_after_3_s(void)
 {
     if (playback.isPaused && slept_us - pause_slept >= 3000000)
+    {
         playback.isPaused = 0;
+        change_serial++;
+    }
 }
 
 static void pause_stops_the_clock(void)
@@ -119,6 +142,8 @@ static void pause_stops_the_clock(void)
     pause_slept = slept_us;
     after_sleep = end_pause_after_3_s;
     assert(held(PACING_STREAM_VIDEO, P + 5 * SECOND / 2) == 3000000 + 1500000);
+    /* the pause waited for the continue, not in sleeps */
+    assert(change_waits == 300);
 }
 
 /* A seek or a stop ends the wait. */
