@@ -89,7 +89,7 @@ static int writeData(void* _call)
 
     h263_printf(10, "VideoPts %llu\n", call->Pts);
 
-    if ((call->data == NULL) || (call->len <= 0))
+    if ((call->data == NULL) || (call->len == 0))
     {
         h263_err("NULL Data. ignoring...\n");
         return 0;

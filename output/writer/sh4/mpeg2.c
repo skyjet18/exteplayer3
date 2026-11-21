@@ -90,7 +90,7 @@ static int writeData(void* _call)
 
     mpeg2_printf(10, "VideoPts %llu\n", call->Pts);
 
-    if ((call->data == NULL) || (call->len <= 0))
+    if ((call->data == NULL) || (call->len == 0))
     {
         mpeg2_err("parsing NULL Data. ignoring...\n");
         return 0;

@@ -91,7 +91,7 @@ static int writeData(void* _call)
 
     wma_printf(10, "AudioPts %llu\n", call->Pts);
 
-    if ((call->data == NULL) || (call->len <= 0))
+    if ((call->data == NULL) || (call->len == 0))
     {
         wma_err("parsing NULL Data. ignoring...\n");
         return 0;
@@ -108,7 +108,7 @@ static int writeData(void* _call)
 
         unsigned char  PesHeader[PES_MAX_HEADER_SIZE];
 
-        if ((call->private_size <= 0) || (call->private_data == NULL))
+        if ((call->private_size == 0) || (call->private_data == NULL))
         {
             wma_err("private NULL.\n");
             return -1;

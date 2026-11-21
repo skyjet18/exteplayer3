@@ -91,7 +91,7 @@ static int32_t writeData(void* _call)
 
     dts_printf(10, "AudioPts %llu\n", call->Pts);
 
-    if ((call->data == NULL) || (call->len <= 0))
+    if ((call->data == NULL) || (call->len == 0))
     {
         dts_err("parsing NULL Data. ignoring...\n");
         return 0;

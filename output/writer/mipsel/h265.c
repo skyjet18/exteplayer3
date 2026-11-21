@@ -229,7 +229,7 @@ static int writeData(void* _call)
     
     h265_printf(20, "VideoPts %llu - %u %u\n", call->Pts, TimeDelta, TimeScale);
 
-    if ((call->data == NULL) || (call->len <= 0))
+    if ((call->data == NULL) || (call->len == 0))
     {
         h264_err("NULL Data. ignoring...\n");
         return 0;

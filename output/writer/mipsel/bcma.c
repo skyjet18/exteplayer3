@@ -88,7 +88,7 @@ static int writeData(void *_call)
         return 0;
     }
 
-    if (call->data == NULL || call->len <= 0 || call->fd < 0 || \
+    if (call->data == NULL || call->len == 0 || call->fd < 0 || \
         !call->private_data || call->private_size != sizeof(pcmPrivateData_t)) {
         bcma_err("Wrong input call: %p, data: %p, len: %u, fd: %d\n", call, call->data, call->len, call->fd);
         return 0;

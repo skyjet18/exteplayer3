@@ -89,7 +89,7 @@ static int writeData(void* _call)
 
     ac3_printf(10, "AudioPts %llu\n", call->Pts);
 
-    if ((call->data == NULL) || (call->len <= 0))
+    if ((call->data == NULL) || (call->len == 0))
     {
         ac3_err("parsing NULL Data. ignoring...\n");
         return 0;

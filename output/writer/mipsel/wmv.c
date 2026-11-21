@@ -91,7 +91,7 @@ static int writeData(void* _call)
         return 0;
     }
 
-    if ((call->data == NULL) || (call->len <= 0)) 
+    if ((call->data == NULL) || (call->len == 0)) 
     {
         wmv_err("parsing NULL Data. ignoring...\n");
         return 0;

@@ -88,7 +88,7 @@ static int writeData(void *_call)
         return 0;
     }
 
-    if (call->data == NULL || call->len <= 0 || call->fd < 0) {
+    if (call->data == NULL || call->len == 0 || call->fd < 0) {
         amr_err("call error wrong data call: %p, data: %p, len: %u, fd: %d\n", call, call->data, call->len, call->fd);
         return 0;
     }

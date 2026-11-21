@@ -85,7 +85,7 @@ static int writeData(void *_call, bool is_vp6, bool is_vp9)
         return 0;
     }
 
-    if ((call->data == NULL) || (call->len <= 0)) 
+    if ((call->data == NULL) || (call->len == 0)) 
     {
         vp_err("parsing NULL Data. ignoring...\n");
         return 0;

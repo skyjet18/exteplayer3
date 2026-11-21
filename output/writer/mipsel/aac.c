@@ -201,7 +201,7 @@ static int writeDataADTS(void *_call)
     
     aac_printf(10, "\n");
 
-    if (call == NULL || call->data == NULL || call->len <= 0 || call->fd < 0)
+    if (call == NULL || call->data == NULL || call->len == 0 || call->fd < 0)
     {
         aac_err("call data is NULL...\n");
         return 0;
@@ -266,7 +266,7 @@ static int writeDataLATM(void *_call)
         return 0;
     }
     
-    if ((call->data == NULL) || (call->len <= 0))
+    if ((call->data == NULL) || (call->len == 0))
     {
         aac_err("parsing NULL Data. ignoring...\n");
         return 0;
