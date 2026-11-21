@@ -284,6 +284,19 @@ static void dv_q_drain(void)
     pthread_mutex_unlock(&dv_q_mu);
 }
 
+/* Waits while the decoder is paused, until a continue or a stop: both are
+ * set under dv_q_mu with a broadcast on dv_q_nonemp. Returns the stop. */
+static int dv_wait_unpaused(void)
+{
+    int stop;
+    pthread_mutex_lock(&dv_q_mu);
+    while (dv_q_paused && !dv_q_stop)
+        pthread_cond_wait(&dv_q_nonemp, &dv_q_mu);
+    stop = dv_q_stop;
+    pthread_mutex_unlock(&dv_q_mu);
+    return stop;
+}
+
 /* Periodic stats — sampled by dv_consumer_main. */
 static uint64_t dv_st_submitted = 0;   /* SET_FRAME calls that returned ok */
 static uint64_t dv_st_dropped   = 0;   /* video buffer clears after a decoder stall */
@@ -366,9 +379,8 @@ static int dv_submit_frame(int fd, const uint8_t *data, size_t size, int64_t pts
          * buffer full ends in the write timeout of the driver right after
          * the pause, and the driver drops every frame until a flush */
         if (__atomic_load_n(&dv_q_paused, __ATOMIC_RELAXED)) {
-            if (__atomic_load_n(&dv_q_stop, __ATOMIC_RELAXED))
+            if (dv_wait_unpaused())
                 return -1;
-            usleep(10000);
             clock_gettime(CLOCK_MONOTONIC, &t0);
             continue;
         }
@@ -437,19 +449,22 @@ static void dv_wait_lead(int64_t pts_90k)
     static uint64_t last_vpts = 0;  /* consumer thread only */
     static int still_ms = 0;
     while (!__atomic_load_n(&dv_q_stop, __ATOMIC_RELAXED)) {
-        if (!__atomic_load_n(&dv_q_paused, __ATOMIC_RELAXED)) {
-            uint64_t vpts = dv_tsync_read("/sys/class/tsync/pts_video");
-            if (pts_90k < 0 || vpts == __atomic_load_n(&dv_flush_vpts, __ATOMIC_RELAXED))
-                return;
-            int32_t lead = (int32_t)((uint32_t)pts_90k - (uint32_t)vpts);
-            /* far off is a jump, the decoder sorts it out */
-            if (lead <= DV_LEAD_90K || lead > 10 * 90000)
-                return;
-            still_ms = (vpts == last_vpts) ? still_ms + 10 : 0;
-            if (still_ms > DV_STALL_MS)
-                return;
-            last_vpts = vpts;
+        if (__atomic_load_n(&dv_q_paused, __ATOMIC_RELAXED)) {
+            /* the frame on screen stands: wait for the continue */
+            dv_wait_unpaused();
+            continue;
         }
+        uint64_t vpts = dv_tsync_read("/sys/class/tsync/pts_video");
+        if (pts_90k < 0 || vpts == __atomic_load_n(&dv_flush_vpts, __ATOMIC_RELAXED))
+            return;
+        int32_t lead = (int32_t)((uint32_t)pts_90k - (uint32_t)vpts);
+        /* far off is a jump, the decoder sorts it out */
+        if (lead <= DV_LEAD_90K || lead > 10 * 90000)
+            return;
+        still_ms = (vpts == last_vpts) ? still_ms + 10 : 0;
+        if (still_ms > DV_STALL_MS)
+            return;
+        last_vpts = vpts;
         usleep(10000);
     }
 }
