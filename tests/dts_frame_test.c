@@ -211,6 +211,28 @@ static void xch_size_raised(void)
     free(frame);
 }
 
+/* DTS-ES whose XCH size field is the distance plus one, as FFmpeg's decoder
+ * takes it: raised by the padding as well. Plus two is no XCH size. */
+static void xch_size_plus_one_raised(void)
+{
+    uint8_t *frame = dvd_frame();
+    uint8_t *output;
+    frame[10] = 0x10; /* EXT_AUDIO_ID 0, EXT_AUDIO */
+    memcpy(frame + 1800, XCH_SYNC, 4);
+    set_xch_size(frame + 1800, 2013 - 1800 + 1);
+    output = aligned(frame, 2013, 2016);
+    assert(!memcmp(output + 8, frame + 8, 1804 - 8));
+    assert(xch_size(output + 1800) == 2016 - 1800 + 1);
+    assert((output[1805] & 0x3f) == (frame[1805] & 0x3f));
+    assert(!memcmp(output + 1806, frame + 1806, 2013 - 1806));
+    free(output);
+    set_xch_size(frame + 1800, 2013 - 1800 + 2);
+    output = aligned(frame, 2013, 2016);
+    assert(!memcmp(output + 8, frame + 8, 2013 - 8));
+    free(output);
+    free(frame);
+}
+
 /* No extension flag: a sync word with a matching size field stays as it is. */
 static void extension_needs_its_flag(void)
 {
@@ -235,6 +257,7 @@ int main(void)
     room_in_the_burst();
     x96_size_raised();
     xch_size_raised();
+    xch_size_plus_one_raised();
     extension_needs_its_flag();
     return 0;
 }
