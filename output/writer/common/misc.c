@@ -95,7 +95,6 @@ void PutBits(BitPacker_t * ld, unsigned int code, unsigned int length)
         ld->Ptr[3] = (char)bit_buf;
         ld->Ptr   += 4;
         length    -= bit_left;
-        bit_buf    = code & ((1 << length) - 1);
         bit_left   = 32 - length;
         bit_buf = code;
     }

@@ -130,7 +130,6 @@ static int32_t writeData(void *_call)
 
         uint32_t codecID   = (uint32_t)pcmPrivateData->codec_id;
         
-        uint8_t dataPrecision = 0;
         uint8_t LE = 0;
         switch (codecID)
         {

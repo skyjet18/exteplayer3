@@ -463,7 +463,6 @@ static void *TermThreadFun(void *arg)
            && errno == EINTR)
     {
         /* Restart if interrupted by signal */
-        continue;
     }
     
     if (FD_ISSET(fd, &readfds))
@@ -716,7 +715,6 @@ static void SetNice(int prio)
     };
     sched_setscheduler(0, SCHED_RR, &param);
 #else
-    int prevPrio = getpriority(PRIO_PROCESS, 0);
     if (-1 == setpriority(PRIO_PROCESS, 0, prio))
     {
         printf("setpriority - failed\n");
@@ -1014,9 +1012,6 @@ static int ParseParams(int argc,char* argv[], PlayFiles_t *playbackFiles, int *p
     int quality = 0, default_audio = 0, export_pcm = 0;
     int xcode = 0; /* 1: -Z, 2: -X, 4: -Y, 8: --dts-eac3, 16: --truehd-eac3 */
     int xcode_eac3 = 0; /* -E */
-    int digit_optind = 0;
-    int aopt = 0, bopt = 0;
-    char *copt = 0, *dopt = 0;
     /* the long names of the transcoding options, values above every character */
     enum
     {
@@ -1756,7 +1751,7 @@ int main(int argc, char* argv[])
             {
                 static char cmd[128] = ""; // static to not allocate on stack
                 sprintf(cmd, "ai%d\n", audioTrackIdx);
-                commandRetVal = HandleTracks(g_player->manager->audio, PLAYBACK_SWITCH_AUDIO, cmd);
+                HandleTracks(g_player->manager->audio, PLAYBACK_SWITCH_AUDIO, cmd);
             }
             HandleTracks(g_player->manager->audio, (PlaybackCmd_t)-1, "ac");
             
@@ -1766,7 +1761,7 @@ int main(int argc, char* argv[])
             {
                 static char cmd[128] = ""; // static to not allocate on stack
                 sprintf(cmd, "si%d\n", subtitleTrackIdx);
-                commandRetVal = HandleTracks(g_player->manager->subtitle, PLAYBACK_SWITCH_SUBTITLE, cmd);
+                HandleTracks(g_player->manager->subtitle, PLAYBACK_SWITCH_SUBTITLE, cmd);
             }
             HandleTracks(g_player->manager->subtitle, (PlaybackCmd_t)-1, "sc");
         }
@@ -2025,7 +2020,6 @@ int main(int argc, char* argv[])
             }
             case 'n':
             {
-                uint8_t loop = 0;
                 if( '1' == argvBuff[1] || '0' == argvBuff[1] )
                 {
                     PlaybackHandler_t *ptrP = g_player->playback;

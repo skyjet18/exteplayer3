@@ -246,7 +246,6 @@ static int32_t writeData(void* _call)
         (call->len > 3) && ((call->data[0] == 0x00 && call->data[1] == 0x00 && call->data[2] == 0x00 && call->data[3] == 0x01) ||
         (call->data[0] == 0xff && call->data[1] == 0xff && call->data[2] == 0xff && call->data[3] == 0xff))))
     {
-        uint32_t PacketLength = 0;
         uint32_t FakeStartCode = /*(call->Version << 8) | */PES_VERSION_FAKE_START_CODE;
         
         iov[ic++].iov_base = PesHeader;
@@ -256,7 +255,6 @@ static int32_t writeData(void* _call)
             initialHeader = 0;
             iov[ic].iov_base  = call->private_data;
             iov[ic++].iov_len = call->private_size;
-            PacketLength     += call->private_size;
         }
         
         iov[ic].iov_base = "";
@@ -264,7 +262,6 @@ static int32_t writeData(void* _call)
         
         iov[ic].iov_base  = call->data;
         iov[ic++].iov_len = call->len;
-        PacketLength     += call->len;
         
         /*Hellmaster1024: some packets will only be accepted by the player if we send one byte more than
                           data is available. The content of this byte does not matter. It will be ignored

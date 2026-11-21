@@ -298,7 +298,6 @@ static int writeData(void* _call)
         (call->private_size == 0 && CodecData == NULL && HasStartCode(call->data, call->len)))
     {
         h265_printf(10, "H265 simple inject method!\n");
-        uint32_t PacketLength = 0;
         uint32_t FakeStartCode = (call->Version << 8) | PES_VERSION_FAKE_START_CODE;
         
         iov[ic++].iov_base = PesHeader;
@@ -313,13 +312,11 @@ static int writeData(void* _call)
         {
             iov[ic].iov_base  = call->private_data;
             iov[ic++].iov_len = call->private_size;
-            PacketLength     += call->private_size;
         }
         initialHeader = 0;
 
         iov[ic].iov_base  = call->data;
         iov[ic++].iov_len = call->len;
-        PacketLength     += call->len;
         
         iov[0].iov_len = InsertPesHeader(PesHeader, -1, MPEG_VIDEO_PES_START_CODE, VideoPts, FakeStartCode);
         
@@ -412,8 +409,6 @@ static int writeData(void* _call)
 
 static int writeReverseData(void* _call)
 {
-    WriterAVCallData_t* call = (WriterAVCallData_t*) _call;
-    
     return 0;
 }
 /* ***************************** */

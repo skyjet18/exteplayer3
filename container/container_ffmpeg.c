@@ -2687,8 +2687,6 @@ static void FFMPEGThread(Context_t *context)
     threadname[16] = 0;
     prctl (PR_SET_NAME, (unsigned long)&threadname);
     AVPacket   packet;
-    off_t   lastSeek = -1;
-    int64_t lastPts = -1;
     int64_t currentVideoPts = -1;
     int64_t currentAudioPts = -1;
     int64_t lastVideoWriteUs = 0;
@@ -2708,9 +2706,6 @@ static void FFMPEGThread(Context_t *context)
     AacPtsDejitter_t aacPtsDejitter;
     aac_pts_dejitter_reset(&aacPtsDejitter);
     
-    int64_t showtime = 0;
-    int64_t bofcount = 0;
-    int32_t       err = 0;
     AudioVideoOut_t avOut;
     
     g_context = context;
@@ -2758,7 +2753,7 @@ static void FFMPEGThread(Context_t *context)
     int64_t seek_target_bytes = 0;
     bool do_seek_target_bytes = false;
     int64_t prev_seek_time_sec = -1;
-    void *stamp = context->playback->stamp;
+    void *stamp;
 
 #if LIBAVCODEC_VERSION_INT >= AV_VERSION_INT(56, 34, 100)
 #ifdef __sh__
@@ -2859,7 +2854,6 @@ static void FFMPEGThread(Context_t *context)
             zero_seek = g_zero_seek;
             seek_from_pts = g_seek_from_pts;
             seek_offset_us = g_seek_offset_us;
-            stamp = g_stamp;
             g_do_seek_target_seconds = false;
         }
         releaseSeekMutex();
@@ -4008,7 +4002,6 @@ static void FFMPEGThread(Context_t *context)
                     continue;
                 }
                 */
-                ffmpegStatus = 0;
             }
             
             if(!is_finish_timeout() && !context->playback->isTSLiveMode)
@@ -4601,7 +4594,7 @@ int32_t container_ffmpeg_init_av_context(Context_t *context, char *filename, uin
             }
             
             // check if uri have additional params
-            if ((token = strtok(baseUri, " ")) != NULL )
+            if (strtok(baseUri, " ") != NULL )
             {
                 char *conn = malloc(strlen(filename));
                 char *swfUrl = malloc(strlen(filename));
@@ -5012,8 +5005,6 @@ int32_t container_ffmpeg_init_av_context(Context_t *context, char *filename, uin
 
 int32_t container_ffmpeg_init(Context_t *context, PlayFiles_t *playFilesNames)
 {
-    int32_t err = 0;
-
     ffmpeg_printf(10, ">\n");
 
     if (playFilesNames == NULL) 
@@ -5150,7 +5141,6 @@ int32_t container_ffmpeg_update_tracks(Context_t *context, char *filename, int32
         
         if (avContext->nb_programs > 0)
         {
-            uint32_t n = 0;
             ffmpeg_printf(1, "cAVIdx[%u]: stream with multi programs: num of programs %u\n", cAVIdx, avContext->nb_programs);
             AVProgram *selected = select_program(avContext);
             if (!selected)
@@ -6046,7 +6036,6 @@ static int32_t container_ffmpeg_seek(Context_t *context, int64_t sec, uint8_t ab
     int64_t target_us;
     Track_t *videoTrack = NULL;
     Track_t *audioTrack = NULL;
-    Track_t *current = NULL;
     int64_t from_pts = INVALID_PTS_VALUE;
     int64_t read_us = -1;
 
@@ -6120,15 +6109,7 @@ static int32_t container_ffmpeg_seek(Context_t *context, int64_t sec, uint8_t ab
     context->manager->video->Command(context, MANAGER_GET_TRACK, &videoTrack);
     context->manager->audio->Command(context, MANAGER_GET_TRACK, &audioTrack);
 
-    if (videoTrack != NULL)
-    {
-        current = videoTrack;
-    }
-    else if (audioTrack != NULL)
-    {
-        current = audioTrack;
-    }
-    else
+    if (videoTrack == NULL && audioTrack == NULL)
     {
         ffmpeg_err( "no track available to seek\n");
         return cERR_CONTAINER_FFMPEG_ERR;
