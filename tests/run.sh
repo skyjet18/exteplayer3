@@ -87,6 +87,18 @@ $cc -g -fsanitize=undefined -ffunction-sections -fdata-sections \
     "$FFMPEG_BUILD/libavutil/libavutil.a" -lm ${FFMPEG_EXTRA_LIBS:-} -o "$tmp/net_stall"
 timeout 20 "$tmp/net_stall"
 rm -f "$tmp/net_stall"
+# The seek of the read-ahead buffer through its filler thread, to a position
+# beyond 2 GiB and with an error of the input.
+$cc -g -fsanitize=undefined -ffunction-sections -fdata-sections \
+    -Wno-deprecated-declarations -Iinclude -Iexternal \
+    -Dff_mpeg4audio_channels=exteplayer3_mpeg4audio_channels external/ffmpeg/src/mpeg4audio.c \
+    -I"$FFMPEG_BUILD" -I"$FFMPEG_SOURCE" \
+    tests/buffered_seek_test.c tools/*.c output/writer/common/misc.c \
+    -Wl,--gc-sections -pthread "$FFMPEG_BUILD/libavformat/libavformat.a" \
+    "$FFMPEG_BUILD/libavcodec/libavcodec.a" "$FFMPEG_BUILD/libswresample/libswresample.a" \
+    "$FFMPEG_BUILD/libavutil/libavutil.a" -lm ${FFMPEG_EXTRA_LIBS:-} -o "$tmp/buffered_seek"
+timeout 20 "$tmp/buffered_seek"
+rm -f "$tmp/buffered_seek"
 # The play thread of the container, started through the pthread_create() of
 # the test: the thread has ended when container_ffmpeg_play() goes on.
 $cc -g -fsanitize=undefined -ffunction-sections -fdata-sections \

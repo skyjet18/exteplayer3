@@ -45,6 +45,8 @@ static int hasfillerThreadStarted[10] = {0,0,0,0,0,0,0,0,0,0};
 int hasfillerThreadStartedID = 0;
 static pthread_mutex_t fillermutex;
 static int ffmpeg_buf_valid_size = 0;
+/* a seek of ffmpeg_seek() for the filler thread and its result; the request
+ * is not under the mutex, both threads use them with __atomic */
 static int ffmpeg_do_seek_ret = 0;
 static int ffmpeg_do_seek = 0;
 static int ffmpeg_buf_stop = 0;
@@ -290,6 +292,9 @@ static void ffmpeg_filler(Context_t *context, int32_t id, int32_t* inpause, int3
     while( (flag == 0 && avContextTab[0] != NULL && avContextTab[0]->pb != NULL && rwdiff > FILLBUFDIFF) || 
            (flag == 1 && hasfillerThreadStarted[id] == 1 && avContextTab[0] != NULL && avContextTab[0]->pb != NULL && rwdiff > FILLBUFDIFF) )
     {
+         int seek;
+         int64_t seek_pos;
+
          if( 0 != PlaybackDieNow(0))
          {
             break;
@@ -303,16 +308,20 @@ static void ffmpeg_filler(Context_t *context, int32_t id, int32_t* inpause, int3
 
          getfillerMutex(__FILE__, __FUNCTION__,__LINE__);
          //do a seek
-         if(ffmpeg_do_seek != 0)
+         seek = __atomic_load_n(&ffmpeg_do_seek, __ATOMIC_ACQUIRE);
+         if(seek != 0)
          {
-             ffmpeg_do_seek_ret = ffmpeg_seek_org(avContextTab[0]->pb->opaque, avContextTab[0]->pb->pos + ffmpeg_do_seek, SEEK_SET);
-             if(ffmpeg_do_seek_ret >= 0)
+             seek_pos = ffmpeg_seek_org(avContextTab[0]->pb->opaque, avContextTab[0]->pb->pos + seek, SEEK_SET);
+             if(seek_pos >= 0)
              {
                  ffmpeg_buf_write = ffmpeg_buf;
                  ffmpeg_buf_read = ffmpeg_buf;
              }
 
-             ffmpeg_do_seek = 0;
+             /* the error code, not the new position: that may not fit an int */
+             __atomic_store_n(&ffmpeg_do_seek_ret, seek_pos < 0 ? (int)seek_pos : 0, __ATOMIC_RELAXED);
+             /* the result is stored before the request ends */
+             __atomic_store_n(&ffmpeg_do_seek, 0, __ATOMIC_RELEASE);
          }
 
          if(ffmpeg_buf_read == ffmpeg_buf_write)
@@ -639,21 +648,23 @@ static int64_t ffmpeg_seek(void *opaque, int64_t offset, int32_t whence)
     }
     else
     {
+        int seek_ret;
+
         releasefillerMutex(__FILE__, __FUNCTION__,__LINE__);
         ffmpeg_printf(20, "real-seek diff=%"PRId64"\n", diff);
 
-        ffmpeg_do_seek_ret = 0;
-        ffmpeg_do_seek = diff;
-        while(ffmpeg_do_seek != 0)
+        __atomic_store_n(&ffmpeg_do_seek_ret, 0, __ATOMIC_RELAXED);
+        __atomic_store_n(&ffmpeg_do_seek, (int)diff, __ATOMIC_RELEASE);
+        while(__atomic_load_n(&ffmpeg_do_seek, __ATOMIC_ACQUIRE) != 0)
         {
             usleep(100000);
         }
 
-        ffmpeg_do_seek = 0;
-        if(ffmpeg_do_seek_ret < 0)
+        seek_ret = __atomic_load_n(&ffmpeg_do_seek_ret, __ATOMIC_RELAXED);
+        if(seek_ret < 0)
         {
-            ffmpeg_err("seek not ok ret=%d\n", ffmpeg_do_seek_ret);
-            return ffmpeg_do_seek_ret;
+            ffmpeg_err("seek not ok ret=%d\n", seek_ret);
+            return seek_ret;
         }
 
         //fill buffer
