@@ -53,6 +53,21 @@ int main(void)
     bufferingQueueHead = bufferingQueueTail = NULL;
     bufferingDataSize = 0;
     assert(!LinuxDvbBuffFlushAudio(&context));
+    /* -b, the audio device could not be opened: the audio writes come with
+     * fd -1, the value kept for a device the buffering was not given.
+     * Nothing is queued for it. */
+    videofd = output_pipe[1];
+    audiofd = -1;
+    {
+        struct iovec vector = {&data, 1};
+        assert(BufferingWriteV(-1, &vector, 1) < 0);
+        assert(!bufferingQueueHead && !bufferingDataSize);
+        assert(BufferingWriteV(videofd, &vector, 1) == 1);
+        assert(bufferingQueueHead && bufferingQueueHead->dataType == OUTPUT_VIDEO);
+        free(bufferingQueueHead);
+        bufferingQueueHead = bufferingQueueTail = NULL;
+        bufferingDataSize = 0;
+    }
     close(output_pipe[0]);
     close(output_pipe[1]);
     close(g_pfd[0]);
