@@ -83,10 +83,15 @@ static void OutputPacingWait(Context_t *context, int32_t stream, int64_t pts)
     if (context->playback->isPaused)
     {
         int64_t pauseStart = PacingNowUs();
+        /* taken before the state is looked at: no continue is missed */
+        uint32_t serial = PlaybackChangeSerial();
         while (context->playback->isPaused && context->playback->isPlaying &&
                !context->playback->isSeeking && 0 == PlaybackDieNow(0))
         {
-            usleep(10000);
+            /* continue, stop and seek wake it; the timeout is a safety net
+             * for a change of the state that does not signal */
+            PlaybackWaitChange(serial, 250);
+            serial = PlaybackChangeSerial();
         }
         pthread_mutex_lock(&g_pacing_mtx);
         if (g_pacing_wall_us >= 0)

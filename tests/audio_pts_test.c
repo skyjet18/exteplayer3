@@ -36,6 +36,17 @@ int64_t PlaybackLastContinue(void)
     return 0;
 }
 
+uint32_t PlaybackChangeSerial(void)
+{
+    return 0;
+}
+
+void PlaybackWaitChange(uint32_t serial, int32_t timeoutMs)
+{
+    (void)serial;
+    (void)timeoutMs;
+}
+
 void LinuxDvbBuffSetStamp(void *stamp)
 {
     (void)stamp;
