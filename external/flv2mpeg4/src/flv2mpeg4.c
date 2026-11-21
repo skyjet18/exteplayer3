@@ -282,8 +282,8 @@ int flv2mpeg4_process_flv_packet(flv2mpeg4_CTX *ctx, uint8 picture_type, const u
     BW bw;
     init_br(&br, buf, size);
     init_bw(&bw, p->out_buf, PACKETBUFFER_SIZE);
-    write_m4v_frame(ctx, &p->conv, &br, &bw, time);
-    return 0;
+    /* a broken picture is dropped */
+    return write_m4v_frame(ctx, &p->conv, &br, &bw, time);
 }
 
 int flv2mpeg4_prepare_extra_data(flv2mpeg4_CTX *ctx)

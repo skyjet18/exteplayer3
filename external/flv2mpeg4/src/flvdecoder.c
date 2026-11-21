@@ -382,8 +382,8 @@ static int __inline decode_inter_mb_internal(BR* p, MICROBLOCK* mb, int escape_t
 	if ((cbpc & 16) == 0)
 	{
 		// 16x16 motion prediction
-		decode_motion(p, &mb->mv_x[0]);
-		decode_motion(p, &mb->mv_y[0]);
+		if (decode_motion(p, &mb->mv_x[0]) < 0) return -1;
+		if (decode_motion(p, &mb->mv_y[0]) < 0) return -1;
 		mb->mv_type = MV_TYPE_16X16;
 	}
 	else
@@ -391,8 +391,8 @@ static int __inline decode_inter_mb_internal(BR* p, MICROBLOCK* mb, int escape_t
 		// 8x8 motion prediction
 		for (i = 0; i < 4; i++)
 		{
-			decode_motion(p, &mb->mv_x[i]);
-			decode_motion(p, &mb->mv_y[i]);
+			if (decode_motion(p, &mb->mv_x[i]) < 0) return -1;
+			if (decode_motion(p, &mb->mv_y[i]) < 0) return -1;
 		}
 		mb->mv_type = MV_TYPE_8X8;
 	}
@@ -414,7 +414,9 @@ int decode_I_mb(BR* p, MICROBLOCK* mb, int escape_type, int qscale)
 	if (cbpc < 0) { printf("intra_MCBPC error\n"); return -1; }
 	
 	dquant = cbpc & 4;
-	decode_intra_mb_internal(p, mb, escape_type, qscale, cbpc, dquant);
+	if (decode_intra_mb_internal(p, mb, escape_type, qscale, cbpc, dquant) < 0) return -1;
+	/* a macroblock that takes bits behind the end of the packet */
+	if (br_overrun(p)) return -1;
 
 	if (show_bits(p, 16) == 0)
 	{
@@ -441,14 +443,16 @@ int decode_P_mb(BR* p, MICROBLOCK* mb, int escape_type, int qscale)
 		if ((cbpc & 4) != 0)
 		{
 			mb->intra = 1;
-			decode_intra_mb_internal(p, mb, escape_type, qscale, cbpc, dquant);
+			if (decode_intra_mb_internal(p, mb, escape_type, qscale, cbpc, dquant) < 0) return -1;
 		}
 		else
 		{
 			mb->intra = 0;
-			decode_inter_mb_internal(p, mb, escape_type, qscale, cbpc, dquant);
+			if (decode_inter_mb_internal(p, mb, escape_type, qscale, cbpc, dquant) < 0) return -1;
 		}
 	}
+	/* a macroblock that takes bits behind the end of the packet */
+	if (br_overrun(p)) return -1;
 			
 	if (show_bits(p, 16) == 0)
 	{
@@ -520,6 +524,10 @@ int decode_picture_header(BR* p, PICTURE* picture)
 	{
         flash_bits(p, 8);
     }
+	if (br_overrun(p))
+	{
+		return -1;
+	}
 
 //	dump_marker(0, "dd header end");
 	return 0;

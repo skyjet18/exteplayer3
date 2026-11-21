@@ -10,7 +10,8 @@
  *   escapes) with spatial masking, which moves the quantiser per macroblock,
  *   I and P pictures. The DC values are rounded by the conversion here;
  * - DQUANT that takes the quantiser below 1 or above 31 (clamped as in the
- *   H.263 decoder) and a header with the quantiser 0 (picture dropped). */
+ *   H.263 decoder) and a header with the quantiser 0 (picture dropped);
+ * - cut and damaged pictures from buffers without padding, under ASan. */
 
 #include <assert.h>
 #include <math.h>
@@ -453,10 +454,75 @@ static void quantiser_limits(void)
     av_packet_free(&pkt);
 
     pkt = escaped_picture(0, low_code, low_dc);
-    convert_exact(pkt->data, pkt->size, 32, 32, &written);
+    assert(convert_exact(pkt->data, pkt->size, 32, 32, &written) < 0);
     printf("quantiser 0: %d MPEG-4 packets\n", written);
     assert(written == 0);
     av_packet_free(&pkt);
+}
+
+/* Cut pictures: every macroblock that takes bits behind the end of the
+ * packet drops the picture, nothing is read there (the buffers are exactly
+ * as large as the packet, ASan sees every byte behind it). Damaged pictures:
+ * a dropped or a whole picture, never a read behind the packet. */
+static void broken_pictures(void)
+{
+    AVPacket *packets[MAX_PACKETS];
+    AVPacket *pkt = escaped_picture_q10();
+    uint32_t seed = 12345;
+    int count, i, len, n, written, ret, dropped = 0, whole = 0;
+
+    /* the last two bytes are zero padding, the one before them is the
+     * last one of the picture */
+    assert(convert_exact(pkt->data, pkt->size, 32, 32, &written) == 0 && written == 1);
+    for (len = 1; len <= pkt->size - 3; len++)
+    {
+        ret = convert_exact(pkt->data, len, 32, 32, &written);
+        if (ret >= 0 || written != 0)
+        {
+            fprintf(stderr, "cut picture: %d of %d bytes gave %d, %d packets\n", len, pkt->size, ret, written);
+            exit(1);
+        }
+    }
+    printf("cut picture: %d lengths dropped\n", pkt->size - 3);
+    av_packet_free(&pkt);
+
+    count = encode_pictures(packets, 96, 64, 12);
+    assert(count == 12);
+    for (i = 0; i < count; i++)
+    {
+        uint8_t *copy = malloc(packets[i]->size);
+        assert(copy && packets[i]->size > 16);
+        for (len = packets[i]->size / 2; len > 0; len /= 2)
+        {
+            ret = convert_exact(packets[i]->data, len, 96, 64, &written);
+            if (ret >= 0 || written != 0)
+            {
+                fprintf(stderr, "cut %c picture %d: %d of %d bytes gave %d, %d packets\n",
+                        i ? 'P' : 'I', i, len, packets[i]->size, ret, written);
+                exit(1);
+            }
+        }
+        for (n = 0; n < 50; n++)
+        {
+            int k;
+            memcpy(copy, packets[i]->data, packets[i]->size);
+            /* the header stays, so that the macroblocks are decoded */
+            for (k = 0; k < 4; k++)
+            {
+                seed = seed * 1103515245u + 12345u;
+                copy[8 + (seed >> 8) % (packets[i]->size - 8)] ^= (uint8_t)(1 + (seed >> 24) % 255);
+            }
+            ret = convert_exact(copy, packets[i]->size, 96, 64, &written);
+            assert(ret == 0 ? written == 1 : ret < 0 && written == 0);
+            if (ret < 0)
+                dropped++;
+            else
+                whole++;
+        }
+        free(copy);
+    }
+    free_packets(packets, count);
+    printf("damaged pictures: %d dropped, %d converted\n", dropped, whole);
 }
 
 int main(void)
@@ -477,6 +543,7 @@ int main(void)
     printf("FLV1 encoder: lowest PSNR %.2f dB\n", lowest);
 
     quantiser_limits();
+    broken_pictures();
 
     printf("flv2mpeg4 tests passed\n");
     return 0;
