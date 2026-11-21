@@ -205,11 +205,12 @@ $cc -g -fsanitize=address,undefined -ffunction-sections -fdata-sections -Iinclud
     -Wl,--gc-sections -pthread -o "$tmp/buffering_leak"
 ASAN_OPTIONS=detect_leaks=1 timeout 20 "$tmp/buffering_leak"
 # HiSilicon receivers: the detection with stubbed box files, the write of the
-# buffering thread to a stubbed device, and the optional software playback
-# clock with a clock moved by its own sleeps.
+# buffering thread to a stubbed device, the BCMA audio writer, and the optional
+# software playback clock with a clock moved by its own sleeps.
 $cc -g -fsanitize=undefined -ffunction-sections -fdata-sections -Iinclude -Iexternal \
     -I"$FFMPEG_BUILD" -I"$FFMPEG_SOURCE" tests/hisilicon_test.c tools/debug.c \
-    output/writer/common/writer.c -Wl,--gc-sections -pthread -o "$tmp/hisilicon"
+    output/writer/common/writer.c output/writer/common/pes.c output/writer/mipsel/bcma.c \
+    external/ffmpeg/src/xiph.c -Wl,--gc-sections -pthread -o "$tmp/hisilicon"
 timeout 20 "$tmp/hisilicon"
 $cc -g -fsanitize=undefined -ffunction-sections -fdata-sections -Iinclude -Iexternal \
     -I"$FFMPEG_BUILD" -I"$FFMPEG_SOURCE" tests/pacing_test.c tools/debug.c \

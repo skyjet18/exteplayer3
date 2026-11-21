@@ -129,7 +129,9 @@ static int writeData(void *_call)
         PesHeader[headerSize++] = 'A';
     }
 
-    if (pcmPrivateData->codec_id != AV_CODEC_ID_VORBIS || pcmPrivateData->codec_id != AV_CODEC_ID_OPUS || STB_HISILICON != GetSTBType()) {
+    /* HiSilicon: no payload size and stream description for Vorbis and Opus */
+    if (!((pcmPrivateData->codec_id == AV_CODEC_ID_VORBIS || pcmPrivateData->codec_id == AV_CODEC_ID_OPUS) &&
+          STB_HISILICON == GetSTBType())) {
         uint32_t payloadSize = call->len;
         PesHeader[headerSize++] = (payloadSize >> 24) & 0xFF;
         PesHeader[headerSize++] = (payloadSize >> 16) & 0xFF;
