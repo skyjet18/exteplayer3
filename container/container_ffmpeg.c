@@ -873,6 +873,11 @@ static char* Codec2Encoding(int32_t codec_id, int32_t media_type, uint8_t *extra
                 // ADTS has no profile for it, the AAC writer would send it as AAC-LC
                 return "A_IPCM";
             }
+            else if (m4ac.chan_config > 7) {
+                // 11-13 (6.1, 7.1): the ADTS header of the AAC writer has 3 bits
+                // for the channel configuration and would make 3-5 of them
+                return "A_IPCM";
+            }
             else if (0 == m4ac.chan_config && STB_HISILICON != GetSTBType()) {
                 // according to https://wiki.multimedia.cx/index.php/ADTS
                 // "MPEG-4 Channel Configuration  - in the case of 0, the channel configuration is sent via an inband PCE"	
