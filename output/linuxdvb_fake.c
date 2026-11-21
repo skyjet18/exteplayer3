@@ -156,7 +156,7 @@ static int64_t AudioClockPosition(void)
 /* ***************************** */
 /* Prototypes                    */
 /* ***************************** */
-int32_t LinuxDvbBuffOpen(Context_t *context, char *type, int outfd);
+int32_t LinuxDvbBuffOpen(Context_t *context, char *type, int outfd, void *mtx);
 int32_t LinuxDvbBuffClose(Context_t *context);
 int32_t LinuxDvbBuffFlush(Context_t *context);
 int32_t LinuxDvbBuffResume(Context_t *context);
@@ -190,6 +190,8 @@ int LinuxDvbOpen(Context_t  *context __attribute__((unused)), char *type)
             linuxdvb_err("opening fake video output: %s\n", strerror(errno));
             return cERR_LINUXDVB_ERROR;
         }
+        if (isBufferedOutput)
+            LinuxDvbBuffOpen(context, type, videofd, &LinuxDVBmutex);
     }
 
     if (audio && audiofd < 0) 
@@ -200,6 +202,8 @@ int LinuxDvbOpen(Context_t  *context __attribute__((unused)), char *type)
             linuxdvb_err("opening fake audio output: %s\n", strerror(errno));
             return cERR_LINUXDVB_ERROR;
         }
+        if (isBufferedOutput)
+            LinuxDvbBuffOpen(context, type, audiofd, &LinuxDVBmutex);
     }
 
     return 0;
@@ -207,6 +211,8 @@ int LinuxDvbOpen(Context_t  *context __attribute__((unused)), char *type)
 
 int LinuxDvbClose(Context_t  *context, char *type)
 {
+    if (isBufferedOutput)
+        LinuxDvbBuffClose(context);
     return 0;
 }
 
@@ -501,6 +507,9 @@ static int Write(void  *_context, void *_out)
 
 static int reset(Context_t  *context)
 {
+    /* as the receiver output: what the write buffer holds goes */
+    if (isBufferedOutput)
+        LinuxDvbBuffFlush(context);
     return 0;
 }
 
