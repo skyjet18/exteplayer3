@@ -27,6 +27,9 @@
 #include <errno.h>
 #include <pthread.h>
 #include <limits.h>
+#include <unistd.h>
+#include <fcntl.h>
+#include <poll.h>
 
 #include "misc.h"
 #include "writer.h"
@@ -38,6 +41,10 @@
 /* ***************************** */
 #define getDVBMutex(pmtx) do { if (pmtx) pthread_mutex_lock(pmtx);} while(false);
 #define releaseDVBMutex(pmtx) do { if (pmtx) pthread_mutex_unlock(pmtx);} while(false);
+
+/* longest wait of writev_with_retry() for room in a full device without a
+ * sign from it: a safety net, room and WriterWakeUp() end the wait earlier */
+#define WRITER_WAIT_MS 100
 
 /* ***************************** */
 /* Types                         */
@@ -92,6 +99,10 @@ static Writer_t * AvailableWriter[] = {
     &WriterVideoAVS2,
     NULL
 };
+
+/* the wake-up pipe of writev_with_retry(), see WriterWakeUp() */
+static int writerWakePipe[2] = {-1, -1};
+static pthread_once_t writerWakeOnce = PTHREAD_ONCE_INIT;
 
 /* ***************************** */
 /* Prototypes                    */
@@ -228,10 +239,84 @@ ssize_t WriteWithRetry(Context_t *context, int pipefd, int fd, void *pDVBMtx, co
     return 0;
 }
 
-ssize_t writev_with_retry(int fd, const struct iovec *iov, int ic) 
+static void WriterWakeInit(void)
+{
+    int i;
+    if (pipe(writerWakePipe) != 0)
+    {
+        writer_err("wake-up pipe: %s\n", strerror(errno));
+        writerWakePipe[0] = writerWakePipe[1] = -1;
+        return;
+    }
+    for (i = 0; i < 2; i++)
+    {
+        int flags = fcntl(writerWakePipe[i], F_GETFL);
+        if (flags == -1 || fcntl(writerWakePipe[i], F_SETFL, flags | O_NONBLOCK) == -1)
+            writer_err("wake-up pipe: %s\n", strerror(errno));
+        fcntl(writerWakePipe[i], F_SETFD, FD_CLOEXEC);
+    }
+    /* a stop ends the wait at once */
+    PlaybackDieNowRegisterCallback(WriterWakeUp);
+}
+
+/* Ends a wait of writev_with_retry() for room in the device: the output calls
+ * it at a resume, a clear and a stop. Some drivers do not report the device
+ * writable again after a resume (see WriteWithRetry). */
+void WriterWakeUp(void)
+{
+    pthread_once(&writerWakeOnce, WriterWakeInit);
+    /* a full pipe has a wake-up pending already */
+    if (writerWakePipe[1] >= 0 && write(writerWakePipe[1], "x", 1) != 1)
+        writer_printf(20, "wake-up pending\n");
+}
+
+/* The device took nothing: wait in poll() until it has room, WriterWakeUp()
+ * or WRITER_WAIT_MS, instead of retrying every millisecond, which kept a
+ * paused player busy. *writable is set when poll() reported the device
+ * writable: a device that does so and still takes nothing, and the HiSilicon
+ * devices that may never report it, get the 1 ms retry of before. */
+static void WaitForRoom(int fd, int *writable)
+{
+    struct pollfd pfd[2];
+    int n = 1, ret;
+    char tmp;
+
+    if (*writable || STB_HISILICON == GetSTBType())
+    {
+        *writable = 0;
+        usleep(1000);
+        return;
+    }
+    pthread_once(&writerWakeOnce, WriterWakeInit);
+    pfd[0].fd = fd;
+    pfd[0].events = POLLOUT;
+    pfd[0].revents = 0;
+    if (writerWakePipe[0] >= 0)
+    {
+        pfd[1].fd = writerWakePipe[0];
+        pfd[1].events = POLLIN;
+        pfd[1].revents = 0;
+        n = 2;
+    }
+    ret = poll(pfd, n, WRITER_WAIT_MS);
+    if (ret < 0)
+    {
+        if (errno != EINTR)
+            usleep(1000);
+        return;
+    }
+    if (n == 2 && (pfd[1].revents & POLLIN))
+    {
+        while (1 == read(writerWakePipe[0], &tmp, 1));
+    }
+    *writable = ret > 0 && (pfd[0].revents & (POLLOUT | POLLERR | POLLHUP | POLLNVAL)) != 0;
+}
+
+ssize_t writev_with_retry(int fd, const struct iovec *iov, int ic)
 {
     ssize_t len = 0;
     int index = 0;
+    int writable = 0;
     size_t offset = 0;
     if (ic < 0 || (ic && !iov))
     {
@@ -256,9 +341,13 @@ ssize_t writev_with_retry(int fd, const struct iovec *iov, int ic)
         written = writev(fd, batch, count);
         if (written < 0)
         {
-            if (errno == EINTR || errno == EAGAIN)
+            if (errno == EINTR)
             {
-                usleep(1000);
+                continue;
+            }
+            if (errno == EAGAIN)
+            {
+                WaitForRoom(fd, &writable);
                 continue;
             }
             writer_err("writev failed: %s\n", strerror(errno));
@@ -266,9 +355,10 @@ ssize_t writev_with_retry(int fd, const struct iovec *iov, int ic)
         }
         if (!written)
         {
-            usleep(1000);
+            WaitForRoom(fd, &writable);
             continue;
         }
+        writable = 0;
         if (written > SSIZE_MAX - len)
         {
             errno = EOVERFLOW;

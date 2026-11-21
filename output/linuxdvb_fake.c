@@ -306,8 +306,11 @@ int LinuxDvbPlay(Context_t  *context, char *type)
     return 0;
 }
 
-int LinuxDvbStop(Context_t  *context __attribute__((unused)), char * type) 
+int LinuxDvbStop(Context_t  *context __attribute__((unused)), char * type)
 {
+    /* as the receiver output: a write that waits for room tries again */
+    if (!isBufferedOutput)
+        WriterWakeUp();
     return 0;
 }
 
@@ -343,6 +346,8 @@ int LinuxDvbContinue(Context_t  *context __attribute__((unused)), char * type) {
     
     if (isBufferedOutput)
         LinuxDvbBuffResume(context);
+    else
+        WriterWakeUp();
 
     linuxdvb_printf(10, "exiting\n");
     
@@ -369,8 +374,10 @@ int LinuxDvbAVSync(Context_t  *context, char *type __attribute__((unused)))
     return 0;
 }
 
-int LinuxDvbClear(Context_t  *context __attribute__((unused)), char *type) 
+int LinuxDvbClear(Context_t  *context __attribute__((unused)), char *type)
 {
+    if (!isBufferedOutput)
+        WriterWakeUp();
     return 0;
 }
 

@@ -182,6 +182,7 @@ int32_t LinuxDvbBuffClose(Context_t *ctx) { (void)ctx; return 0; }
 int32_t LinuxDvbBuffFlush(Context_t *ctx) { (void)ctx; return 0; }
 int32_t LinuxDvbBuffFlushAudio(Context_t *ctx) { (void)ctx; return 0; }
 int32_t LinuxDvbBuffResume(Context_t *ctx) { (void)ctx; return 0; }
+void WriterWakeUp(void) {}
 int32_t LinuxDvbBuffSetSize(const uint32_t size) { (void)size; return 0; }
 uint32_t LinuxDvbBuffGetSize(void) { return 0; }
 stb_type_t GetSTBType(void) { return STB_VUPLUS; }
