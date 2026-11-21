@@ -325,6 +325,17 @@ static unsigned long long PosBoundApply(PosBound_t *bound, unsigned long long pt
             bound->restarting = false;
         }
     }
+    if (!bound->inside && bound->have_first && pts != bound->first &&
+        PosBoundAhead(bound->first, pts) <= POS_BOUND_CATCH_UP)
+    {
+        /* just before the first PTS written since the reset: the clock of
+         * a decoder that shows nothing of the data yet, which goes past 0
+         * when the data starts at 0 (2^33 - 600 was reported as 95443711
+         * ms). The first PTS until the decoder is within the data. An older
+         * clock further before the data is left as it is. */
+        reported = bound->first;
+        goto out;
+    }
     if (ahead > POS_BOUND_TOLERANCE && ahead < POS_BOUND_LIMIT)
     {
         /* past the data */
@@ -1347,23 +1358,25 @@ int LinuxDvbClear(Context_t  *context __attribute__((unused)), char *type)
 int LinuxDvbPts(Context_t  *context __attribute__((unused)), unsigned long long int* pts) {
     int32_t ret = cERR_LINUXDVB_ERROR;
     int zeroVideoPts = 0;
+    /* not sCURRENT_PTS: the command, play and live sync threads ask at once */
+    unsigned long long int current = 0;
 
     linuxdvb_printf(50, "\n");
 
     // GET_PTS is immutable call, so it can be done in parallel to other requests
-    if (videofd > -1 && !ioctl(videofd, VIDEO_GET_PTS, (void*)&sCURRENT_PTS))
+    if (videofd > -1 && !ioctl(videofd, VIDEO_GET_PTS, (void*)&current))
     {
         ret = cERR_LINUXDVB_NO_ERROR;
         /* front ends ask for the position all the time, also when no more data is written */
-        LinuxDvbVideoInfoPoll(context, sCURRENT_PTS);
+        LinuxDvbVideoInfoPoll(context, current);
         /* Some Broadcom drivers answer VIDEO_GET_PTS with 0 for the whole
          * memory-source session, or until the decoder runs again. After video
          * with a PTS was written, 0 is no position: the audio decoder's PTS is
          * taken when it has one. */
-        zeroVideoPts = sCURRENT_PTS == 0 && videoPtsWritten;
+        zeroVideoPts = current == 0 && videoPtsWritten;
         /* a real video position is kept within the written video */
         if (!zeroVideoPts)
-            sCURRENT_PTS = PosBoundApply(&videoPosBound, sCURRENT_PTS);
+            current = PosBoundApply(&videoPosBound, current);
     }
     else if (videofd > -1)
     {
@@ -1376,7 +1389,7 @@ int LinuxDvbPts(Context_t  *context __attribute__((unused)), unsigned long long 
         if (audiofd > -1 && !ioctl(audiofd, AUDIO_GET_PTS, (void*)&audioPts) && audioPts != 0)
         {
             /* the audio position, kept within the written audio */
-            sCURRENT_PTS = PosBoundApply(&audioPosBound, audioPts);
+            current = PosBoundApply(&audioPosBound, audioPts);
         }
         else
         {
@@ -1385,10 +1398,10 @@ int LinuxDvbPts(Context_t  *context __attribute__((unused)), unsigned long long 
     }
     else if (ret != cERR_LINUXDVB_NO_ERROR)
     {
-        if (audiofd > -1 && !ioctl(audiofd, AUDIO_GET_PTS, (void*)&sCURRENT_PTS))
+        if (audiofd > -1 && !ioctl(audiofd, AUDIO_GET_PTS, (void*)&current))
         {
             ret = cERR_LINUXDVB_NO_ERROR;
-            sCURRENT_PTS = PosBoundApply(&audioPosBound, sCURRENT_PTS);
+            current = PosBoundApply(&audioPosBound, current);
         }
         else if (audiofd > -1)
         {
@@ -1398,10 +1411,10 @@ int LinuxDvbPts(Context_t  *context __attribute__((unused)), unsigned long long 
 
     if (ret != cERR_LINUXDVB_NO_ERROR)
     {
-        sCURRENT_PTS = 0;
+        current = 0;
     }
 
-    *((unsigned long long int *)pts)=(unsigned long long int)sCURRENT_PTS;
+    *((unsigned long long int *)pts)=(unsigned long long int)current;
     return ret;
 }
 
