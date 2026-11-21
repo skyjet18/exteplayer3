@@ -474,6 +474,14 @@ ssize_t BufferingWriteV(int fd, const struct iovec *iov, int ic)
     bool queued = false;
     
     buff_printf(60, "ENTER\n");
+    if (fd < 0)
+    {
+        /* a device whose open has failed: the buffering keeps -1 for a
+         * device it was not given, the chunk would be queued for that one */
+        buff_err("output device not open\n");
+        errno = EBADF;
+        return cERR_LINUX_DVB_BUFFERING_ERROR;
+    }
     if (fd == videofd)
     {
         buff_printf(60, "VIDEO\n");
