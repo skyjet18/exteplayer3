@@ -134,6 +134,10 @@ static int write_pad_not_coded_frames(flv2mpeg4_CTX *pub_ctx, CONVCTX *c, BW *bw
         m4v_stuffing(bw);
 
         flash_bw(bw);
+        if (bw->overflow)
+        {
+            return -1;
+        }
         
         // write frame
         if (pub_ctx->write_packet_cb(pub_ctx->usr_data, 
@@ -229,6 +233,11 @@ static int write_m4v_picture_frame(flv2mpeg4_CTX *pub_ctx, CONVCTX *c, BR *br, B
 
     m4v_stuffing(bw);
     flash_bw(bw);
+    /* larger than the packet buffer: dropped */
+    if (bw->overflow)
+    {
+        return -1;
+    }
 
     // write frame
     if (pub_ctx->write_packet_cb(pub_ctx->usr_data, 
