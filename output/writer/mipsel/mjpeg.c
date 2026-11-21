@@ -191,7 +191,7 @@ static int resetAVS()
 static int writeDataAVS(void *_call)
 {
     WriterAVCallData_t *call = (WriterAVCallData_t *)_call;
-    if (call == NULL || call->data == NULL || call->len <= 0)
+    if (call == NULL || call->data == NULL || call->len == 0)
         return 0;
 
     bool intra = call->len > 3 && call->data[0] == 0 && call->data[1] == 0 && call->data[2] == 1 && call->data[3] == 0xb3;

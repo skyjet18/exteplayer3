@@ -108,7 +108,7 @@ static int writeData(void* _call)
 
     vorbis_printf(10, "AudioPts %lld\n", call->Pts);
 
-    if ((call->data == NULL) || (call->len <= 0))
+    if ((call->data == NULL) || (call->len == 0))
     {
         vorbis_err("parsing NULL Data. ignoring...\n");
         return 0;

@@ -102,7 +102,7 @@ static int32_t writeData(void *_call)
 
     pcm_printf(10, "AudioPts %llu\n", call->Pts);
 
-    if (!call->data || (call->len <= 0))
+    if (!call->data || (call->len == 0))
     {
         pcm_err("parsing NULL Data. ignoring...\n");
         return 0;

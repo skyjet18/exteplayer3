@@ -229,7 +229,7 @@ static int32_t writeData(void* _call)
     
     h264_printf(10, "VideoPts %llu - %u %u\n", call->Pts, TimeDelta, TimeScale);
 
-    if ((call->data == NULL) || (call->len <= 0))
+    if ((call->data == NULL) || (call->len == 0))
     {
         h264_err("NULL Data. ignoring...\n");
         return 0;
@@ -488,7 +488,7 @@ static int writeReverseData(void* _call)
 
     h264_printf(10, "VideoPts %llu\n", call->Pts);
 
-    if ((call->data == NULL) || (call->len <= 0))
+    if ((call->data == NULL) || (call->len == 0))
     {
         h264_err("NULL Data. ignoring...\n");
         return 0;

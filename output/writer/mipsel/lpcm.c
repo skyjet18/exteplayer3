@@ -125,7 +125,7 @@ static int32_t writeData(void *_call)
 
     lpcm_printf(10, "AudioPts %llu\n", call->Pts);
 
-    if (!call->data || (call->len <= 0))
+    if (!call->data || (call->len == 0))
     {
         lpcm_err("parsing NULL Data. ignoring...\n");
         return 0;
