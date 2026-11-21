@@ -171,10 +171,14 @@ static void h265_iovec_limit(void)
     }
     WriterVideoH265.reset();
     assert(WriterVideoH265.writeData(&call) == 14 + 6 + 5 && part_count == 4);
-    /* Without the parameter sets the header is followed by 511 whole NALs. */
+    /* 600 NALs do not fit into the vector: nothing is written rather than
+     * the first 511 of them as if that were the access unit. */
     call = packet(nals, sizeof(nals), extra, sizeof(extra), record);
+    assert(WriterVideoH265.writeData(&call) == -1 && !calls);
+    /* 511 NALs fit behind the header */
+    call = packet(nals, 511 * 2, extra, sizeof(extra), record);
     assert(WriterVideoH265.writeData(&call) == 14 + 511 * 5 && part_count == 1023);
-    assert_nals(nals, sizeof(nals), 1);
+    assert_nals(nals, 511 * 2, 1);
     WriterVideoH265.reset();
 }
 

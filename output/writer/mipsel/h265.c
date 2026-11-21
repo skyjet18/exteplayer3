@@ -358,9 +358,9 @@ static int writeData(void* _call)
         {
             if (ic + 2 > IOVEC_SIZE)
             {
+                /* the whole access unit or nothing, as in the H.264 writer */
                 h264_err(">> Drop data due to ic overflow\n");
-//                exit(-1);
-                break;
+                return -1;
             }
             
             uint32_t pack_len = 0;
