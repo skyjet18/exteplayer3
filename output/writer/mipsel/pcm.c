@@ -197,6 +197,13 @@ static int32_t writeData(void *_call)
         
         uint32_t nfixed_buffersize = rate * 30 / 1000;
         nfixed_buffersize *= channels * depth / 8;
+        /* no channels, no rate or a format without a width: no block size
+         * and nothing to divide the duration by */
+        if (byterate <= 0 || nfixed_buffersize == 0)
+        {
+            pcm_err("no byte rate (channels %d, rate %d, width %d). ignoring...\n", channels, rate, width);
+            return 0;
+        }
         fixed_buffertimestamp = call->Pts;
         fixed_bufferduration = 90000ULL * nfixed_buffersize /  byterate;
         
