@@ -108,6 +108,74 @@ static void constrained_high_empty(void) { assert(!setenv("EP3_H264_CONSTRAINED_
 static void constrained_high_off(void) { assert(!setenv("EP3_H264_CONSTRAINED_HIGH", "0", 1)); write_constraint(12); }
 static void constrained_high_on(void) { assert(!setenv("EP3_H264_CONSTRAINED_HIGH", "1", 1)); write_constraint(0); }
 
+/* The level limit for the SPS of the stream: an Annex B packet (TS, HLS),
+ * the in-band SPS of a packet with NAL lengths, the avcC; a SPS with
+ * nal_ref_idc 1; the Constrained High flags together with the level. Each
+ * SPS is written with "flags" and "level", the buffers of the caller stay
+ * as they are. */
+static void write_inband(uint8_t header, uint8_t flags, uint8_t level)
+{
+    uint8_t annexb[] = {0, 0, 0, 1, 9, 0xf0, 0, 0, 0, 1, header, 100, 12, 51, 0xac, 0, 0, 0, 1,
+                        104, 1, 0, 0, 0, 1, 101, 136};
+    uint8_t avcc[] = {1, 100, 12, 51, 255, 225, 0, 4, header, 100, 12, 51, 1, 0, 2, 104, 1};
+    uint8_t lengths[] = {0, 0, 0, 5, header, 100, 12, 51, 0xac, 0, 0, 0, 2, 104, 1, 0, 0, 0, 2, 101, 136};
+    uint8_t annexb_copy[sizeof(annexb)], lengths_copy[sizeof(lengths)];
+    WriterAVCallData_t call = {.fd = 1, .data = annexb, .len = sizeof(annexb), .Pts = 90000,
+                               .Dts = 86400, .WriteV = capture};
+    size_t i;
+    int sets = 0;
+    memcpy(annexb_copy, annexb, sizeof(annexb));
+    memcpy(lengths_copy, lengths, sizeof(lengths));
+    WriterVideoH264.reset();
+    assert(WriterVideoH264.writeData(&call) > 0);
+    /* behind the PES header: the packet with the two bytes of its SPS */
+    assert(written_size > sizeof(annexb));
+    i = written_size - sizeof(annexb);
+    assert(!memcmp(written + i, annexb, 12) && written[i + 12] == flags && written[i + 13] == level);
+    assert(!memcmp(written + i + 14, annexb + 14, sizeof(annexb) - 14));
+    assert(!memcmp(annexb, annexb_copy, sizeof(annexb)));
+    /* avcC and a packet with its own SPS: only the one of the packet goes */
+    call.data = lengths;
+    call.len = sizeof(lengths);
+    call.private_data = avcc;
+    call.private_size = sizeof(avcc);
+    WriterVideoH264.reset();
+    assert(WriterVideoH264.writeData(&call) > 0);
+    for (i = 0; i + 8 <= written_size; i++)
+    {
+        if (!memcmp(written + i, "\0\0\0\1", 4) && (written[i + 4] & 0x1f) == 7)
+        {
+            assert(written[i + 5] == 100 && written[i + 6] == flags && written[i + 7] == level);
+            sets++;
+        }
+    }
+    assert(sets == 1 && !memcmp(lengths, lengths_copy, sizeof(lengths)));
+    /* the SPS of the avcC in front of a frame without parameter sets */
+    call.data = lengths + 15;
+    call.len = 6;
+    WriterVideoH264.reset();
+    assert(WriterVideoH264.writeData(&call) > 0);
+    for (i = 0, sets = 0; i + 8 <= written_size; i++)
+    {
+        if (!memcmp(written + i, "\0\0\0\1", 4) && (written[i + 4] & 0x1f) == 7)
+        {
+            assert(written[i + 6] == flags && written[i + 7] == level);
+            sets++;
+        }
+    }
+    assert(sets == 1 && avcc[3] == 51 && avcc[11] == 51);
+    WriterVideoH264.reset();
+}
+
+static void inband_limited(void) { write_inband(0x67, 0, 41); }
+static void inband_nal_ref_idc_1(void) { write_inband(0x27, 0, 41); }
+static void inband_off(void) { assert(!setenv("EP3_H264_LEVEL41", "0", 1)); write_inband(0x67, 0, 51); }
+static void inband_constrained_high_kept(void)
+{
+    assert(!setenv("EP3_H264_CONSTRAINED_HIGH", "0", 1));
+    write_inband(0x67, 12, 41);
+}
+
 static int run(const char *name, void (*test)(void))
 {
     int status;
@@ -141,5 +209,9 @@ int main(void)
     failed += run("empty EP3_H264_CONSTRAINED_HIGH keeps the default", constrained_high_empty);
     failed += run("EP3_H264_CONSTRAINED_HIGH=0 keeps the flags", constrained_high_off);
     failed += run("EP3_H264_CONSTRAINED_HIGH=1", constrained_high_on);
+    failed += run("in-band and Annex B SPS level 5.1 written as 4.1", inband_limited);
+    failed += run("SPS with nal_ref_idc 1 written as 4.1", inband_nal_ref_idc_1);
+    failed += run("EP3_H264_LEVEL41=0 keeps the in-band level", inband_off);
+    failed += run("level 4.1 with the Constrained High flags kept", inband_constrained_high_kept);
     return failed ? 1 : 0;
 }
