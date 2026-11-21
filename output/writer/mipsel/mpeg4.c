@@ -101,7 +101,7 @@ static int writeData(void* _call)
         return 0;
     }
 
-    mpeg4_printf(10, "VideoPts %lld\n", call->Pts);
+    mpeg4_printf(10, "VideoPts %llu\n", call->Pts);
 
 
     unsigned int PacketLength = call->len;

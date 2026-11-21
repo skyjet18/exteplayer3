@@ -187,7 +187,7 @@ static int32_t writeData(void *_call)
         return 0;
     }
 
-    pcm_printf(10, "AudioPts %lld\n", call->Pts);
+    pcm_printf(10, "AudioPts %llu\n", call->Pts);
 
     if (!call->data || (call->len <= 0))
     {

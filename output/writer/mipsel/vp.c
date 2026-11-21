@@ -97,8 +97,8 @@ static int writeData(void *_call, bool is_vp6, bool is_vp9)
         return 0;
     }
 
-    vp_printf(10, "VideoPts %lld\n", call->Pts);
-    vp_printf(10, "Got Private Size %d\n", call->private_size);
+    vp_printf(10, "VideoPts %llu\n", call->Pts);
+    vp_printf(10, "Got Private Size %u\n", call->private_size);
 
     struct iovec iov[2];
     uint64_t pts = is_vp9 && STB_VUPLUS == GetSTBType() ? 0 : call->Pts;

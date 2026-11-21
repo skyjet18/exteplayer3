@@ -88,11 +88,11 @@ static int writeData(void* _call)
     }
 
     if (call->data == NULL || call->len <= 0 || call->fd < 0) {
-        wma_err("Wrong input call: %p, data: %p, len: %d, fd: %d\n", call, call->data, call->len, call->fd);
+        wma_err("Wrong input call: %p, data: %p, len: %u, fd: %d\n", call, call->data, call->len, call->fd);
         return 0;
     }
 
-    mp3_printf(10, "AudioPts %lld\n", call->Pts);
+    mp3_printf(10, "AudioPts %llu\n", call->Pts);
 
     call->private_size = 0;
     

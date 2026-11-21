@@ -227,7 +227,7 @@ static int writeData(void* _call)
     TimeScale = call->FrameScale;
     VideoPts  = call->Pts;
     
-    h265_printf(20, "VideoPts %lld - %d %d\n", call->Pts, TimeDelta, TimeScale);
+    h265_printf(20, "VideoPts %llu - %u %u\n", call->Pts, TimeDelta, TimeScale);
 
     if ((call->data == NULL) || (call->len <= 0))
     {
@@ -395,14 +395,14 @@ static int writeData(void* _call)
             
         } while ((pos + NalLengthBytes) < call->len);
         
-        h265_printf (10, "<<<< PacketLength [%d]\n", PacketLength);
+        h265_printf (10, "<<<< PacketLength [%u]\n", PacketLength);
         iov[0].iov_len = InsertPesHeader(PesHeader, -1, MPEG_VIDEO_PES_START_CODE, VideoPts, 0);
         
         len = call->WriteV(call->fd, iov, ic);
         PacketLength += iov[0].iov_len;
         if (PacketLength != len)
         {
-            h264_err("<<<< not all data have been written [%d/%d]\n", len, PacketLength);
+            h264_err("<<<< not all data have been written [%d/%u]\n", len, PacketLength);
         }
     }
 

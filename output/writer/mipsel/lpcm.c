@@ -123,7 +123,7 @@ static int32_t writeData(void *_call)
         return 0;
     }
 
-    lpcm_printf(10, "AudioPts %lld\n", call->Pts);
+    lpcm_printf(10, "AudioPts %llu\n", call->Pts);
 
     if (!call->data || (call->len <= 0))
     {

@@ -115,7 +115,7 @@ static int32_t writeData(void* _call)
         return 0;
     }
 
-    dts_printf(10, "AudioPts %lld\n", call->Pts);
+    dts_printf(10, "AudioPts %llu\n", call->Pts);
 
     if ((call->data == NULL) || (call->len <= 0))
     {

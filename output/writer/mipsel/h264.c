@@ -574,7 +574,7 @@ static int writeData(void* _call)
     TimeScale = call->FrameScale;
     VideoPts  = call->Pts;
     
-    h264_printf(20, "VideoPts %lld - %d %d\n", call->Pts, TimeDelta, TimeScale);
+    h264_printf(20, "VideoPts %llu - %u %u\n", call->Pts, TimeDelta, TimeScale);
 
     if ((call->data == NULL) || (call->len <= 0))
     {
@@ -777,7 +777,7 @@ static int writeData(void* _call)
             
         } while ((pos + NalLengthBytes) < call->len);
         
-        h264_printf (10, "<<<< PacketLength [%d]\n", PacketLength);
+        h264_printf (10, "<<<< PacketLength [%u]\n", PacketLength);
 #ifdef HAVE_DREAMNEXTGEN
         /* The AML DVB-API video device takes raw Annex-B ES, without PES. */
         iov[0].iov_len = 0;
@@ -789,7 +789,7 @@ static int writeData(void* _call)
         PacketLength += iov[0].iov_len;
         if (PacketLength != len)
         {
-            h264_err("<<<< not all data have been written [%d/%d]\n", len, PacketLength);
+            h264_err("<<<< not all data have been written [%d/%u]\n", len, PacketLength);
         }
     }
 

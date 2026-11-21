@@ -485,7 +485,7 @@ static int WriteLocked(void *_context, void *data)
        return cERR_SUBTITLE_ERROR;
     }
 
-    subtitle_printf(20, "Encoding:%s Text:%s Len:%d\n", Encoding, (const char*) out->data, out->len);
+    subtitle_printf(20, "Encoding:%s Text:%s Len:%u\n", Encoding, (const char*) out->data, out->len);
 
     SubtitleCodecId_t subCodecId = SUBTITLE_CODEC_ID_UNKNOWN;
     if(!strncmp("S_TEXT/SUBRIP", Encoding, 13))

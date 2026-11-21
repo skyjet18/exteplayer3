@@ -95,7 +95,7 @@ static int writeData(void* _call)
         return 0;
     }
 
-    mpeg2_printf(10, "VideoPts %lld\n", call->Pts);
+    mpeg2_printf(10, "VideoPts %llu\n", call->Pts);
 
     if ((call->data == NULL) || (call->len <= 0))
     {

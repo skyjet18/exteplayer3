@@ -227,7 +227,7 @@ static int32_t writeData(void* _call)
     TimeScale = call->FrameScale;
     VideoPts  = call->Pts;
     
-    h264_printf(10, "VideoPts %lld - %d %d\n", call->Pts, TimeDelta, TimeScale);
+    h264_printf(10, "VideoPts %llu - %u %u\n", call->Pts, TimeDelta, TimeScale);
 
     if ((call->data == NULL) || (call->len <= 0))
     {
@@ -362,7 +362,7 @@ static int32_t writeData(void* _call)
         h264_printf(20, "    profile:                       %d\n", private_data[1]);
         h264_printf(20, "    profile compatibility:         %d\n", private_data[2]);
         h264_printf(20, "    level:                         %d\n", private_data[3]);
-        h264_printf(20, "    nal length bytes:              %d\n", NalLengthBytes);
+        h264_printf(20, "    nal length bytes:              %u\n", NalLengthBytes);
         h264_printf(20, "    sequence param sets:           %u\n", NumSps);
         h264_printf(20, "    picture param sets:            %u\n", NumPps);
         if (!LengthSize)
@@ -486,7 +486,7 @@ static int writeReverseData(void* _call)
         return 0;
     }
 
-    h264_printf(10, "VideoPts %lld\n", call->Pts);
+    h264_printf(10, "VideoPts %llu\n", call->Pts);
 
     if ((call->data == NULL) || (call->len <= 0))
     {
