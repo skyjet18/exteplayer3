@@ -5,6 +5,8 @@
 #include <sys/select.h>
 #include <sys/wait.h>
 #include <unistd.h>
+#include <libavcodec/avcodec.h>
+#include "pcm.h"
 #define access test_access
 int test_access(const char *path, int mode);
 #define fopen test_fopen
@@ -80,6 +82,66 @@ static void dreambox_stays_dreambox(void)
     present[0] = "/proc/stb/tpm/0/serial";
     present[1] = "/dev/hi_mem";
     detected(STB_DREAMBOX);
+}
+
+/* The BCMA audio writer (Vorbis, Opus, WMA): on HiSilicon the PES of Vorbis
+ * and Opus carries no payload size and stream description (22 bytes), only
+ * the codec data and the frame; every other case keeps them. A PES header
+ * with a timestamp takes 14 bytes. */
+static uint8_t audio_frame[4] = {1, 2, 3, 4};
+
+static ssize_t pes_size(int fd, const struct iovec *iov, int count)
+{
+    ssize_t size = 0;
+    int i;
+    (void)fd;
+    for (i = 0; i < count; i++)
+        size += iov[i].iov_len;
+    return size;
+}
+
+static int bcma_write(Writer_t *writer, enum AVCodecID codec_id, uint8_t *codec_data, int codec_size)
+{
+    pcmPrivateData_t private = {.codec_id = codec_id, .channels = 2, .sample_rate = 48000,
+                                .private_data = codec_data, .private_size = codec_size};
+    WriterAVCallData_t call = {.fd = 1, .data = audio_frame, .len = sizeof(audio_frame),
+                               .Pts = 90000, .private_data = (uint8_t *)&private,
+                               .private_size = sizeof(private), .WriteV = pes_size};
+    return writer->writeData(&call);
+}
+
+/* three Vorbis headers of 30, 5 and 7 bytes in Xiph lacing */
+static int vorbis_write(void)
+{
+    static uint8_t xiph[45] = {2, 30, 5};
+    return bcma_write(&WriterAudioVORBIS, AV_CODEC_ID_VORBIS, xiph, sizeof(xiph));
+}
+
+static uint8_t opus_head[19] = {'O', 'p', 'u', 's', 'H', 'e', 'a', 'd', 1, 2};
+static uint8_t wma_data[10];
+
+static void vorbis_on_hisilicon(void)
+{
+    present[0] = NODE;
+    assert(vorbis_write() == 14 + 3 * 2 + 42 + 4);
+}
+
+static void opus_on_hisilicon(void)
+{
+    present[0] = NODE;
+    assert(bcma_write(&WriterAudioOPUS, AV_CODEC_ID_OPUS, opus_head, sizeof(opus_head)) == 14 + 19 + 4);
+}
+
+static void wma_on_hisilicon(void)
+{
+    present[0] = NODE;
+    assert(bcma_write(&WriterAudioWMA, AV_CODEC_ID_WMAV2, wma_data, sizeof(wma_data)) == 14 + 22 + 10 + 4);
+}
+
+static void vorbis_and_opus_elsewhere(void)
+{
+    assert(vorbis_write() == 14 + 22 + 3 * 2 + 42 + 4);
+    assert(bcma_write(&WriterAudioOPUS, AV_CODEC_ID_OPUS, opus_head, sizeof(opus_head)) == 14 + 22 + 19 + 4);
 }
 
 /* The device: how much it takes per write, failures before that, and
@@ -265,6 +327,10 @@ int main(void)
     failed += run("chipset BCM7252S", chipset_broadcom);
     failed += run("VU+ with SDK paths", vuplus_stays_vuplus);
     failed += run("Dreambox with SDK paths", dreambox_stays_dreambox);
+    failed += run("Vorbis on HiSilicon", vorbis_on_hisilicon);
+    failed += run("Opus on HiSilicon", opus_on_hisilicon);
+    failed += run("WMA on HiSilicon", wma_on_hisilicon);
+    failed += run("Vorbis and Opus on other receivers", vorbis_and_opus_elsewhere);
     failed += run("write to a device that is never writable", never_writable);
     failed += run("write part by part", part_by_part);
     failed += run("device full twice", full_twice);
