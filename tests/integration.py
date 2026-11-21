@@ -134,10 +134,12 @@ def video_ms(messages):
     return max((m["J"]["ms"] for m in messages if "J" in m), default=0)
 
 
-def drm_play(args, player_args, answers=None, seconds=8):
+def drm_play(args, player_args, answers=None, seconds=8, extra_pairs=(), before=()):
     """Plays with -K and the front end answering DRM_KEY_REQ from answers
-    (kid -> "key" or "-"; a missing kid is not answered). Returns the
-    messages and the left channel of the exported PCM."""
+    (kid -> "key" or "-"; a missing kid is not answered). extra_pairs go
+    into the dk line in front of the answer, the commands of before are
+    sent ahead of it. Returns the messages and the left channel of the
+    exported PCM."""
     fifo = Path(args.pcm_fifo)
     os.mkfifo(fifo, 0o600)
     reader = os.open(fifo, os.O_RDONLY | os.O_NONBLOCK)
@@ -162,7 +164,9 @@ def drm_play(args, player_args, answers=None, seconds=8):
                 request = player.messages[answered].get("DRM_KEY_REQ")
                 answered += 1
                 if request and answers is not None and request["kid"] in answers:
-                    player.command(f"dk {request['kid']}:{answers[request['kid']]}")
+                    for text in before:
+                        player.command(text)
+                    player.command(" ".join(["dk", *extra_pairs, f"{request['kid']}:{answers[request['kid']]}"]))
             if player.process.poll() is not None:
                 drm_last_end = time.monotonic() - started
                 pcm.extend(read_fifo(reader))
@@ -406,6 +410,27 @@ def check_drm_keys(args, root, audio, video, resources, base):
     assert sine_played(lefts), (len(lefts), max(map(abs, lefts), default=0), messages[-12:], drm_last_log)
     print("PASS CENC key requests: the audio track without a key is dropped, the player switches "
           "to the other audio track and plays it")
+
+    # a dk line with 8 pairs (530 characters), the asked one last: read as
+    # one line, not cut at 254 characters into a broken pair and a rest that
+    # is taken as a command (all-f keys: "f..." would be PLAYBACK_FASTFORWARD)
+    others = [f"{index:032x}:{'f' * 32}" for index in range(1, 8)]
+    messages, lefts = drm_play(args, ["--key-request", str(single)], {kid_a: key_a}, extra_pairs=others)
+    assert [r["kid"] for r in requests(messages)] == [kid_a] and results(messages) == {kid_a: 0}, messages
+    assert not any("PLAYBACK_FASTFORWARD" in m for m in messages), messages
+    assert "is not <kid>:<key>" not in drm_last_log, drm_last_log
+    assert sine_played(lefts), (len(lefts), max(map(abs, lefts), default=0), messages[-12:], drm_last_log)
+    print("PASS CENC key requests: a dk line with 8 pairs is taken whole")
+
+    # the command loop waits for the container lock (al with -C lists the
+    # tracks again under it) while the reading thread waits for dk under
+    # that lock: dk must get through all the same, not after --key-timeout
+    messages, lefts = drm_play(args, ["-C", "--key-request", "--key-timeout", "5", base + "/drm2.mpd"],
+                               {kid_v: key_v, kid_a: "-", kid_b: key_b}, seconds=10, before=("al",))
+    assert results(messages) == {kid_v: 0, kid_a: -1, kid_b: 0}, messages
+    assert [r["kid"] for r in requests(messages)].count(kid_b) == 1, messages
+    assert sine_played(lefts), (len(lefts), max(map(abs, lefts), default=0), messages[-12:], drm_last_log)
+    print("PASS CENC key requests: dk answers while the command loop waits for the container lock")
 
     # the video without a key: FF_ERROR naming the KID, PLAYBACK_STOP, exit 0
     for target, answers in ((str(both), {kid_v: "-", kid_m: key_v}),

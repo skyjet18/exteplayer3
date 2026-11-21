@@ -610,18 +610,158 @@ static void process_suburi(PlayFiles_t *play_files)
  * own: g_pfd also ends the TermThread. */
 static int g_openDonePfd[2] = {-1, -1};
 
-/* Waits for stdin, g_pfd and, when it is not -1, fd for at most ms. */
+/* stdin is read by a thread of its own (StdinThreadStart): it collects whole
+ * lines, whatever their length, takes "dk" lines at once and passes the other
+ * lines on through a pipe, which the command loops read as they read stdin
+ * before. A reading thread may wait for a dk answer under the container lock
+ * while the command loop waits for that lock (seek, track switch or list), so
+ * dk must not go through the command loop. Without the thread (pipe or thread
+ * not created) the command loops read stdin themselves, as before. */
+#define STDIN_LINE_MAX 16384 /* dk with DRM_KEY_MAX pairs: about 4.3 kB */
+static int g_cmdFd = 0;          /* stdin, or the read end of the pipe */
+static FILE *g_cmdFile = NULL;   /* NULL: stdin */
+static int g_cmdPipeWr = -1;
+
+static void StdinLine(char *line, size_t len)
+{
+    if (len >= 2 && 'd' == line[0] && 'k' == line[1])
+    {
+        line[len] = '\0';
+        ffmpeg_drm_key_command(line);
+        return;
+    }
+    while (len > 0)
+    {
+        ssize_t n = write(g_cmdPipeWr, line, len);
+        if (n < 0)
+        {
+            if (EINTR == errno)
+                continue;
+            return;
+        }
+        line += n;
+        len -= n;
+    }
+}
+
+static void *StdinThreadFun(void *arg)
+{
+    char chunk[512];
+    char *line = malloc(STDIN_LINE_MAX + 1);
+    size_t len = 0;
+    int skip = 0; /* the rest of a line longer than STDIN_LINE_MAX */
+    int fifo = 0;
+    struct stat st;
+    (void)arg;
+
+    if (NULL == line)
+        return NULL;
+
+    for (;;)
+    {
+        fd_set readfds;
+        ssize_t n, i;
+
+        FD_ZERO(&readfds);
+        FD_SET(0, &readfds);
+        if (-1 == select(1, &readfds, NULL, NULL, NULL))
+        {
+            if (EINTR == errno)
+                continue;
+            break;
+        }
+        n = read(0, chunk, sizeof(chunk));
+        if (n < 0)
+        {
+            if (EINTR == errno || EAGAIN == errno || EWOULDBLOCK == errno)
+                continue;
+            break;
+        }
+        if (0 == n)
+        {
+            /* the end of a command pipe (or socket): the front end is gone */
+            fifo = 0 == fstat(0, &st) && (S_ISFIFO(st.st_mode) || S_ISSOCK(st.st_mode));
+            break;
+        }
+        for (i = 0; i < n; i++)
+        {
+            if (!skip)
+            {
+                if (len < STDIN_LINE_MAX)
+                {
+                    line[len++] = chunk[i];
+                }
+                else
+                {
+                    printf("stdin: line longer than %d characters dropped\n", STDIN_LINE_MAX);
+                    skip = 1;
+                    len = 0;
+                }
+            }
+            if ('\n' == chunk[i])
+            {
+                if (!skip)
+                    StdinLine(line, len);
+                skip = 0;
+                len = 0;
+            }
+        }
+    }
+    if (len && !skip)
+    {
+        /* the last line without its end */
+        StdinLine(line, len);
+    }
+    free(line);
+    if (fifo)
+    {
+        /* the command loops read the end of the pipe as the stop command */
+        close(g_cmdPipeWr);
+    }
+    return NULL;
+}
+
+static void StdinThreadStart(void)
+{
+    int pfd[2];
+    int flags;
+    pthread_t tid;
+
+    if (pipe(pfd) == -1)
+        return;
+    flags = fcntl(pfd[0], F_GETFL);
+    if (flags == -1 || fcntl(pfd[0], F_SETFL, flags | O_NONBLOCK) == -1 ||
+        NULL == (g_cmdFile = fdopen(pfd[0], "r")))
+    {
+        close(pfd[0]);
+        close(pfd[1]);
+        return;
+    }
+    g_cmdPipeWr = pfd[1];
+    if (0 != pthread_create(&tid, NULL, StdinThreadFun, NULL))
+    {
+        fclose(g_cmdFile);
+        close(pfd[1]);
+        g_cmdFile = NULL;
+        g_cmdPipeWr = -1;
+        return;
+    }
+    pthread_detach(tid);
+    g_cmdFd = pfd[0];
+}
+
+/* Waits for a command, g_pfd and, when it is not -1, fd for at most ms. */
 static int kbhit_fd(int ms, int fd)
 {
     struct timeval tv;
     fd_set readfds;
-    int maxfd = g_pfd[0];
+    int maxfd = g_pfd[0] > g_cmdFd ? g_pfd[0] : g_cmdFd;
 
     tv.tv_sec = ms / 1000;
     tv.tv_usec = (ms % 1000) * 1000;
 
     FD_ZERO(&readfds);
-    FD_SET(0,&readfds);
+    FD_SET(g_cmdFd, &readfds);
     FD_SET(g_pfd[0], &readfds);
     if (fd >= 0)
     {
@@ -635,7 +775,7 @@ static int kbhit_fd(int ms, int fd)
         return 0;
     }
 
-    if(FD_ISSET(0, &readfds))
+    if(FD_ISSET(g_cmdFd, &readfds))
     {
         return 1;
     }
@@ -678,17 +818,18 @@ static void Eac3PassthroughRestart(void)
 static char *ReadCommand(char *buff, int size)
 {
     struct stat st;
+    FILE *in = g_cmdFile ? g_cmdFile : stdin;
 
     if (g_stopSignal)
     {
         strcpy(buff, "q\n");
         return buff;
     }
-    if (fgets(buff, size, stdin))
+    if (fgets(buff, size, in))
     {
         return buff;
     }
-    if (feof(stdin) && 0 == fstat(fileno(stdin), &st) &&
+    if (feof(in) && 0 == fstat(fileno(in), &st) &&
         (S_ISFIFO(st.st_mode) || S_ISSOCK(st.st_mode)))
     {
         strcpy(buff, "q\n");
@@ -1650,6 +1791,7 @@ int main(int argc, char* argv[])
     prctl(PR_SET_PDEATHSIG, PARENT_DEATH_SIGNAL);
 
     SetBuffering();
+    StdinThreadStart();
 
     //Registrating output devices
     g_player->output->Command(g_player, OUTPUT_ADD, "audio");
