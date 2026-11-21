@@ -47,6 +47,8 @@ int test_dup(int fd);
 /* the copy of videofd the event thread polls (-b) */
 #define EVENT_FD (VIDEO_FD + 100)
 #define CLOSED 0xc105edUL
+/* LinuxDvbBuffClose(), recorded without a device */
+#define BUFFERING_CLOSE 0xbcUL
 
 struct request { int fd; unsigned long request; };
 static struct request requests[256];
@@ -158,7 +160,14 @@ int32_t LinuxDvbBuffOpen(Context_t *context, char *type, int outfd, void *mtx)
     (void)mtx;
     return 0;
 }
-int32_t LinuxDvbBuffClose(Context_t *context) { (void)context; return 0; }
+/* -1: the buffering thread has not ended within the wait (it sleeps in the driver) */
+static int buffering_close_result;
+int32_t LinuxDvbBuffClose(Context_t *context)
+{
+    (void)context;
+    record(-1, BUFFERING_CLOSE);
+    return buffering_close_result;
+}
 int32_t LinuxDvbBuffFlush(Context_t *context) { (void)context; return 0; }
 int32_t LinuxDvbBuffFlushAudio(Context_t *context) { (void)context; return 0; }
 int32_t LinuxDvbBuffResume(Context_t *context) { (void)context; return 0; }
@@ -313,6 +322,76 @@ static void unbuffered_close_does_not_wait(void)
     assert(count(VIDEO_FD, CLOSED) == 1 && count(AUDIO_FD, CLOSED) == 1);
 }
 
+static int first(int fd, unsigned long request)
+{
+    int i;
+    for (i = 0; i < request_count; i++)
+        if (requests[i].fd == fd && requests[i].request == request)
+            return i;
+    return -1;
+}
+
+/* -b: the buffering thread ends once, before the first decoder is cleared
+ * and stopped; then the devices are closed. */
+static void buffering_ends_before_the_decoders_stop(void)
+{
+    int closed;
+    start_buffered();
+    /* the open clears the decoders as well: only what the stop sends */
+    request_count = 0;
+    both(OUTPUT_STOP);
+    both(OUTPUT_CLOSE);
+    closed = first(-1, BUFFERING_CLOSE);
+    assert(count(-1, BUFFERING_CLOSE) == 1);
+    assert(closed >= 0);
+    assert(closed < first(VIDEO_FD, VIDEO_CLEAR_BUFFER) && closed < first(VIDEO_FD, VIDEO_STOP));
+    assert(closed < first(AUDIO_FD, AUDIO_CLEAR_BUFFER) && closed < first(AUDIO_FD, AUDIO_STOP));
+    assert(count(VIDEO_FD, CLOSED) == 1 && count(AUDIO_FD, CLOSED) == 1);
+}
+
+/* The same with OUTPUT_CLOSE alone (end of file, termination). */
+static void buffering_ends_before_the_decoders_stop_on_close(void)
+{
+    int closed;
+    start_buffered();
+    request_count = 0;
+    both(OUTPUT_CLOSE);
+    closed = first(-1, BUFFERING_CLOSE);
+    assert(count(-1, BUFFERING_CLOSE) == 1);
+    assert(closed >= 0 && closed < first(VIDEO_FD, VIDEO_STOP) && closed < first(AUDIO_FD, AUDIO_STOP));
+    assert(count(VIDEO_FD, CLOSED) == 1 && count(AUDIO_FD, CLOSED) == 1);
+}
+
+/* The buffering thread has not ended within the wait of LinuxDvbBuffClose():
+ * the decoders are stopped, but neither device is closed under it, and the
+ * close does not wait for it a second time. */
+static void buffering_thread_in_the_driver_leaves_the_devices_open(void)
+{
+    buffering_close_result = -1;
+    start_buffered();
+    both(OUTPUT_STOP);
+    both(OUTPUT_CLOSE);
+    assert(count(-1, BUFFERING_CLOSE) == 1);
+    assert(count(VIDEO_FD, VIDEO_STOP) == 1 && count(AUDIO_FD, AUDIO_STOP) == 1);
+    assert(count(VIDEO_FD, CLOSED) == 0 && count(AUDIO_FD, CLOSED) == 0);
+    assert(videofd == -1 && audiofd == -1);
+}
+
+/* A second playback in the same process: buffering and devices closed again. */
+static void buffered_second_playback(void)
+{
+    start_buffered();
+    both(OUTPUT_STOP);
+    both(OUTPUT_CLOSE);
+    request_count = 0;
+    both(OUTPUT_OPEN);
+    both(OUTPUT_PLAY);
+    both(OUTPUT_STOP);
+    both(OUTPUT_CLOSE);
+    assert(count(-1, BUFFERING_CLOSE) == 1);
+    assert(count(VIDEO_FD, CLOSED) == 1 && count(AUDIO_FD, CLOSED) == 1);
+}
+
 static int run(const char *name, void (*test)(void))
 {
     int status;
@@ -337,5 +416,11 @@ int main(void)
     failed += run("stop ends the wait between two polls", stop_ends_the_wait_between_two_polls);
     failed += run("long poll leaves the video device open", long_poll_leaves_the_video_device_open);
     failed += run("unbuffered close does not wait", unbuffered_close_does_not_wait);
+    failed += run("buffering ends before the decoders stop", buffering_ends_before_the_decoders_stop);
+    failed += run("buffering ends before the decoders stop on close",
+                  buffering_ends_before_the_decoders_stop_on_close);
+    failed += run("buffering thread in the driver leaves the devices open",
+                  buffering_thread_in_the_driver_leaves_the_devices_open);
+    failed += run("buffered second playback", buffered_second_playback);
     return failed ? 1 : 0;
 }

@@ -126,7 +126,9 @@ static void LinuxDvbEventThreadStop(void);
 static bool LinuxDvbEventThreadEnd(void);
 /* a thread of the player may still be in a poll of the driver on it: the
  * device is not closed, the end of the process releases it */
-static bool videoLeftOpen;
+static bool videoLeftOpen, audioLeftOpen;
+/* -b: the buffering thread has been ended for this open, see LinuxDvbStop() */
+static bool bufferingClosed;
 /* the periods are measured with the decoder PTS (90 kHz) */
 #define VIDEO_INFO_QUIET_PTS   9000
 #define VIDEO_INFO_SETTLE_PTS 45000
@@ -892,7 +894,10 @@ int LinuxDvbOpen(Context_t  *context __attribute__((unused)), char *type)
         videoLeftOpen = false;
 
         if (isBufferedOutput)
+        {
+            bufferingClosed = false;
             LinuxDvbBuffOpen(context, type, videofd, &LinuxDVBmutex);
+        }
     }
     if (audio && audiofd < 0) 
     {
@@ -928,9 +933,13 @@ int LinuxDvbOpen(Context_t  *context __attribute__((unused)), char *type)
         }
         audioRunning = true;
         audioOnMemory = true;
+        audioLeftOpen = false;
 
         if (isBufferedOutput)
+        {
+            bufferingClosed = false;
             LinuxDvbBuffOpen(context, type, audiofd, &LinuxDVBmutex);
+        }
     }
 
     return cERR_LINUXDVB_NO_ERROR;
@@ -954,10 +963,8 @@ int LinuxDvbClose(Context_t  *context, char *type)
     if (video)
         LinuxDvbEventThreadStop();
 
+    /* with -b the stop has ended the buffering thread as well */
     getLinuxDVBMutex();
-    
-    if (isBufferedOutput)
-        LinuxDvbBuffClose(context);
 
     if (video && videofd != -1)
     {
@@ -967,9 +974,12 @@ int LinuxDvbClose(Context_t  *context, char *type)
             close(videofd);
         videofd = -1;
     }
-    if (audio && audiofd != -1) 
+    if (audio && audiofd != -1)
     {
-        close(audiofd);
+        if (audioLeftOpen)
+            linuxdvb_err("audio device left open: a thread may still be in a poll of the driver\n");
+        else
+            close(audiofd);
         audiofd = -1;
     }
 
@@ -1145,7 +1155,7 @@ int LinuxDvbPlay(Context_t  *context, char *type) {
     return context->playback->isDash ? ret : 0;
 }
 
-int LinuxDvbStop(Context_t  *context __attribute__((unused)), char * type) 
+int LinuxDvbStop(Context_t  *context, char * type)
 {
     int ret = cERR_LINUXDVB_NO_ERROR;
     unsigned char video = !strcmp("video", type);
@@ -1156,6 +1166,22 @@ int LinuxDvbStop(Context_t  *context __attribute__((unused)), char * type)
     /* no poll of the event thread is in the driver when the decoder stops */
     if (video && !videoLeftOpen && !LinuxDvbEventThreadEnd())
         videoLeftOpen = true;
+
+    /* -b: the buffering thread writes to both devices. It ends before the
+     * first decoder is stopped, so that no write of it waits in the driver
+     * then. One that has not ended within the wait of LinuxDvbBuffClose()
+     * may still sleep in the driver: the devices are left open for the end
+     * of the process, and it is not waited for a second time. */
+    if (isBufferedOutput && !bufferingClosed && (video || audio))
+    {
+        bufferingClosed = true;
+        if (LinuxDvbBuffClose(context) < 0)
+        {
+            linuxdvb_err("buffering thread still in a write to the driver: devices left open\n");
+            videoLeftOpen = true;
+            audioLeftOpen = true;
+        }
+    }
 
     getLinuxDVBMutex();
 
