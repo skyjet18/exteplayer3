@@ -379,6 +379,72 @@ static void pcm_block_duration(void)
     WriterAudioPCM.reset();
 }
 
+/* A packet of the LPCM writer, exactly as long as its samples (ASan); stereo
+ * sample k holds the 16 bit values first + 2k and first + 2k + 1. */
+static uint8_t *lpcm_samples(int samples, int first)
+{
+    uint8_t *data = malloc(samples * 4);
+    int i;
+    assert(data);
+    for (i = 0; i < samples * 2; i++)
+    {
+        data[2 * i] = (first + i) & 255; /* little endian, as from the resampler */
+        data[2 * i + 1] = (first + i) >> 8;
+    }
+    return data;
+}
+
+/* The values of the frame written last start with "first" (big endian). */
+static void assert_lpcm_frame(int first)
+{
+    int i;
+    /* PES header with timestamp, 0xa0, 6 bytes of the DVD header, 80 samples */
+    assert(calls == 1 && written_size == 14 + 1 + 6 + 80 * 4 && written[14] == 0xa0);
+    for (i = 0; i < 80 * 2; i++)
+        assert((written[21 + 2 * i] << 8 | written[22 + 2 * i]) == first + i);
+}
+
+/* 48 kHz: 80 samples a frame. Samples kept from one packet go in front of
+ * the next, also when that one does not fill a frame either. */
+static void lpcm_rest_buffer(void)
+{
+    pcmPrivateData_t private = {.bResampling = 1, .channels = 2, .sample_rate = 48000};
+    uint8_t *first = lpcm_samples(64, 0), *second = lpcm_samples(10, 128), *third = lpcm_samples(80, 148);
+    uint8_t *after_seek = lpcm_samples(80, 1000);
+    WriterAVCallData_t call = packet(first, 64 * 4, &private, sizeof(private), capture);
+    WriterAudioLPCM.reset();
+    assert(!WriterAudioLPCM.writeData(&call) && !calls);
+    private.bResampling = 0;
+    call = packet(second, 10 * 4, &private, sizeof(private), capture);
+    assert(!WriterAudioLPCM.writeData(&call) && !calls);
+    call = packet(third, 80 * 4, &private, sizeof(private), capture);
+    assert(WriterAudioLPCM.writeData(&call) == 14 + 1 + 6 + 80 * 4);
+    /* the 74 kept samples and 6 of this packet, in order */
+    assert_lpcm_frame(0);
+    /* the frame starts 74 samples before the packet */
+    assert(read_pts(written + 9) == 90000 - 74 * 90000 / 48000);
+    /* a seek drops the 74 samples kept now */
+    WriterAudioLPCM.reset();
+    call = packet(after_seek, 80 * 4, &private, sizeof(private), capture);
+    assert(WriterAudioLPCM.writeData(&call) == 14 + 1 + 6 + 80 * 4);
+    assert_lpcm_frame(1000);
+    assert(read_pts(written + 9) == 90000);
+    /* without a timestamp the frame has none either */
+    call = packet(after_seek, 80 * 4, &private, sizeof(private), capture);
+    call.Pts = INVALID_PTS_VALUE;
+    assert(WriterAudioLPCM.writeData(&call) == 9 + 1 + 6 + 80 * 4 && calls == 1);
+    assert(!(written[7] & 0x80) && written[9] == 0xa0);
+    /* no channels: nothing written, no division by zero */
+    private.channels = 0;
+    call = packet(after_seek, 80 * 4, &private, sizeof(private), capture);
+    assert(!WriterAudioLPCM.writeData(&call) && !calls);
+    WriterAudioLPCM.reset();
+    free(first);
+    free(second);
+    free(third);
+    free(after_seek);
+}
+
 static void adts_frame_with_crc(void)
 {
     uint8_t frame[] = {0xff, 0xf0, 0x50, 0x80, 0x01, 0x7f, 0xfc, 0, 0, 0, 0};
@@ -673,6 +739,7 @@ int main(void)
     vp9_frame();
     vp9_frame_without_pts();
     pcm_block_duration();
+    lpcm_rest_buffer();
     adts_frame_with_crc();
     aac_main_keeps_the_sample_rate();
     h264_reset_during_a_write();

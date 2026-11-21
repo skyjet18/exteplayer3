@@ -215,7 +215,7 @@ for test in subtitle writers buffering_chunk progressive; do
         sources="$sources output/writer/common/pes.c output/writer/common/misc.c output/writer/common/writer.c"
         sources="$sources output/writer/mipsel/h264.c output/writer/mipsel/h265.c output/writer/mipsel/mpeg2.c"
         sources="$sources output/writer/mipsel/vc1.c output/writer/mipsel/wmv.c output/writer/mipsel/vp.c"
-        sources="$sources output/writer/mipsel/bcma.c output/writer/mipsel/pcm.c output/writer/mipsel/aac.c"
+        sources="$sources output/writer/mipsel/bcma.c output/writer/mipsel/pcm.c output/writer/mipsel/lpcm.c output/writer/mipsel/aac.c"
         sources="$sources external/ffmpeg/src/latmenc.c external/ffmpeg/src/mpeg4audio.c external/ffmpeg/src/bitstream.c"
         libs="$FFMPEG_BUILD/libavcodec/libavcodec.a $FFMPEG_BUILD/libavutil/libavutil.a -lm"
         sanitizers=address,undefined
