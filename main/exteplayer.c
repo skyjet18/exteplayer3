@@ -52,6 +52,7 @@
 
 extern int ffmpeg_av_dict_set(const char *key, const char *value, int flags);
 extern int32_t ffmpeg_drm_key_add(const char *pair);
+extern int32_t ffmpeg_mpd_url_option(char digit, const char *value, size_t len);
 extern int32_t ffmpeg_drm_key_command(const char *line);
 extern int32_t ffmpeg_drm_key_caps(void);
 extern void ffmpeg_drm_key_request_set(int32_t enable);
@@ -488,7 +489,53 @@ finish:
     close(cl);
     close(fd);
     pthread_exit(NULL);
-    
+
+}
+
+/* OE-A compatibility (the OE-Alliance exteplayer3, getParamMPD()): front ends
+ * append options to a DASH url after ".mpd":
+ *   &0=<n> video representation index, &1=<n> audio representation index,
+ *   &5=<key> a key for every KID, &6=<key> for the video, &7=<key> for the
+ *   audio, &8=<x> a front end parameter.
+ * Each "&<digit>=" with one of these digits after the first ".mpd" is taken
+ * up to the next "&" (or the end) and cut out of the url; the rest of the
+ * url, also a query string before or after it, stays as it is. The keys are
+ * default keys, --key and dk keys win (ffmpeg_mpd_url_option()). The per-KID
+ * way is --key and --key-request. */
+#define MPD_URL_OPTION_MAX 256
+
+static void mpd_url_options(char *url)
+{
+    char *p = strstr(url, ".mpd");
+
+    if (!p)
+    {
+        return;
+    }
+    p += 4;
+    while (NULL != (p = strchr(p, '&')))
+    {
+        char digit = p[1];
+        if ('\0' != digit && NULL != strchr("015678", digit) && '=' == p[2])
+        {
+            char *value = p + 3;
+            size_t len = strcspn(value, "&\n");
+            if (len > MPD_URL_OPTION_MAX)
+            {
+                printf("url option &%c= of %u characters: too long, ignored\n", digit, (unsigned)len);
+            }
+            else
+            {
+                ffmpeg_mpd_url_option(digit, value, len);
+            }
+            /* cut out, p is then at the next "&" or the end */
+            memmove(p, value + len, strlen(value + len) + 1);
+        }
+        else
+        {
+            p++;
+        }
+    }
 }
 
 static char *map_inter_file_path(const char *filename)
@@ -549,6 +596,7 @@ static char *map_inter_file_path(const char *filename)
     {
         strcpy(ret, filname_prefix);
         strcat(ret, filename);
+        mpd_url_options(ret);
     }
 
     if( filename2 )
@@ -1672,6 +1720,7 @@ int main(int argc, char* argv[])
     /* achannel: the stdin command am<n> (left/stereo/right of dual mono) is known */
     /* hlsseg: HLS segments played directly, 1: any name (.js, .png, none), 2: an image in front of the TS data */
     /* drmkey: 1 --key <kid>:<key>, 2 --key-request (DRM_KEY_REQ, stdin dk <kid>:<key>) */
+    /* mpdopt: the OE-A options after .mpd in the url (&0= &1= &5= &6= &7= &8=) are taken off */
     E2iSendMsg("{\"EPLAYER3_EXTENDED\":{\"version\":%d"
                ",\"start\":1"
                ",\"xcode\":%d"
@@ -1682,6 +1731,7 @@ int main(int argc, char* argv[])
                ",\"achannel\":1"
                ",\"hlsseg\":%d"
                ",\"drmkey\":%d"
+               ",\"mpdopt\":1"
                "}}\n", 186,
                audio_transcode_caps(),
                hls_segment_caps(), ffmpeg_drm_key_caps());
@@ -1721,6 +1771,10 @@ int main(int argc, char* argv[])
         printf("[--key-request] ask the front end for the key of other KIDs: DRM_KEY_REQ, answer on stdin dk kid:key or dk kid:-\n");
         printf("                (\"drmkey\" & 2 in EPLAYER3_EXTENDED: only with an FFmpeg that has decryption_key_url)\n");
         printf("[--key-timeout s] how long --key-request waits for the answer (default 10)\n");
+        printf("[url.mpd&5=key] OE-A compatibility, options after .mpd in the url (taken off it; \"mpdopt\" in EPLAYER3_EXTENDED):\n");
+        printf("                &0=n / &1=n video / audio representation index, &5=key for every KID,\n");
+        printf("                &6=key / &7=key for the video / audio KIDs; --key and dk keys win.\n");
+        printf("                The per-KID way is --key / --key-request\n");
 #ifdef HAVE_FLV2MPEG4_CONVERTER
         printf("[-4 0|1] - disable/enable flv2mpeg4 converter\n");
 #endif

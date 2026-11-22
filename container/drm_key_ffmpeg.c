@@ -140,6 +140,114 @@ void ffmpeg_drm_key_request_set(int32_t enable)
     drmKeyRequest = enable;
 }
 
+/* Default keys from the options after ".mpd" in the url (OE-A
+ * compatibility, see mpd_url_options() in exteplayer.c): the key of every KID
+ * that has no key of its own (--key, dk), [0] all KIDs (&5=), [1] the video
+ * KIDs (&6=), [2] the audio KIDs (&7=). Empty: none. */
+static char drmDefaultKey[3][33];
+
+/* with drmKeyMutex held: the default key for a stream type, or NULL */
+static const char *drm_default_key(const char *type)
+{
+    if (type && 0 == strcmp(type, "video") && drmDefaultKey[1][0])
+    {
+        return drmDefaultKey[1];
+    }
+    if (type && 0 == strcmp(type, "audio") && drmDefaultKey[2][0])
+    {
+        return drmDefaultKey[2];
+    }
+    return drmDefaultKey[0][0] ? drmDefaultKey[0] : NULL;
+}
+
+/* Whether this FFmpeg can request keys: the mov demuxer has decryption_key_url. */
+static int32_t drm_key_request_supported(void);
+
+/* Whether the DASH demuxer of this FFmpeg has an option */
+static int32_t drm_dash_has_option(const char *name)
+{
+#if LIBAVFORMAT_VERSION_MAJOR >= 58
+    const AVInputFormat *dash = av_find_input_format("dash");
+    return dash && dash->priv_class &&
+           NULL != av_opt_find((void *)&dash->priv_class, name, NULL, 0, AV_OPT_SEARCH_FAKE_OBJ);
+#else
+    (void)name;
+    return 1;
+#endif
+}
+
+/* One option after ".mpd" in the url, &<digit>=<value> (value of len
+ * characters, not terminated), as the OE-Alliance exteplayer3 takes them
+ * (getParamMPD()):
+ *   0 video_rep_index, 1 audio_rep_index (DASH demuxer options; ignored with
+ *     a log line if this FFmpeg does not have them),
+ *   5 a key for every KID, 6 for the video KIDs, 7 for the audio KIDs,
+ *   8 a parameter of the front end, ignored.
+ * The keys are default keys: a KID with a key of its own (--key, dk) has
+ * that one, and a KID that a default key applies to is not asked for with
+ * --key-request. With an FFmpeg that can request keys they are answered by
+ * the player (io_open), otherwise they go to FFmpeg as the DASH options the
+ * OE-A player sets (cenc_decryption_key, cenc_decryption_video_key,
+ * cenc_decryption_audio_key). 0 if taken, -1 if not. */
+int32_t ffmpeg_mpd_url_option(char digit, const char *value, size_t len)
+{
+    static const char *const keyNames[3] = {"all", "video", "audio"};
+    static const char *const keyOptions[3] = {"cenc_decryption_key", "cenc_decryption_video_key",
+                                              "cenc_decryption_audio_key"};
+    char text[33];
+
+    switch (digit)
+    {
+    case '0':
+    case '1':
+    {
+        const char *name = '0' == digit ? "video_rep_index" : "audio_rep_index";
+        size_t start = (len > 1 && '-' == value[0]) ? 1 : 0;
+        if (len < 1 || len > 9 || strspn(value + start, "0123456789") < len - start)
+        {
+            ffmpeg_err("url option &%c=: not a number, ignored\n", digit);
+            return -1;
+        }
+        memcpy(text, value, len);
+        text[len] = '\0';
+        if (!drm_dash_has_option(name))
+        {
+            ffmpeg_err("url option &%c=%s: the DASH demuxer of this FFmpeg has no %s, ignored\n", digit, text, name);
+            return -1;
+        }
+        av_dict_set(&g_avio_opts, name, text, 0);
+        ffmpeg_printf(10, "url option &%c=: %s %s\n", digit, name, text);
+        return 0;
+    }
+    case '5':
+    case '6':
+    case '7':
+    {
+        int32_t i = digit - '5';
+        if (!drm_hex32(text, value, len))
+        {
+            /* not printed: it may be a key */
+            ffmpeg_err("url option &%c=: not a key of 32 hex digits (%d characters), ignored\n", digit, (int)len);
+            return -1;
+        }
+        pthread_mutex_lock(&drmKeyMutex);
+        strcpy(drmDefaultKey[i], text);
+        pthread_mutex_unlock(&drmKeyMutex);
+        if (!drm_key_request_supported())
+        {
+            av_dict_set(&g_avio_opts, keyOptions[i], text, 0);
+        }
+        ffmpeg_printf(10, "url option &%c=: default CENC key for %s KIDs\n", digit, keyNames[i]);
+        return 0;
+    }
+    case '8':
+        ffmpeg_printf(10, "url option &8=: front end parameter, ignored\n");
+        return 0;
+    default:
+        return -1;
+    }
+}
+
 /* --key-timeout <s> */
 void ffmpeg_drm_key_timeout_set(int32_t seconds)
 {
@@ -318,20 +426,32 @@ static int drm_key_get(AVFormatContext *s, const char *url, char *key)
         return AVERROR(EINVAL);
     }
     free(kidArg);
+    type = drm_query_value(url, "type");
 
     pthread_mutex_lock(&drmKeyMutex);
     entry = drm_key_find(kid);
+    if (!entry)
+    {
+        /* a default key of the url (&5=, &6=, &7=): not asked for */
+        const char *def = drm_default_key(type);
+        if (def)
+        {
+            strcpy(key, def);
+            pthread_mutex_unlock(&drmKeyMutex);
+            ffmpeg_printf(10, "KID %s (%s): default key of the url\n", kid, type ? type : "");
+            free(type);
+            return 0;
+        }
+    }
     if (!entry && drmKeyRequest && !drmKeyNoAnswer)
     {
         /* ask the front end */
         pthread_mutex_unlock(&drmKeyMutex);
-        type = drm_query_value(url, "type");
         pssh = drm_query_value(url, "pssh");
         list = drm_pssh_json(pssh);
         E2iSendMsg("{\"DRM_KEY_REQ\":{\"kid\":\"%s\",\"type\":\"%s\",\"pssh\":%s}}\n",
                    kid, type && strspn(type, "abcdefghijklmnopqrstuvwxyz") == strlen(type) ? type : "",
                    list ? list : "[]");
-        free(type);
         free(pssh);
         free(list);
         asked = 1;
@@ -383,6 +503,7 @@ static int drm_key_get(AVFormatContext *s, const char *url, char *key)
         E2iSendMsg("{\"DRM_KEY\":{\"kid\":\"%s\",\"sts\":%d}}\n", kid, entry ? (entry->state > 0 ? 0 : entry->state) : -2);
     }
     pthread_mutex_unlock(&drmKeyMutex);
+    free(type);
 
     /* the wait for the front end is not a stalled read */
     readStallStartMs = read_stall_now_ms();
