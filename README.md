@@ -1371,16 +1371,18 @@ player by it; the OE-A player sends `{"EPLAYER3_EXTENDED":{"version":185}}`.
 A missing key means "not supported": front ends should read every key with a
 default of `0` (`.get(key, 0)`) and test the feature, not the version.
 
-| Key | Values | Meaning | Since |
+| Key | Values | Meaning | Since version |
 |---|---|---|---|
-| `version` | `186` | player version | v24 |
-| `start` | `1` | `--start <seconds>` is known, see [Start position](#-start-position) | master |
-| `xcode` | bit mask `0`-`7` | audio encoders: `1` AC-3 (`-Z`, `-X`), `2` AAC (`-Y`), `4` E-AC-3 (`-E`); always present, `0` without any | master |
-| `trick` | `1` | DreamNextGen builds only: `f<speed>`/`b<speed>` wind on keyframes | master |
-| `achannel` | `1` | stdin `am<n>` (left/stereo/right of dual mono) is known | master |
-| `hlsseg` | bit mask `1`-`3` | HLS segments played directly: `1` any name (`.js`, `.png`, none; always set), `2` an image in front of the TS data | master |
-| `drmkey` | bit mask `1`-`3` | `1` `--key <kid>:<key>`, `2` `--key-request` (`DRM_KEY_REQ`, answer on stdin `dk <kid>:<key>`) | #72 |
-| `mpdopt` | `1` | OE-A options after `.mpd` in the URL (`&0=` `&1=` `&5=` `&6=` `&7=` `&8=`) are read and taken off it | #72 |
+| `version` | `186` | player version | 24 |
+| `start` | `1` | `--start <seconds>` is known, see [Start position](#-start-position) | 186 |
+| `xcode` | bit mask `0`-`7` | audio encoders: `1` AC-3 (`-Z`, `-X`), `2` AAC (`-Y`), `4` E-AC-3 (`-E`); always present, `0` without any | 186 |
+| `trick` | `1` | DreamNextGen builds only: `f<speed>`/`b<speed>` wind on keyframes | 186 |
+| `achannel` | `1` | stdin `am<n>` (left/stereo/right of dual mono) is known | 186 |
+| `hlsseg` | bit mask `1`-`3` | HLS segments played directly: `1` any name (`.js`, `.png`, none; always set), `2` an image in front of the TS data | 186 |
+| `drmkey` | bit mask `1`-`3` | `1` `--key <kid>:<key>`, `2` `--key-request` (`DRM_KEY_REQ`, answer on stdin `dk <kid>:<key>`) | with #72 |
+| `mpdopt` | `1` | OE-A options after `.mpd` in the URL (`&0=` `&1=` `&5=` `&6=` `&7=` `&8=`) are read and taken off it | with #72 |
+
+The version number does not change with every feature: several keys came in later builds that still report 186. A front end should therefore test the key, not the version. "with #72": the key comes with that pull request; the version it ships in is set when it is released.
 
 ---
 
