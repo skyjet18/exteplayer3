@@ -139,6 +139,9 @@ typedef struct {
 
     uint32_t         width;
     uint32_t         height;
+
+    /* not 0: only rectangles with the forced flag are sent */
+    int              forcedOnly;
 } WriterSubCallData_t;
 
 typedef struct SubWriter_s {

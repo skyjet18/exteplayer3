@@ -94,6 +94,10 @@ typedef struct Output_s
 
 extern Output_t LinuxDvbOutput;
 extern Output_t SubtitleOutput;
+
+/* only forced subtitle cues (--forced-only, so1/so0) */
+void subtitle_forced_only_set(int on);
+int subtitle_forced_only_get(void);
 #ifdef HAVE_DREAMNEXTGEN
 extern Output_t DreamVideoOutput;
 #endif
