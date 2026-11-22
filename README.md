@@ -525,7 +525,8 @@ A local input that cannot be opened sends `FF_ERROR` with the error of
 before `PLAYBACK_OPEN` with a negative `sts` and exit code 10, as inputs that
 FFmpeg opens itself already did. A `-x` file given as `iptv://path` that
 cannot be read is opened as `file://path` and fails the same way, instead of
-the usage text and exit code 1 without any JSON.
+the usage text and exit code 1 with no JSON after the `EPLAYER3_EXTENDED`
+start line.
 
 Without `-u`, the player opens `http://` and `https://` inputs (the playback
 uri and the `-x` file, with their HLS/DASH playlists and segments) with the
