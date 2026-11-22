@@ -204,8 +204,10 @@ def sine_played(lefts):
     return 4000 < max(abs(value) for value in part) < 12000 and 80 <= crossings <= 120
 
 
-def check_drm_keys(args, root, audio, video, resources, base):
-    """--key, --key-request (DRM_KEY_REQ / dk), with a front end simulator."""
+def check_drm_keys(args, root, audio, video, resources, base, seen):
+    """--key, --key-request (DRM_KEY_REQ / dk), with a front end simulator,
+    and the OE-A options after .mpd in the url. seen: the (path, start) of
+    the HTTP requests."""
     caps = json.loads(subprocess.run(
         [args.player], capture_output=True, timeout=5).stderr.splitlines()[0])["EPLAYER3_EXTENDED"]
     assert caps.get("drmkey") in (1, 3), caps
@@ -280,6 +282,20 @@ def check_drm_keys(args, root, audio, video, resources, base):
             shared.find(".//d:Period", ns).append(sets["c"])
             resources["/drm4.mpd"] = ET.tostring(shared)
 
+    # the video (KID kid_v) encrypted with the key of the audio: drm-one.mpd
+    # has one key for every KID (the OE-A &5=<key> after .mpd in the url)
+    directory = root / "drm-o"
+    directory.mkdir()
+    run(args.ffmpeg, "-y", "-f", "rawvideo", "-pixel_format", "yuv420p", "-video_size", "64x64",
+        "-framerate", "25", "-i", str(video), "-c:v", "mpeg2video", "-g", "25", "-t", "8",
+        "-f", "dash", "-seg_duration", "1", "-use_template", "1", "-use_timeline", "1",
+        "-init_seg_name", "init.m4s", "-media_seg_name", "seg-$Number%05d$.m4s",
+        "-format_options", f"encryption_scheme=cenc-aes-ctr:encryption_key={key_a}:encryption_kid={kid_v}",
+        str(directory / "stream.mpd"))
+    for file in directory.iterdir():
+        resources[f"/drm-o/{file.name}"] = file.read_bytes()
+    resources["/drm-one.mpd"] = resources["/drm.mpd"].replace(b"drm-v/", b"drm-o/")
+
     # MP4, video and audio with their own KID: encrypted with one key, the
     # KID of the audio track (the second tenc) changed afterwards
     kid_m = "abcdef0123456789abcdef0123456789"
@@ -339,6 +355,54 @@ def check_drm_keys(args, root, audio, video, resources, base):
         assert invalid.returncode != 0 and b"--key: " in invalid.stdout, (wrong, invalid.stdout)
     print("PASS CENC keys --key: MP4" + (" and DASH (a KID per track)" if dash else "")
           + " play with the preloaded keys, no request; malformed --key refused")
+
+    # OE-A options after .mpd in the url ("mpdopt"): each &<0|1|5|6|7|8>=
+    # is taken off, the rest of the url (a query string around them) is
+    # opened as it was; &50= is not one of them
+    assert caps.get("mpdopt") == 1, caps
+    wrong = "0123456789abcdef0123456789abcdef"
+    for suffix, expected in ((f"&5={key_a}", ""),
+                             (f"?a=b&50=x&c=d&0=0&1=0&5={key_a}&8=u&e=f", "?a=b&50=x&c=d&e=f"),
+                             ("?a=b&c=d", "?a=b&c=d")):
+        seen.clear()
+        messages, lefts = drm_play(args, [base + "/drm-clear.mpd" + suffix], seconds=5)
+        manifests = {path for path, _ in seen if path.startswith("/drm-clear.mpd")}
+        assert manifests == {"/drm-clear.mpd" + expected}, (suffix, seen[:6], drm_last_log)
+        assert clear_packets <= 100 or sine_played(lefts), (suffix, len(lefts), messages[-12:], drm_last_log)
+    print("PASS OE-A url options: &0= &1= &5= &8= after .mpd taken off the url, "
+          "query strings around them kept, &50= and a plain query untouched")
+
+    if dash:
+        # &5=: a key for every KID; explicit keys (--key) win over the
+        # defaults of the url (a wrong default key would give noise)
+        for options, url in (([], f"/drm-one.mpd&5={key_a}"),
+                             ([], f"/drm-one.mpd?a=b&5={key_a}&c=d"),
+                             ([], f"/drm.mpd&6={key_v}&7={key_a}"),
+                             (["--key", f"{kid_v}:{key_v}"], f"/drm.mpd&5={key_a}"),
+                             (["--key", f"{kid_a}:{key_a}", "--key", f"{kid_v}:{key_v}"],
+                              f"/drm.mpd&5={wrong}&7={wrong}")):
+            messages, lefts = drm_play(args, [*options, base + url])
+            assert not requests(messages), (url, messages)
+            assert not any("FF_ERROR" in m or "DRM_KEY_DROP" in m for m in messages), (url, messages[-12:])
+            assert sine_played(lefts), (url, len(lefts), max(map(abs, lefts), default=0), messages[-12:],
+                                        drm_last_log)
+        print("PASS OE-A url options: DASH plays decrypted with &5= (one key for every KID), "
+              "&6= / &7= (video / audio); --key wins over them")
+
+    if dash and caps["drmkey"] & 2:
+        # --key-request: a KID a default key of the url applies to is not
+        # asked for, the others are
+        messages, lefts = drm_play(args, ["--key-request", base + f"/drm-one.mpd&5={key_a}"], {})
+        assert not requests(messages), messages
+        assert sine_played(lefts), (len(lefts), messages[-12:], drm_last_log)
+        messages, lefts = drm_play(args, ["--key-request", base + f"/drm.mpd&7={key_a}"], {kid_v: key_v})
+        assert [(r["kid"], r["type"]) for r in requests(messages)] == [(kid_v, "video")], messages
+        assert sine_played(lefts), (len(lefts), messages[-12:], drm_last_log)
+        messages, lefts = drm_play(args, ["--key-request", base + f"/drm.mpd&6={key_v}"], {kid_a: key_a})
+        assert [(r["kid"], r["type"]) for r in requests(messages)] == [(kid_a, "audio")], messages
+        assert sine_played(lefts), (len(lefts), messages[-12:], drm_last_log)
+        print("PASS OE-A url options with --key-request: only KIDs without a default key "
+              "of the url are asked for")
 
     if not caps["drmkey"] & 2:
         print("SKIP CENC key requests: this FFmpeg has no decryption_key_url")
@@ -876,7 +940,12 @@ def main():
                     pass
 
             def do_GET(self):
-                data = resources[self.path]
+                # a query string the resource is not stored with is left out
+                data = resources.get(self.path, resources.get(self.path.split("?", 1)[0]))
+                if data is None:
+                    requests.append((self.path, 0))
+                    self.send_error(404)
+                    return
                 encoding = self.headers.get("Accept-Encoding")
                 encodings.append((self.path, encoding))
                 gzipped = self.path in compressed and "gzip" in (encoding or "")
@@ -1218,7 +1287,7 @@ def main():
                         assert (peak_left > 4000) == (channel == 0), (name, peak_left)
                 print("PASS PCM dual mono: --audio-channel left/right copy that channel to both, stereo keeps them")
 
-                check_drm_keys(args, root, audio, video, resources, base)
+                check_drm_keys(args, root, audio, video, resources, base, requests)
 
             # am<n>: left/stereo/right of dual mono, am alone reports it; this
             # host output has no decoder, so every valid value gives sts 0.

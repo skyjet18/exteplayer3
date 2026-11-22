@@ -624,6 +624,29 @@ resolution. The keys are given per KID, not per stream:
     then the player stops the playback as with `q` (`PLAYBACK_STOP`, exit
     code 0).
 - `-5`/`-6`/`-7` (one key for everything, video or audio) stay as they are.
+- OE-A compatibility: front ends written for the OE-Alliance exteplayer3
+  (its `getParamMPD()`) append options to a DASH url after `.mpd`, e.g.
+  `http://host/manifest.mpd&5=<key>`. The player takes each `&<digit>=`
+  with one of these digits after the first `.mpd`, up to the next `&`, and
+  cuts it out of the url before opening it; the rest of the url, also a
+  query string in front of or behind the options, stays as it is
+  (`manifest.mpd?a=b&5=<key>&c=d` opens `manifest.mpd?a=b&c=d`):
+  - `&0=<n>` / `&1=<n>`: the DASH options `video_rep_index` /
+    `audio_rep_index`; with an FFmpeg whose DASH demuxer does not have them
+    (`release/6.1-patched`) they are ignored with a log line;
+  - `&5=<key>`: a key for every KID, `&6=<key>` / `&7=<key>`: for the KIDs
+    of the video / the audio (32 hex digits). These are default keys: a KID
+    with a key of its own (`--key`, `dk`) has that one, and a KID a default
+    key applies to is not asked for with `--key-request`. With an FFmpeg that
+    has `decryption_key_url` the player answers them itself; otherwise they
+    go to FFmpeg as the DASH options the OE-A player sets
+    (`cenc_decryption_key`, `cenc_decryption_video_key`,
+    `cenc_decryption_audio_key`);
+  - `&8=<x>`: a front end parameter, taken off and ignored.
+
+  `EPLAYER3_EXTENDED` carries `"mpdopt":1`. One key per url does not fit
+  streams with a key per track or resolution: the per-KID way is `--key` and
+  `--key-request`.
 
 ## DreamNextGen build (Dreambox One/Two)
 
