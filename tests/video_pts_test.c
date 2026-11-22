@@ -235,6 +235,9 @@ int main(void)
     for (pts = 0; pts <= 1800000; pts += 3600)
         write_video(pts);
     assert(position(cERR_LINUXDVB_NO_ERROR) == 0);
+    /* asked again, the stale value has not moved: still replaced */
+    usleep(50000);
+    assert(position(cERR_LINUXDVB_NO_ERROR) == 0);
     /* the decoder shows the data */
     video_pts = 9000;
     assert(position(cERR_LINUXDVB_NO_ERROR) == 9000);
@@ -251,6 +254,50 @@ int main(void)
     usleep(200000);
     video_pts = 99000;
     assert(position(cERR_LINUXDVB_NO_ERROR) == 99000);
+
+    /* A TS joined mid-GOP: its first keyframe comes 3 s after its first PTS
+     * (8.4 s). The 32 s of it are written at once, the decoder shows the
+     * keyframe at once and plays on from there, 3 s further in than the time
+     * since the first write. The end of the file (buff_ffmpeg.c) ends the
+     * playback after 10 requests 100 ms apart without a new position: here
+     * requests 20 ms apart within the POS_BOUND_START_MS of this test. The
+     * stale value of the earlier playback (13.3 s) is replaced first, then
+     * the position has to move with the decoder. */
+    {
+        const unsigned long long first = 756000, keyframe = first + 270000;
+        unsigned long long last, p;
+        struct timespec shown, now;
+        int i, unchanged = 0;
+
+        assert(!Command(&context, OUTPUT_PLAY, "video"));
+        video_pts = 1197000;
+        for (pts = first; pts <= first + 32 * 90000; pts += 3600)
+            write_video(pts);
+        last = position(cERR_LINUXDVB_NO_ERROR);
+        assert(last == first);
+        clock_gettime(CLOCK_MONOTONIC, &shown);
+        for (i = 0; i < 40; i++)
+        {
+            usleep(20000);
+            clock_gettime(CLOCK_MONOTONIC, &now);
+            video_pts = keyframe + (unsigned long long)((now.tv_sec - shown.tv_sec) * 1000 +
+                                                        (now.tv_nsec - shown.tv_nsec) / 1000000) * 90;
+            p = position(cERR_LINUXDVB_NO_ERROR);
+            assert(p >= first && p <= first + 32 * 90000);
+            if (p == last)
+            {
+                unchanged++;
+                assert(unchanged < 10 && "no progress: the end of the file would end the playback");
+            }
+            else
+            {
+                assert(p > last);
+                unchanged = 0;
+            }
+            last = p;
+        }
+        assert(last >= keyframe);
+    }
 
     printf("video PTS tests passed\n");
     return 0;
