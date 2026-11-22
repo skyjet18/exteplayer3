@@ -329,9 +329,13 @@ The `v_c` current-video-track JSON adds `"hdr":0|1|2|3` as its last key:
 `3` another BT.2020 transfer (`transfer_characteristics` 14 or 15 without
 PQ/HLG signalling). The value comes from the HEVC SPS VUI and the
 mastering-display and alternative-transfer SEI of the selected video stream;
-an alternative-transfer SEI overrides the VUI. Codecs other than HEVC always
-report `0`. Dolby Vision and HDR10+ signalling is not evaluated. The `v_c`
-sent when there is no video track (`"id":-1`) has no `hdr` key.
+an alternative-transfer SEI overrides the VUI. For other codecs (VP9, AV1,
+H.264) it comes from the transfer characteristic of the codec parameters,
+which the container (Matroska `Colour`, MP4 `colr`/`vpcC`) or the bitstream
+carries: `smpte2084` is `1`, `arib-std-b67` `2`, `bt2020-10`/`bt2020-12`
+`3`, anything else or none `0`. Dolby Vision and HDR10+ signalling is not
+evaluated. The `v_c` sent when there is no video track (`"id":-1`) has no
+`hdr` key.
 
 Five keys follow `hdr` in `v_c`, and `n` in the `v_l` entries:
 `"pr"` (profile and level as ffprobe names the profile, `High@4.1`,
@@ -353,7 +357,9 @@ is emitted again without a request, as for a changed progressive flag. HDR10
 and HLG are final when seen. SDR and `3` remain provisional until 768 KiB of
 video after the first SPS, or 2 MiB in total, were inspected; `3` can still
 become `1` or `2` in that time. Packets are only copied for inspection;
-nothing extra is read from the input and no video is decoded.
+nothing extra is read from the input and no video is decoded. For the other
+codecs the value is set with the first packet and follows the codec
+parameters after that.
 
 Commands are read from stdin. When stdin is a pipe or a socket and reaches
 its end (the front end exited or crashed without sending `q`), the player
