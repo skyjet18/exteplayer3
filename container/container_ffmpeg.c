@@ -5520,7 +5520,14 @@ static int32_t update_tracks(Context_t *context, char *filename, int32_t initial
                     {
                         track.frame_rate = (uint32_t)(1000 * (int64_t)(rateRational.num) / (int64_t)(rateRational.den));
                     }
-                    
+                    /* a guess from the time base (DASH WebM 1/1000 gives 1000 fps):
+                     * the real frame rate when FFmpeg has one */
+                    if (track.frame_rate > 120000 && stream->r_frame_rate.den > 0 && stream->r_frame_rate.num > 0 &&
+                        1000 * (int64_t)stream->r_frame_rate.num / stream->r_frame_rate.den <= 120000)
+                    {
+                        track.frame_rate = (uint32_t)(1000 * (int64_t)stream->r_frame_rate.num / stream->r_frame_rate.den);
+                    }
+
                     /* fixme: revise this */
                     if (track.frame_rate < 23970)
                     {
