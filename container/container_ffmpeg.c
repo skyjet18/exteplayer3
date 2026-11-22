@@ -5181,7 +5181,15 @@ int32_t container_ffmpeg_init_av_context(Context_t *context, char *filename, uin
      * filled in by avformat_find_stream_info() */
     if (context->playback->noprobe && !is_hls_input(avContextTab[AVIdx]))
     {
-        wrapped_set_max_analyze_duration(avContextTab[AVIdx], 1);
+        /* DASH hands over the codec parameters of a representation, not its
+         * frame rate. With 1 us the analysis ended at the second packet of
+         * an audio representation, before the video had two frames, and the
+         * frame rate was the guess from the time base (WebM 1/1000: 1000
+         * fps). One second of media gives FFmpeg the frame spacing; the
+         * first segments are loaded already. */
+        int dash = avContextTab[AVIdx]->iformat &&
+            !strcmp(avContextTab[AVIdx]->iformat->name, "dash");
+        wrapped_set_max_analyze_duration(avContextTab[AVIdx], dash ? AV_TIME_BASE : 1);
     }
 
     ffmpeg_printf(20, "find_streaminfo\n");

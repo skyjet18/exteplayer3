@@ -10,6 +10,7 @@ import math
 import os
 from pathlib import Path
 import queue
+import re
 import shutil
 import socket
 import struct
@@ -2811,7 +2812,10 @@ def main():
             # VP9 profile 2 with PQ and HLG in WebM, H.264 with HLG in
             # Matroska: "hdr" and "tc" from the transfer characteristic the
             # container carries. VP9 PQ in DASH with WebM segments (time base
-            # 1/1000): "f" is the frame rate of the stream, not 1000 fps.
+            # 1/1000) and an Opus representation, over HTTP like every network
+            # input (analysis limited), no DefaultDuration in the video
+            # initialization segment and no frameRate in the MPD: "f" is the
+            # frame rate of the stream, not 1000 fps.
             vp9_raw = root / "vp9.ivf"
             vp9_raw.write_bytes(vp9_ivf(frames=100))
             colour = ["-color_primaries", "bt2020", "-colorspace", "bt2020nc"]
@@ -2821,11 +2825,29 @@ def main():
             run(args.ffmpeg, "-y", "-i", str(high_mp4), "-c", "copy", "-color_trc", "arib-std-b67",
                 *colour, str(root / "h264-hlg.mkv"))
             (root / "vp9dash").mkdir()
-            run(args.ffmpeg, "-y", "-i", str(vp9_raw), "-c", "copy", "-color_trc", "smpte2084",
-                *colour, "-seg_duration", "1", "-dash_segment_type", "webm", "-f", "dash",
-                str(root / "vp9dash" / "vp9.mpd"))
+            run(args.ffmpeg, "-y", "-i", str(vp9_raw), "-f", "s16le", "-ar", "48000", "-ac", "2",
+                "-i", str(audio), "-map", "0:v", "-map", "1:a", "-c:v", "copy",
+                "-c:a", "opus", "-strict", "-2", "-t", "4", "-color_trc", "smpte2084", *colour,
+                "-adaptation_sets", "id=0,streams=v id=1,streams=a", "-seg_duration", "1",
+                "-dash_segment_type", "webm", "-f", "dash", str(root / "vp9dash" / "vp9.mpd"))
+            stripped = 0
             for part in (root / "vp9dash").iterdir():
-                resources["/vp9dash/" + part.name] = part.read_bytes()
+                data = part.read_bytes()
+                if part.suffix == ".mpd":
+                    data = re.sub(rb'\s+frameRate="[^"]*"', b"", data)
+                elif part.name.startswith("init"):
+                    # DefaultDuration (ID 23 E3 83, one byte size) as an EBML
+                    # Void of the same length: the frames carry no duration
+                    at = data.find(b"\x23\xe3\x83")
+                    while at >= 0:
+                        assert data[at + 3] & 0x80, data[at:at + 4]
+                        length = 4 + (data[at + 3] & 0x7f)
+                        data = (data[:at] + bytes([0xEC, 0x80 | (length - 2)]) +
+                                bytes(length - 2) + data[at + length:])
+                        stripped += 1
+                        at = data.find(b"\x23\xe3\x83", at)
+                resources["/vp9dash/" + part.name] = data
+            print("DASH WebM: DefaultDuration elements removed:", stripped)
             hdr_types = {"smpte2084": 1, "arib-std-b67": 2}
 
             def transfer_values(uri, encoding, transfer):

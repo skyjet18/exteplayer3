@@ -44,7 +44,7 @@ static void wrapped_set_max_analyze_duration(void *param, int val)
 #if (LIBAVFORMAT_VERSION_MAJOR > 55) && (LIBAVFORMAT_VERSION_MAJOR < 56)
     ((AVFormatContext *)param)->max_analyze_duration2 = val;
 #else
-    ((AVFormatContext *)param)->max_analyze_duration = 1;
+    ((AVFormatContext *)param)->max_analyze_duration = val;
 #endif
 }
 
