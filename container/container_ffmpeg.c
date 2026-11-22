@@ -633,22 +633,46 @@ static void hevc_hdr_publish(Context_t *context, int type)
     context->manager->video->Command(context, MANAGER_UPDATED_TRACK_INFO, NULL);
 }
 
+/* The HDR type of a stream the HEVC detector does not read (VP9, AV1,
+ * H.264): from the transfer characteristic of its codec parameters, which
+ * the demuxer (Matroska Colour, MP4 colr/vpcC) or the parser fills in. */
+static int color_trc_hdr_type(const AVCodecParameters *par)
+{
+    switch (par->color_trc)
+    {
+    case AVCOL_TRC_SMPTE2084:
+        return HEVC_HDR_HDR10;
+    case AVCOL_TRC_ARIB_STD_B67:
+        return HEVC_HDR_HLG;
+    case AVCOL_TRC_BT2020_10:
+    case AVCOL_TRC_BT2020_12:
+        return HEVC_HDR_GENERIC;
+    default:
+        return HEVC_HDR_SDR;
+    }
+}
+
 /* Looks at the packets of the selected video stream until the type is known;
- * hevc_hdr.c bounds how much of the stream that takes. */
+ * hevc_hdr.c bounds how much of the stream that takes. Other codecs follow
+ * the codec parameters, which an HLS variant switch can change. */
 static void hevc_hdr_update(Context_t *context, AVStream *stream, const AVPacket *packet)
 {
     AVCodecParameters *par = get_codecpar(stream);
+
+    if (par->codec_id != AV_CODEC_ID_HEVC)
+    {
+        /* HEVC after this, even in the same stream, starts the detector anew */
+        hevcHdrStream = NULL;
+        hevc_hdr_publish(context, color_trc_hdr_type(par));
+        return;
+    }
 
     if (hevcHdrStream != stream)
     {
         hevc_hdr_detector_reset(&hevcHdrDetector);
         hevcHdrStream = stream;
         hevc_hdr_publish(context, HEVC_HDR_SDR);
-        if (par->codec_id != AV_CODEC_ID_HEVC)
-        {
-            hevcHdrDetector.done = 1;
-        }
-        else if (par->extradata && par->extradata_size > 0)
+        if (par->extradata && par->extradata_size > 0)
         {
             hevc_hdr_detector_configure(&hevcHdrDetector, par->extradata, (size_t)par->extradata_size);
             hevc_hdr_publish(context, hevc_hdr_detector_result(&hevcHdrDetector));
