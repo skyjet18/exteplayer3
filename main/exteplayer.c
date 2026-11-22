@@ -988,10 +988,12 @@ static const char *VideoInfoJson(char *dst, size_t size, const VideoStreamInfo_t
 {
     char profile[2 * sizeof(info->profile_level)];
     char primaries[64];
+    char transfer[64];
 
-    snprintf(dst, size, ",\"pr\":\"%s\",\"bd\":%d,\"br\":%d,\"dv\":%d,\"cr\":\"%s\"",
+    snprintf(dst, size, ",\"pr\":\"%s\",\"bd\":%d,\"br\":%d,\"dv\":%d,\"cr\":\"%s\",\"tc\":\"%s\"",
              JsonEscape(profile, sizeof(profile), info->profile_level), info->bit_depth, info->bit_rate,
-             info->dv_profile, JsonEscape(primaries, sizeof(primaries), info->color_primaries));
+             info->dv_profile, JsonEscape(primaries, sizeof(primaries), info->color_primaries),
+             JsonEscape(transfer, sizeof(transfer), info->color_transfer));
     return dst;
 }
 

@@ -1564,13 +1564,16 @@ static void video_stream_info(AVStream *stream, VideoStreamInfo_t *info)
     if (par->color_primaries != AVCOL_PRI_UNSPECIFIED && par->color_primaries != AVCOL_PRI_RESERVED &&
         par->color_primaries != AVCOL_PRI_RESERVED0)
         info->color_primaries = av_color_primaries_name(par->color_primaries);
+    if (par->color_trc != AVCOL_TRC_UNSPECIFIED && par->color_trc != AVCOL_TRC_RESERVED &&
+        par->color_trc != AVCOL_TRC_RESERVED0)
+        info->color_transfer = av_color_transfer_name(par->color_trc);
 }
 
 static int video_stream_info_equal(const VideoStreamInfo_t *a, const VideoStreamInfo_t *b)
 {
     return !strcmp(a->profile_level, b->profile_level) && a->bit_depth == b->bit_depth &&
            a->bit_rate == b->bit_rate && a->dv_profile == b->dv_profile &&
-           a->color_primaries == b->color_primaries;
+           a->color_primaries == b->color_primaries && a->color_transfer == b->color_transfer;
 }
 
 /* What the demuxer thread knows about the video stream it plays, for v_c:
@@ -1614,9 +1617,10 @@ static void video_live_packet(Context_t *context, const Track_t *track, AVStream
 
     if (changed)
     {
-        ffmpeg_printf(10, "video track %d: %s, %d bit, %d bit/s, DV %d, %s\n", (int)track->Id,
+        ffmpeg_printf(10, "video track %d: %s, %d bit, %d bit/s, DV %d, %s, %s\n", (int)track->Id,
                       info.profile_level, info.bit_depth, info.bit_rate, info.dv_profile,
-                      info.color_primaries ? info.color_primaries : "-");
+                      info.color_primaries ? info.color_primaries : "-",
+                      info.color_transfer ? info.color_transfer : "-");
         context->manager->video->Command(context, MANAGER_UPDATED_TRACK_INFO, NULL);
     }
 }
