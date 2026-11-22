@@ -28,6 +28,7 @@
 - [Optional decoded PCM export](#-optional-decoded-pcm-export)
 - [Start position](#-start-position)
 - [Optional audio transcoding](#-optional-audio-transcoding)
+- [CENC keys per KID](#-cenc-keys-per-kid)
 - [DreamNextGen build (Dreambox One/Two)](#dreamnextgen-build-dreambox-onetwo)
 - [Native validation](#-native-validation)
 - [DD+ passthrough restart on VU+ Ultimo 4K and Duo 4K SE](#-dd-passthrough-restart-on-vu-ultimo-4k-and-duo-4k-se)
@@ -715,7 +716,9 @@ they differ by more than 200 ms. A failed setup or encoder is logged once
 or a seek; playback continues. Stereo downmix (`-s`) is not applied to
 transcoded tracks.
 
-## CENC keys per KID
+---
+
+## 🔑 CENC keys per KID
 
 Streams in CENC (MP4, DASH, HLS fMP4) often use a key per track or per
 resolution. The keys are given per KID, not per stream:
@@ -784,6 +787,8 @@ resolution. The keys are given per KID, not per stream:
   `EPLAYER3_EXTENDED` carries `"mpdopt":1`. One key per url does not fit
   streams with a key per track or resolution: the per-KID way is `--key` and
   `--key-request`.
+
+---
 
 ## DreamNextGen build (Dreambox One/Two)
 
@@ -1281,7 +1286,7 @@ stdout and ends the player with exit code 1.
 | `-A 0\|1`, `-V 0\|1`, `-U 0\|1` | AMR, Vorbis, Opus software decoding off/on |
 | `-l` | software decoded audio is written as LPCM instead of WAV PCM |
 | `-s` | software decoded audio is mixed down to stereo |
-| `-r` | software decoded audio is not resampled |
+| `-r` | PCM tracks go to the PCM writer as they are (`A_PCM`), without software decoding and resampling |
 | `-j ms` | PTS dejitter threshold of AAC, AAC LATM and DTS written as bitstream, default 200, `0` off |
 | `-K` | decoded PCM export, see [Optional decoded PCM export](#-optional-decoded-pcm-export) |
 | `-Z`, `-X`, `-E`, `-Y`, `--dts-ac3`, `--truehd-ac3`, `--dts-eac3`, `--truehd-eac3`, `--heaac-aaclc` | audio transcoding, see [Optional audio transcoding](#-optional-audio-transcoding) |
@@ -1292,6 +1297,10 @@ stdout and ends the player with exit code 1.
 | `-P id` | program ID of a multi-program stream (also an HLS program) |
 | `-0 index`, `-1 index` | MPEG-DASH video and audio representation index (`video_rep_index`, `audio_rep_index`) |
 | `-5 key`, `-6 key`, `-7 key` | CENC decryption key for all streams, for video, for audio (`cenc_decryption_key`, `cenc_decryption_video_key`, `cenc_decryption_audio_key`) |
+| `--key kid:key` | CENC key of a KID, 32 hex digits each, repeatable (MP4, DASH, HLS fMP4), see [CENC keys per KID](#-cenc-keys-per-kid) |
+| `--key-request` | ask the front end for the key of other KIDs: `DRM_KEY_REQ`, answer on stdin `dk` (`"drmkey"` & 2: only with an FFmpeg that has `decryption_key_url`) |
+| `--key-timeout s` | how long `--key-request` waits for the answer, default 10 |
+| `<url>.mpd&5=key` | OE-A options after `.mpd` in the url (`&0=` `&1=` `&5=` `&6=` `&7=` `&8=`), taken off it before the open, see [CENC keys per KID](#-cenc-keys-per-kid) |
 | `-x uri` | separate audio uri |
 | `-h headers` | HTTP headers, `"Name: value\r\nName: value\r\n"` |
 | `-u user-agent` | HTTP User-Agent |
@@ -1314,7 +1323,10 @@ stdout and ends the player with exit code 1.
 
 ## ⌨️ stdin commands
 
-One command per line. While the input opens, only `q` is read (exit code 11).
+One command per line. While the input opens, only `q` (exit code 11) and `dk`
+are read. A thread of its own reads stdin in whole lines of up to 16 kB
+(longer ones are dropped) and takes `dk` lines at once, also while a seek,
+track switch or list waits for the reading thread.
 
 | Command | Action | Answer |
 |---|---|---|
@@ -1334,6 +1346,7 @@ One command per line. While the input opens, only `q` is read (exit code 11).
 | `sl`, `sc` | subtitle track list, current subtitle track | `s_l`, `s_c` |
 | `s<id>`, `si<index>`, `s-1` | switch subtitles, `-1` off | `{"s_s":{"id":...,"sts":...}}` |
 | `vl`, `vc` | video track list, current video track | `v_l`, `v_c` |
+| `dk <kid>:<key>`, `dk <kid>:-` | CENC key of a KID, or none; several pairs per line, also keys that were not asked for | `{"DRM_KEY":{"kid":...,"sts":...}}` for an asked KID |
 
 The end of a command pipe acts as `q`, see the notes on stdin above. A
 connection to the UNIX socket `/tmp/.exteplayerterm.socket` also stops the
@@ -1350,8 +1363,12 @@ All messages are single lines on stderr.
 | `EPLAYER3_EXTENDED` | first line: version and features, see [below](#-start-message-eplayer3_extended-version-and-features) |
 | `PLAYBACK_OPEN` | after the open: `OutputName`, `file`, `sts` (negative: failed, exit code 10) |
 | `OUTPUT_OPEN`, `PLAYBACK_PLAY` | start of the playback, then `v_c`, `a_l`, `a_c`, `s_l`, `s_c` (`a_s`, `s_s` with `-t`, `-9`) |
-| `FF_ERROR` | `msg`, `code`: open or read error, see [HTTP input](#-http-input-hls-options-and-stall-limits) |
+| `FF_ERROR` | `msg`, `code`: open or read error, see [HTTP input](#-http-input-hls-options-and-stall-limits); `"code":-13` with `No key for KID <kid> (video)` before the stop of a video without a key |
 | `a_l`, `a_c`, `s_l`, `s_c`, `v_l`, `v_c`, `v_e` | tracks, see [Adaptive playback and metadata](#-adaptive-playback-and-metadata) |
+| | audio `a_l`/`a_c`: `id`, `e`, `n`, `c`, `d`, `t`, `sr`, `br`, `cl`, `bps`; subtitles `s_l`/`s_c`: `id`, `e`, `n`, `f`, `t`; `v_c`: `id`, `e`, `n`, `w`, `h`, `f`, `p`, `an`, `ad`, `hdr`, `pr`, `bd`, `br`, `dv`, `cr`, `tc`; `v_l` entries: `id`, `e`, `n`, `pr`, `bd`, `br`, `dv`, `cr`, `tc` |
+| `DRM_KEY_REQ` | `--key-request`: `kid`, `type`, `pssh` (`system`, `data`): a KID without a key, once per KID, see [CENC keys per KID](#-cenc-keys-per-kid) |
+| `DRM_KEY` | `kid`, `sts`: outcome of a request, `0` key, `-1` none (`dk <kid>:-`), `-2` no answer within `--key-timeout` |
+| `DRM_KEY_DROP` | `kid`, `type`, `id`, `switch`: a track without a key was dropped; `switch` is the audio track switched to, `-1` none |
 | `s_a` | subtitle cue: text `{"id","s","e","t"}` (ms), graphic `{"id","s","e","r":[{"x","y","w","h","f"}]}` with `"e":null` when the end is not known |
 | `s_f` | `{"s_f":{"r":0}}`: the subtitle output was reset (flush) |
 | `m_t` | radio text of audio-only playback |
@@ -1367,7 +1384,7 @@ player version and what this build supports. The name dates from the first
 commit (v24) and stays, because front ends (E2iPlayer, ServiceApp) detect the
 player by it; the OE-A player sends `{"EPLAYER3_EXTENDED":{"version":185}}`.
 
-`{"EPLAYER3_EXTENDED":{"version":186,"start":1,"xcode":7,"achannel":1,"hlsseg":3}}`
+`{"EPLAYER3_EXTENDED":{"version":186,"start":1,"xcode":7,"achannel":1,"hlsseg":3,"drmkey":3,"mpdopt":1}}`
 
 A missing key means "not supported": front ends should read every key with a
 default of `0` (`.get(key, 0)`) and test the feature, not the version.
@@ -1380,10 +1397,10 @@ default of `0` (`.get(key, 0)`) and test the feature, not the version.
 | `trick` | `1` | DreamNextGen builds only: `f<speed>`/`b<speed>` wind on keyframes | 186 |
 | `achannel` | `1` | stdin `am<n>` (left/stereo/right of dual mono) is known | 186 |
 | `hlsseg` | bit mask `1`-`3` | HLS segments played directly: `1` any name (`.js`, `.png`, none; always set), `2` an image in front of the TS data | 186 |
-| `drmkey` | bit mask `1`-`3` | `1` `--key <kid>:<key>`, `2` `--key-request` (`DRM_KEY_REQ`, answer on stdin `dk <kid>:<key>`) | with #72 |
-| `mpdopt` | `1` | OE-A options after `.mpd` in the URL (`&0=` `&1=` `&5=` `&6=` `&7=` `&8=`) are read and taken off it | with #72 |
+| `drmkey` | bit mask `1`-`3` | `1` `--key <kid>:<key>`, `2` `--key-request` (`DRM_KEY_REQ`, answer on stdin `dk <kid>:<key>`; only with an FFmpeg that has `decryption_key_url`), see [CENC keys per KID](#-cenc-keys-per-kid) | 186 |
+| `mpdopt` | `1` | OE-A options after `.mpd` in the URL (`&0=` `&1=` `&5=` `&6=` `&7=` `&8=`) are read and taken off it | 186 |
 
-The version number does not change with every feature: several keys came in later builds that still report 186. A front end should therefore test the key, not the version. "with #72": the key comes with that pull request; the version it ships in is set when it is released.
+The version number does not change with every feature: several keys came in later builds that still report 186. A front end should therefore test the key, not the version.
 
 ---
 
@@ -1393,11 +1410,13 @@ The version number does not change with every feature: several keys came in late
 |---|---|
 | `EP3_LIVE_SYNC`, `EP3_LIVE_SYNC_MARGIN`, `EP3_LIVE_SYNC_WATCH` | live-output hold and watch, see [Adaptive playback and metadata](#-adaptive-playback-and-metadata) |
 | `EP3_H264_LEVEL41` | H.264 SPS level limit |
+| `EP3_H264_CONSTRAINED_HIGH` | H.264 "Constrained High" flags of High profile SPS cleared (default on) |
 | `EP3_DTS_HD_MODE`, `EP3_DTS_PAD` | DTS-HD bypass mode, DTS core-frame padding |
 | `EP3_EAC3_RESTART` | DD+ passthrough restart, see [DD+ passthrough restart](#-dd-passthrough-restart-on-vu-ultimo-4k-and-duo-4k-se) |
 | `EP3_OUTPUT_PACING_MS` | software playback clock, see [HiSilicon receivers](#-hisilicon-receivers) |
 | `SSL_CERT_FILE`, `SSL_CERT_DIR`, `EP3_CA_FILES`, `EP3_CA_DEFAULT_FILE` | CA certificates, see [HTTPS](#-https-ca-certificates) |
 | `EP3_FAKE_AUDIO_CLOCK=<ms>` | host build (`tests/build.sh`) only: without video, the fake output reports the position of an audio decoder that plays in real time and stands for `<ms>` after a clear |
+| `EP3_FAKE_VIDEO_LEAD=<ms>` | host build only: the fake video decoder holds up to `<ms>` of video ahead of what it shows, as receiver decoders do |
 
 ---
 
@@ -1408,6 +1427,7 @@ The version number does not change with every feature: several keys came in late
 | `HAVE_FLV2MPEG4_CONVERTER` | FLV converter (`-4`), set by the BitBake recipe |
 | `HAVE_DREAMNEXTGEN` | Dreambox One/Two backend, see [DreamNextGen](#dreamnextgen-build-dreambox-onetwo) |
 | `H264_LEVEL41_DEFAULT=0\|1` | default of `EP3_H264_LEVEL41` (`1` on MIPS) |
+| `H264_CONSTRAINED_HIGH_DEFAULT=0\|1` | default of `EP3_H264_CONSTRAINED_HIGH` (`1`) |
 | `PCM_EXPORT_PATH` | FIFO of `-K`, default `/tmp/exteplayer3_pcm_audio.fifo` |
 | `EXTEPLAYER_VIDEO_SOCKET` | `v_c` datagram socket, default `/var/run/video.socket`, `""` off |
 | `EXTEPLAYER_TERM_SOCKET` | stop socket, default `/tmp/.exteplayerterm.socket`, `""` off |
@@ -1420,7 +1440,7 @@ The prebuilt packages in `ipk/` are of version 183 (see `ipk/README.md`).
 
 | Code | Meaning |
 |---|---|
-| `0` | end of the playback, `q`, the end of the command pipe, `SIGINT`/`SIGTERM`/`SIGHUP` |
+| `0` | end of the playback, `q`, the end of the command pipe, `SIGINT`/`SIGTERM`/`SIGHUP`, a video track without a CENC key |
 | `1` | usage text: missing uri, unknown option, invalid value, an `iptv://` file of the uri or of `-F` that cannot be read |
 | `10` | the open failed (`PLAYBACK_OPEN` with a negative `sts`) |
 | `11` | `q` during the open |
