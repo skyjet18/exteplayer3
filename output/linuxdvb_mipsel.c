@@ -160,7 +160,9 @@ static volatile int videoPtsWritten;
  * written since the start the position is 0, and a value further before the
  * data than POS_BOUND_CATCH_UP, or POS_BOUND_LIMIT and more after it, is
  * reported as the lowest PTS written as well, until the decoder is seen
- * within the data or for POS_BOUND_START_MS after the first write.
+ * within the data or for POS_BOUND_START_MS after the first write. A value
+ * within the data that moves on in real time between two requests is a
+ * decoder that plays (a late first keyframe) and is taken.
  * PTS are compared as 33 bit values.
  * A decoder restarted by OUTPUT_SWITCH (the video output after a long gap,
  * an audio track switch) reports stale or unrelated values until it shows
@@ -196,6 +198,9 @@ typedef struct
     unsigned long long reported;
     struct timespec restart_time;
     struct timespec first_time; /* when the first PTS since the reset was written */
+    bool have_raw;
+    unsigned long long raw;     /* decoder value of the last request after a start */
+    struct timespec raw_time;   /* when it was asked */
 } PosBound_t;
 static PosBound_t videoPosBound, audioPosBound;
 /* written by the play thread, read by the position requests */
@@ -365,20 +370,44 @@ static unsigned long long PosBoundApply(PosBound_t *bound, unsigned long long pt
          * value further before the first PTS written, or further after it
          * than the time since that write (and a second) allows, is what an
          * earlier playback left: the first PTS written instead, for
-         * POS_BOUND_START_MS after it. */
+         * POS_BOUND_START_MS after it.
+         * A value within the written data that has moved on since the
+         * last request, at most as far as the time between the two, is a
+         * decoder that plays, also further in than the time since the
+         * first write: a TS whose first keyframe comes 3 s after its first
+         * PTS is written within a second, and the decoder shows that
+         * keyframe at once and plays on from it. Reporting the first PTS
+         * there for 10 s made the end of the file see no progress and end
+         * the playback 1 s after the last write. */
         unsigned long long before = PosBoundAhead(bound->first, pts);
         unsigned long long after = PosBoundAhead(pts, bound->first);
         struct timespec now;
         int64_t ms;
+        bool stale;
 
         clock_gettime(CLOCK_MONOTONIC, &now);
         ms = (int64_t)(now.tv_sec - bound->first_time.tv_sec) * 1000 +
              (now.tv_nsec - bound->first_time.tv_nsec) / 1000000;
         if (ms < 0)
             ms = 0;
-        if (ms < POS_BOUND_START_MS &&
-            ((before > POS_BOUND_CATCH_UP && before < (1ULL << 32)) ||
-             (after < (1ULL << 32) && after > (unsigned long long)ms * 90 + POS_BOUND_CATCH_UP)))
+        stale = ms < POS_BOUND_START_MS &&
+                ((before > POS_BOUND_CATCH_UP && before < (1ULL << 32)) ||
+                 (after < (1ULL << 32) && after > (unsigned long long)ms * 90 + POS_BOUND_CATCH_UP));
+        if (stale && after < (1ULL << 32) &&
+            after <= PosBoundAhead(bound->max, bound->first) + POS_BOUND_TOLERANCE &&
+            bound->have_raw && pts != bound->raw && PosBoundNotBefore(pts, bound->raw))
+        {
+            int64_t step_ms = (int64_t)(now.tv_sec - bound->raw_time.tv_sec) * 1000 +
+                              (now.tv_nsec - bound->raw_time.tv_nsec) / 1000000;
+            if (step_ms < 0)
+                step_ms = 0;
+            if (PosBoundAhead(pts, bound->raw) <= (unsigned long long)step_ms * 90 + POS_BOUND_TOLERANCE)
+                stale = false;
+        }
+        bound->raw = pts;
+        bound->raw_time = now;
+        bound->have_raw = true;
+        if (stale)
         {
             reported = bound->first;
             goto out;
