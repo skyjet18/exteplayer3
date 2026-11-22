@@ -1798,7 +1798,7 @@ int main(int argc, char* argv[])
                ",\"hlsseg\":%d"
                ",\"drmkey\":%d"
                ",\"mpdopt\":1"
-               "}}\n", 186,
+               "}}\n", 187,
                audio_transcode_caps(),
                hls_segment_caps(), ffmpeg_drm_key_caps());
 
