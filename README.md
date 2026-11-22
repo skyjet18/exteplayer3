@@ -681,7 +681,7 @@ decodes and re-encodes in software, increasing receiver CPU usage, and needs
 libavcodec 58 or newer with the corresponding decoders and encoders.
 
 The startup message reports the available encoders as a bit mask:
-`{"EPLAYER3_EXTENDED":{"version":186,"xcode":7}}`. `1` is AC-3 (`-Z`, `-X`),
+`{"EPLAYER3_EXTENDED":{"version":187,"xcode":7}}`. `1` is AC-3 (`-Z`, `-X`),
 `2` AAC (`-Y`) and `4` E-AC-3 (`-E`, `--dts-eac3`, `--truehd-eac3`); `xcode`
 is always present and `0` when none is available. Front ends should offer the
 options from this value, not from the version number. Unavailable requests
@@ -1384,23 +1384,23 @@ player version and what this build supports. The name dates from the first
 commit (v24) and stays, because front ends (E2iPlayer, ServiceApp) detect the
 player by it; the OE-A player sends `{"EPLAYER3_EXTENDED":{"version":185}}`.
 
-`{"EPLAYER3_EXTENDED":{"version":186,"start":1,"xcode":7,"achannel":1,"hlsseg":3,"drmkey":3,"mpdopt":1}}`
+`{"EPLAYER3_EXTENDED":{"version":187,"start":1,"xcode":7,"achannel":1,"hlsseg":3,"drmkey":3,"mpdopt":1}}`
 
 A missing key means "not supported": front ends should read every key with a
 default of `0` (`.get(key, 0)`) and test the feature, not the version.
 
 | Key | Values | Meaning | Since version |
 |---|---|---|---|
-| `version` | `186` | player version | 24 |
-| `start` | `1` | `--start <seconds>` is known, see [Start position](#-start-position) | 186 |
+| `version` | `187` | player version | 24 |
+| `start` | `1` | `--start <seconds>` is known, see [Start position](#-start-position) | 187 |
 | `xcode` | bit mask `0`-`7` | audio encoders: `1` AC-3 (`-Z`, `-X`), `2` AAC (`-Y`), `4` E-AC-3 (`-E`); always present, `0` without any | 186 |
-| `trick` | `1` | DreamNextGen builds only: `f<speed>`/`b<speed>` wind on keyframes | 186 |
-| `achannel` | `1` | stdin `am<n>` (left/stereo/right of dual mono) is known | 186 |
-| `hlsseg` | bit mask `1`-`3` | HLS segments played directly: `1` any name (`.js`, `.png`, none; always set), `2` an image in front of the TS data | 186 |
-| `drmkey` | bit mask `1`-`3` | `1` `--key <kid>:<key>`, `2` `--key-request` (`DRM_KEY_REQ`, answer on stdin `dk <kid>:<key>`; only with an FFmpeg that has `decryption_key_url`), see [CENC keys per KID](#-cenc-keys-per-kid) | 186 |
-| `mpdopt` | `1` | OE-A options after `.mpd` in the URL (`&0=` `&1=` `&5=` `&6=` `&7=` `&8=`) are read and taken off it | 186 |
+| `trick` | `1` | DreamNextGen builds only: `f<speed>`/`b<speed>` wind on keyframes | 187 |
+| `achannel` | `1` | stdin `am<n>` (left/stereo/right of dual mono) is known | 187 |
+| `hlsseg` | bit mask `1`-`3` | HLS segments played directly: `1` any name (`.js`, `.png`, none; always set), `2` an image in front of the TS data | 187 |
+| `drmkey` | bit mask `1`-`3` | `1` `--key <kid>:<key>`, `2` `--key-request` (`DRM_KEY_REQ`, answer on stdin `dk <kid>:<key>`; only with an FFmpeg that has `decryption_key_url`), see [CENC keys per KID](#-cenc-keys-per-kid) | 187 |
+| `mpdopt` | `1` | OE-A options after `.mpd` in the URL (`&0=` `&1=` `&5=` `&6=` `&7=` `&8=`) are read and taken off it | 187 |
 
-The version number does not change with every feature: several keys came in later builds that still report 186. A front end should therefore test the key, not the version.
+The version number does not change with every feature: keys added after a release come in builds that still report the previous version (e.g. most keys above came in builds that reported 186 before the release of 187). A front end should therefore test the key, not the version.
 
 ---
 
