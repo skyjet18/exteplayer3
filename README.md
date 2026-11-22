@@ -319,15 +319,19 @@ carries: `smpte2084` is `1`, `arib-std-b67` `2`, `bt2020-10`/`bt2020-12`
 evaluated. The `v_c` sent when there is no video track (`"id":-1`) has no
 `hdr` key.
 
-Five keys follow `hdr` in `v_c`, and `n` in the `v_l` entries:
+Six keys follow `hdr` in `v_c`, and `n` in the `v_l` entries:
 `"pr"` (profile and level as ffprobe names the profile, `High@4.1`,
 `Main 10@5.1`; the level as written for H.264, HEVC, VP9 and AV1, FFmpeg's
 number for other codecs), `"bd"` (bit depth of the luma samples), `"br"`
 (bit rate in bit/s, from the codec parameters or the Matroska `BPS` tag),
 `"dv"` (Dolby Vision profile of the configuration record of MP4, Matroska
-or MPEG-TS, `0` without one) and `"cr"` (colour primaries, `bt709`,
-`bt2020`), `0` or `""` when unknown, also in the no-track `v_c`:
-`...,"hdr":1,"pr":"Main 10@5.1","bd":10,"br":0,"dv":8,"cr":"bt2020"}`.
+or MPEG-TS, `0` without one), `"cr"` (colour primaries, `bt709`,
+`bt2020`) and `"tc"` (transfer characteristic as FFmpeg names it, `bt709`,
+`smpte2084` for PQ, `arib-std-b67` for HLG; it tells PQ from HLG for every
+codec), `0` or `""` when unknown, also in the no-track `v_c`:
+`...,"hdr":1,"pr":"Main 10@5.1","bd":10,"br":0,"dv":8,"cr":"bt2020","tc":"smpte2084"}`.
+For HEVC `tc` is the VUI value of the codec parameters; an HLG
+alternative-transfer SEI after a BT.2020 VUI shows only in `hdr`.
 They come from the codec parameters of the stream. A change of them while
 the track plays (an HLS variant of another codec or profile) is sent as
 `v_c` without a request; `v_l` keeps the values of the list.

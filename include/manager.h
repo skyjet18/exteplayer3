@@ -42,6 +42,7 @@ typedef struct VideoStreamInfo_s {
     int                   bit_rate;         /* bit/s */
     int                   dv_profile;       /* Dolby Vision, 0 = none */
     const char           *color_primaries;  /* a constant string or NULL */
+    const char           *color_transfer;   /* transfer characteristic, a constant string or NULL */
 } VideoStreamInfo_t;
 
 typedef struct Track_s {
