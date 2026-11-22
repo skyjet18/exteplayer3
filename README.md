@@ -1346,7 +1346,7 @@ All messages are single lines on stderr.
 
 | Message | When |
 |---|---|
-| `EPLAYER3_EXTENDED` | first line: `version` (186), `start`, `xcode`, `achannel`, `hlsseg`, with DreamNextGen `trick` |
+| `EPLAYER3_EXTENDED` | first line: version and features, see [below](#-start-message-eplayer3_extended-version-and-features) |
 | `PLAYBACK_OPEN` | after the open: `OutputName`, `file`, `sts` (negative: failed, exit code 10) |
 | `OUTPUT_OPEN`, `PLAYBACK_PLAY` | start of the playback, then `v_c`, `a_l`, `a_c`, `s_l`, `s_c` (`a_s`, `s_s` with `-t`, `-9`) |
 | `FF_ERROR` | `msg`, `code`: open or read error, see [HTTP input](#-http-input-hls-options-and-stall-limits) |
@@ -1358,6 +1358,29 @@ All messages are single lines on stderr.
 | `PLAYBACK_TRICK_END` | DreamNextGen only: winding found no further keyframe |
 
 stdout carries diagnostics, including `{"log":"live sync: ..."}` lines.
+
+### 🚀 Start message EPLAYER3_EXTENDED (version and features)
+
+The first line on stderr, sent before the options are parsed, carries the
+player version and what this build supports. The name dates from the first
+commit (v24) and stays, because front ends (E2iPlayer, ServiceApp) detect the
+player by it; the OE-A player sends `{"EPLAYER3_EXTENDED":{"version":185}}`.
+
+`{"EPLAYER3_EXTENDED":{"version":186,"start":1,"xcode":7,"achannel":1,"hlsseg":3}}`
+
+A missing key means "not supported": front ends should read every key with a
+default of `0` (`.get(key, 0)`) and test the feature, not the version.
+
+| Key | Values | Meaning | Since |
+|---|---|---|---|
+| `version` | `186` | player version | v24 |
+| `start` | `1` | `--start <seconds>` is known, see [Start position](#-start-position) | master |
+| `xcode` | bit mask `0`-`7` | audio encoders: `1` AC-3 (`-Z`, `-X`), `2` AAC (`-Y`), `4` E-AC-3 (`-E`); always present, `0` without any | master |
+| `trick` | `1` | DreamNextGen builds only: `f<speed>`/`b<speed>` wind on keyframes | master |
+| `achannel` | `1` | stdin `am<n>` (left/stereo/right of dual mono) is known | master |
+| `hlsseg` | bit mask `1`-`3` | HLS segments played directly: `1` any name (`.js`, `.png`, none; always set), `2` an image in front of the TS data | master |
+| `drmkey` | bit mask `1`-`3` | `1` `--key <kid>:<key>`, `2` `--key-request` (`DRM_KEY_REQ`, answer on stdin `dk <kid>:<key>`) | #72 |
+| `mpdopt` | `1` | OE-A options after `.mpd` in the URL (`&0=` `&1=` `&5=` `&6=` `&7=` `&8=`) are read and taken off it | #72 |
 
 ---
 
