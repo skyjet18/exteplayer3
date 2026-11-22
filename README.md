@@ -1399,6 +1399,7 @@ default of `0` (`.get(key, 0)`) and test the feature, not the version.
 | `hlsseg` | bit mask `1`-`3` | HLS segments played directly: `1` any name (`.js`, `.png`, none; always set), `2` an image in front of the TS data | 187 |
 | `drmkey` | bit mask `1`-`3` | `1` `--key <kid>:<key>`, `2` `--key-request` (`DRM_KEY_REQ`, answer on stdin `dk <kid>:<key>`; only with an FFmpeg that has `decryption_key_url`), see [CENC keys per KID](#-cenc-keys-per-kid) | 187 |
 | `mpdopt` | `1` | OE-A options after `.mpd` in the URL (`&0=` `&1=` `&5=` `&6=` `&7=` `&8=`) are read and taken off it | 187 |
+| `forcedonly` | `1` | `--forced-only` and stdin `so1`/`so0`/`so` (answer `s_o`): only forced subtitle cues are sent | with #81 |
 
 The version number does not change with every feature: keys added after a release come in builds that still report the previous version (e.g. most keys above came in builds that reported 186 before the release of 187). A front end should therefore test the key, not the version.
 
