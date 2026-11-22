@@ -279,9 +279,18 @@ static int32_t Write(WriterSubCallData_t *subPacket)
         uint64_t endTimestamp = subPacket->pts / 90  + subtitle.end_display_time;
         rec_desc_t desc_tab[MAX_RECT_DESC];
 
+        uint32_t unforced = 0;
+
         for (; i < subtitle.num_rects && j < MAX_RECT_DESC; i++)
         {
             AVSubtitleRect *rec = subtitle.rects[i];
+
+            /* forced only: PGS sets the flag from the forced_on_flag of the composition object */
+            if (subPacket->forcedOnly && !(rec->flags & AV_SUBTITLE_FLAG_FORCED))
+            {
+                unforced += 1;
+                continue;
+            }
 
             switch (subtitle.format)
             {
@@ -352,21 +361,31 @@ static int32_t Write(WriterSubCallData_t *subPacket)
             }
         }
 
-        char sep[2] = {'\0'};
-        E2iStartMsg();
-        E2iSendMsg("{\"s_a\":{\"id\":%d,\"s\":%"PRId64, subPacket->trackId, startTimestamp);
-        if (g_sys->b_need_ephemer)
-            E2iSendMsg(",\"e\":null,\"r\":[");
-        else
-            E2iSendMsg(",\"e\":%"PRId64",\"r\":[", endTimestamp);
-
-        for (i = 0; i < j; i++)
+        /* A cue of unforced rectangles only is not sent. PGS and DVB replace
+         * the screen with every display set: there it is sent without
+         * rectangles, which clears the screen as the end of a cue does. */
+        if (unforced && unforced == subtitle.num_rects && !g_sys->b_need_ephemer)
         {
-            E2iSendMsg("%s{\"x\":%d,\"y\":%d,\"w\":%d,\"h\":%d,\"f\":\"%s\"}", sep, desc_tab[i].x, desc_tab[i].y, desc_tab[i].w, desc_tab[i].h, desc_tab[i].filename);
-            sep[0] = ',';
+            subtitle_printf(20, "forced only: cue of track %u dropped\n", subPacket->trackId);
         }
-        E2iSendMsg("]}}\n");
-        E2iEndMsg();
+        else
+        {
+            char sep[2] = {'\0'};
+            E2iStartMsg();
+            E2iSendMsg("{\"s_a\":{\"id\":%d,\"s\":%"PRId64, subPacket->trackId, startTimestamp);
+            if (g_sys->b_need_ephemer)
+                E2iSendMsg(",\"e\":null,\"r\":[");
+            else
+                E2iSendMsg(",\"e\":%"PRId64",\"r\":[", endTimestamp);
+
+            for (i = 0; i < j; i++)
+            {
+                E2iSendMsg("%s{\"x\":%d,\"y\":%d,\"w\":%d,\"h\":%d,\"f\":\"%s\"}", sep, desc_tab[i].x, desc_tab[i].y, desc_tab[i].w, desc_tab[i].h, desc_tab[i].filename);
+                sep[0] = ',';
+            }
+            E2iSendMsg("]}}\n");
+            E2iEndMsg();
+        }
     }
 
     avsubtitle_free(&subtitle);

@@ -24,12 +24,24 @@ void E2iSendMsg(const char *format, ...)
     assert(size >= 0 && size < (int)sizeof(message));
 }
 
+/* --forced-only: whether the selected track is forced, what the graphic
+ * writer was told */
+static int current_forced, graphic_forced_only = -1;
+
 static int subtitle_manager(void *opaque, ManagerCmd_t command, void *argument)
 {
     (void)opaque;
     if (command == MANAGER_GET)
         *(int *)argument = current_track;
-    else {
+    else if (command == MANAGER_GET_TRACK_DESC) {
+        TrackDescription_t *track = calloc(1, sizeof(*track));
+        assert(track);
+        track->Id = current_track;
+        track->Name = strdup("eng");
+        track->Encoding = strdup(encoding);
+        track->is_forced = current_forced;
+        *(TrackDescription_t **)argument = track;
+    } else {
         assert(command == MANAGER_GETENCODING);
         *(char **)argument = encoding_copy = strdup(encoding);
     }
@@ -51,6 +63,7 @@ static int32_t graphic_reset(void)
 
 static int32_t graphic_write(WriterSubCallData_t *call)
 {
+    graphic_forced_only = call->forcedOnly;
     assert(call->trackId == 1 && call->codecId == SUBTITLE_CODEC_ID_PGS);
     graphic_packets++;
     if (hold_write)
@@ -244,6 +257,32 @@ static void packet_of_previous_text_track(void)
     current_track = 1;
 }
 
+/* --forced-only: a text cue of an unforced track is dropped, all cues of a
+ * forced track are sent; PGS packets still reach the decoder, which is told
+ * to send only the pictures marked forced. */
+static void forced_only(void)
+{
+    int packets = graphic_packets;
+
+    deliver("S_GRAPHIC/PGS", "p", 1);
+    assert(graphic_forced_only == 0);
+    subtitle_forced_only_set(1);
+    assert(subtitle_forced_only_get() == 1);
+    deliver("S_TEXT/SUBRIP", "text", 4);
+    assert(message[0] == 0);
+    deliver("S_GRAPHIC/PGS", "p", 1);
+    assert(graphic_forced_only == 1 && graphic_packets == packets + 2);
+    current_forced = 1;
+    deliver("S_TEXT/SUBRIP", "text", 4);
+    expect("text");
+    deliver("S_GRAPHIC/PGS", "p", 1);
+    assert(graphic_forced_only == 1); /* PGS: the mark of each picture, also on a forced track */
+    current_forced = 0;
+    subtitle_forced_only_set(0);
+    deliver("S_TEXT/SUBRIP", "text", 4);
+    expect("text");
+}
+
 int main(void)
 {
     subrip_long_cue();
@@ -252,6 +291,7 @@ int main(void)
     encoding_is_freed();
     packet_of_previous_graphic_track();
     strbuffer_exact_fit();
+    forced_only();
     mov_text_by_its_length_field();
     mov_text_line_break();
     control_characters_are_escaped();

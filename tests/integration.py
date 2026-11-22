@@ -39,7 +39,8 @@ def read_fifo(fd):
 
 
 def pgs_cues(path, cues):
-    """A PGS (.sup) track: a 32x8 picture in two colours at each cue start, cleared at its end."""
+    """A PGS (.sup) track: a 32x8 picture in two colours at each cue start, cleared at its end.
+    A cue (start, end, True) sets the forced_on_flag (0x40) of its composition object."""
     def segment(seconds, kind, payload):
         return b"PG" + struct.pack(">IIBH", int(seconds * 90000), 0, kind, len(payload)) + payload
     window = struct.pack(">BBHHHH", 1, 0, 100, 400, 32, 8)
@@ -48,9 +49,10 @@ def pgs_cues(path, cues):
     picture = (struct.pack(">HBB", 0, 0, 0xC0) + (len(rle) + 4).to_bytes(3, "big")
                + struct.pack(">HH", 32, 8) + rle)
     data, number = b"", 0
-    for start, end in cues:
+    for cue in cues:
+        start, end, forced = (tuple(cue) + (False,))[:3]
         data += (segment(start, 0x16, struct.pack(">HHBHBBBBHBBHH", 720, 576, 0x10, number, 0x80,
-                                                  0, 0, 1, 0, 0, 0, 100, 400))
+                                                  0, 0, 1, 0, 0, 0x40 if forced else 0, 100, 400))
                  + segment(start, 0x17, window) + segment(start, 0x14, palette)
                  + segment(start, 0x15, picture) + segment(start, 0x80, b""))
         data += (segment(end, 0x16, struct.pack(">HHBHBBBB", 720, 576, 0x10, number + 1, 0, 0, 0, 0))
@@ -1592,6 +1594,65 @@ def main():
                 assert not any("e_plugin" in message for message in player.messages), player.messages
                 assert not list(frames.glob("*.tmp")), list(frames.iterdir())
             print("PASS PGS/DVB graphic subtitles with -G: PNG files and rectangles without the plugin")
+
+            # Forced cues only (--forced-only, so1): of four PGS cues two carry the
+            # forced flag of the composition object, which decides also on a track
+            # with the forced disposition; a SubRip track with the forced
+            # disposition (every cue counts as forced) and one without it.
+            forced_sup = root / "forced.sup"
+            pgs_cues(forced_sup, [(1, 2, True), (3, 4), (5, 6, True), (7, 8)])
+            forced_srt = root / "forced.srt"
+            forced_srt.write_text("1\n00:00:01,000 --> 00:00:02,000\nOne\n\n"
+                                  "2\n00:00:05,000 --> 00:00:06,000\nTwo\n", encoding="utf-8")
+            forced_mkv = root / "forced.mkv"
+            run(args.ffmpeg, "-y", "-i", str(media), "-i", str(forced_sup), "-f", "srt",
+                "-i", str(forced_srt), "-f", "srt", "-i", str(forced_srt),
+                "-map", "0:v", "-map", "0:a", "-map", "1", "-map", "2", "-map", "3", "-c", "copy",
+                "-disposition:s:0", "forced", "-disposition:s:1", "forced", "-disposition:s:2", "0",
+                "-t", "9", str(forced_mkv))
+
+            def forced_play(options, kind, commands=()):
+                frames = root / f"frames-forced-{len(list(root.glob('frames-forced-*')))}"
+                frames.mkdir()
+                player = Player(args.player, "-G", str(frames), *options, str(forced_mkv))
+                answers = []
+                try:
+                    tracks = player.wait("s_l")
+                    index = [(t["e"] == "S_GRAPHIC/PGS" and "pgs")
+                             or (t["f"] and "forced") or "text" for t in tracks].index(kind)
+                    for command in commands:
+                        player.command(command)
+                        answers.append(player.wait("s_o"))
+                    player.command(f"si{index}")
+                    assert player.wait("s_s")["sts"] == 0
+                    player.process.wait(timeout=25)
+                finally:
+                    player.stop()
+                atoms = [message["s_a"] for message in player.messages
+                         if "s_a" in message and message["s_a"]["id"] == tracks[index]["id"]]
+                return player.messages, answers, atoms
+
+            def shown(atoms):  # start of every PGS cue with a picture
+                return [atom["s"] for atom in atoms if atom["r"]]
+
+            messages, _, atoms = forced_play([], "pgs")
+            every = shown(atoms)
+            assert len(every) == 4, atoms
+            caps = [message["EPLAYER3_EXTENDED"] for message in messages
+                    if "EPLAYER3_EXTENDED" in message]
+            assert caps and caps[0].get("forcedonly") == 1, caps
+            _, _, atoms = forced_play(["--forced-only"], "pgs")
+            assert shown(atoms) == [every[0], every[2]], (atoms, every)
+            _, answers, atoms = forced_play([], "pgs", ("so", "so1", "so7"))
+            assert answers == [{"o": 0, "sts": 0}, {"o": 1, "sts": 0}, {"o": 1, "sts": -1}], answers
+            assert shown(atoms) == [every[0], every[2]], (atoms, every)
+            for options, kind, texts in (([], "text", ["One", "Two"]),
+                                         (["--forced-only"], "forced", ["One", "Two"]),
+                                         (["--forced-only"], "text", [])):
+                _, _, atoms = forced_play(options, kind)
+                assert [atom["t"] for atom in atoms] == texts, (options, kind, atoms)
+            print("PASS forced subtitles only: flagged PGS cues (--forced-only, so1), every cue of "
+                  "a forced text track, none of another; all cues without the option")
 
             # A subtitle file of its own counts from the start of the TS file, whose
             # timestamps start at about 1.4 s: a cue before that is no exception.

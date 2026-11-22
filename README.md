@@ -314,6 +314,22 @@ forced flag, from stream disposition or a standalone `forced` title token.
 Language alone never implies forced subtitles. Disabled subtitles report ID
 `-1`, `f:0`. Adaptive demuxers discard unselected subtitles; embedded MP4/MKV
 subtitle handling remains enabled.
+
+`--forced-only` (stdin `so1`, `so0` to turn it off again) sends only forced
+cues of the selected subtitle track as `s_a`. PGS marks each forced picture
+(the `forced_on_flag` of the composition object, `AV_SUBTITLE_FLAG_FORCED`
+from FFmpeg): only those are sent, also on a track listed with `f:1`. The
+other formats have no such mark: every cue of a track listed with `f:1`
+counts as forced, no cue of another track (SubRip, ASS, WebVTT, mov_text,
+closed captions, DVB, XSUB). A PGS or DVB display set without a forced
+picture still comes as an `s_a` without rectangles, which clears the screen
+as the end of a cue does; the packets keep reaching the decoder, so a forced
+cue after unforced ones is complete. `so` alone reports the setting, the answer is
+`{"s_o":{"o":1,"sts":0}}` (`sts` `-1` for a value other than 0 or 1, `o`
+unchanged). `EPLAYER3_EXTENDED` carries `"forcedonly":1`; an older player
+ignores `so` without an answer and stops with the usage text on
+`--forced-only`.
+
 Graphic subtitles (PGS, DVB, XSUB) are offered only with `-G DIRECTORY`: each
 picture is saved there as an RGBA PNG file, and the `s_a` message names the
 files with their position and size. The `exteplayer3png.so` plugin writes

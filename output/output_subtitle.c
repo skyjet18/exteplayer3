@@ -71,6 +71,9 @@ Number, Style, Name,, MarginL, MarginR, MarginV, Effect,, Text
 static pthread_mutex_t mutex;
 static int isSubtitleOpened = 0;
 static SubWriter_t *g_subWriter;
+/* --forced-only / so1: only forced cues are sent; set by the command
+ * thread, read by the play thread */
+static int forcedOnly = 0;
 
 /* ***************************** */
 /* Prototypes                    */
@@ -98,6 +101,15 @@ static void releaseMutex(int line)
 /* ***************************** */
 /* Functions                     */
 /* ***************************** */
+void subtitle_forced_only_set(int on)
+{
+    __atomic_store_n(&forcedOnly, on ? 1 : 0, __ATOMIC_RELAXED);
+}
+
+int subtitle_forced_only_get(void)
+{
+    return __atomic_load_n(&forcedOnly, __ATOMIC_RELAXED);
+}
 
 static char * ass_get_text(char *str)
 {
@@ -505,6 +517,40 @@ static int WriteLocked(void *_context, void *data)
     else if (!strcmp("S_TEXT/EIA608", Encoding))
         subCodecId = SUBTITLE_CODEC_ID_EIA608;
 
+    /* Forced only: PGS marks each forced picture (forced_on_flag), the
+     * graphic writer sends only those, on a forced track too. The other
+     * formats have no such mark: every cue of a forced track (f 1 in s_l)
+     * counts as forced, no cue of another track. Bitmap packets still
+     * reach the decoder, which keeps state from one display set to the
+     * next. */
+    int pictureFilter = 0;
+    if (__atomic_load_n(&forcedOnly, __ATOMIC_RELAXED))
+    {
+        int unforcedTrack = 1;
+
+        if (subCodecId != SUBTITLE_CODEC_ID_PGS)
+        {
+            TrackDescription_t *track = NULL;
+            context->manager->subtitle->Command(context, MANAGER_GET_TRACK_DESC, &track);
+            unforcedTrack = !(track && track->is_forced);
+            if (track)
+            {
+                free(track->Name);
+                free(track->Encoding);
+                free(track->Title);
+                free(track);
+            }
+        }
+        pictureFilter = unforcedTrack;
+        if (unforcedTrack && subCodecId != SUBTITLE_CODEC_ID_PGS && subCodecId != SUBTITLE_CODEC_ID_DVB &&
+            subCodecId != SUBTITLE_CODEC_ID_XSUB)
+        {
+            subtitle_printf(20, "forced only: cue of track %d dropped\n", (int)out->trackId);
+            free(Encoding);
+            return cERR_SUBTITLE_NO_ERROR;
+        }
+    }
+
     switch (subCodecId)
     {
         case SUBTITLE_CODEC_ID_EIA608:
@@ -549,6 +595,7 @@ static int WriteLocked(void *_context, void *data)
 
             subPacket.width = out->width;
             subPacket.height = out->height;
+            subPacket.forcedOnly = pictureFilter;
             g_subWriter->write(&subPacket);
         }
         break;

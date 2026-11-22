@@ -1278,6 +1278,7 @@ static int ParseParams(int argc,char* argv[], PlayFiles_t *playbackFiles, int *p
     enum
     {
         OPT_START = 0x200, /* --start, not a transcoding option */
+        OPT_FORCED_ONLY = 0x201, /* --forced-only, neither */
         OPT_DTS_AC3 = 0x100,
         OPT_TRUEHD_AC3,
         OPT_DTS_EAC3,
@@ -1291,6 +1292,7 @@ static int ParseParams(int argc,char* argv[], PlayFiles_t *playbackFiles, int *p
     static const struct option long_options[] =
     {
         {"start",       required_argument, NULL, OPT_START},
+        {"forced-only", no_argument, NULL, OPT_FORCED_ONLY},
         {"dts-ac3",     no_argument, NULL, OPT_DTS_AC3},
         {"truehd-ac3",  no_argument, NULL, OPT_TRUEHD_AC3},
         {"dts-eac3",    no_argument, NULL, OPT_DTS_EAC3},
@@ -1351,6 +1353,9 @@ static int ParseParams(int argc,char* argv[], PlayFiles_t *playbackFiles, int *p
             break;
         case OPT_TRUEHD_EAC3:
             xcode |= 16;
+            break;
+        case OPT_FORCED_ONLY:
+            subtitle_forced_only_set(1);
             break;
         case 'G':
             g_graphic_sub_path = optarg;
@@ -1795,6 +1800,7 @@ int main(int argc, char* argv[])
                ",\"trick\":1"
 #endif
                ",\"achannel\":1"
+               ",\"forcedonly\":1"
                ",\"hlsseg\":%d"
                ",\"drmkey\":%d"
                ",\"mpdopt\":1"
@@ -1856,6 +1862,7 @@ int main(int argc, char* argv[])
         printf("[-P value] select Program ID from multi-service stream\n");
         printf("[-t index] audio track switched on at start, position in the audio track list (0 - first, as stdin ai<n>)\n");
         printf("[-9 index] subtitle track switched on at start, position in the subtitle track list (0 - first, as stdin si<n>)\n");
+        printf("[--forced-only] only forced subtitle cues: flagged PGS pictures, every cue of a forced track of other formats (stdin so1/so0)\n");
         printf("[--start seconds] start position, before the first packet (not for live streams; \"start\" in EPLAYER3_EXTENDED)\n");
         printf("[-h headers] set custom HTTP headers \"Name: value\\r\\nName: value\\r\\n\"\n");
         printf("[-u user-agent] set custom http User-Agent header\n");
@@ -2181,6 +2188,21 @@ int main(int argc, char* argv[])
             }
             case 's': 
             {
+                /* so1: only forced cues, so0: all cues; so alone reports it */
+                if ('o' == argvBuff[1])
+                {
+                    int on = -1;
+                    commandRetVal = 0;
+                    if (1 == sscanf(argvBuff + 2, "%d", &on))
+                    {
+                        if (0 == on || 1 == on)
+                            subtitle_forced_only_set(on);
+                        else
+                            commandRetVal = -1;
+                    }
+                    E2iSendMsg("{\"s_o\":{\"o\":%d,\"sts\":%d}}\n", subtitle_forced_only_get(), commandRetVal);
+                    break;
+                }
                 HandleTracks(g_player->manager->subtitle, PLAYBACK_SWITCH_SUBTITLE, argvBuff);
             break;
             }
