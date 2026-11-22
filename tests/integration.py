@@ -654,6 +654,32 @@ def hevc_stream(transfer, alternative=None, frames=60, profile=1):
     return stream + idr.nal(19) * frames
 
 
+def vp9_ivf(frames=50, rate=25, size=64):
+    """VP9 profile 2, 10 bit, BT.2020 key frames in IVF, written bit by bit
+    (the host FFmpeg has no VP9 encoder). The uncompressed header is valid,
+    the compressed header and the tile are zeros. VP9 carries no transfer
+    characteristic: the container adds it."""
+    bits = HevcBits()
+    for value, count in ((2, 2), (0, 1), (1, 1),   # frame marker, profile 2
+                         (0, 1), (0, 1), (1, 1),   # no existing frame, key frame, shown
+                         (0, 1), (0x498342, 24),   # not error resilient, sync code
+                         (0, 1), (5, 3), (0, 1),   # 10 bit, BT.2020, studio range
+                         (size - 1, 16), (size - 1, 16), (0, 1),
+                         (1, 1), (1, 1), (0, 2),   # frame context
+                         (10, 6), (0, 3), (0, 1),  # loop filter
+                         (60, 8), (0, 3),          # quantizer
+                         (0, 1), (0, 1),           # no segmentation, one tile row
+                         (16, 16)):                # compressed header size
+        bits.put(value, count)
+    bits.put(0, -len(bits.bits) % 8)
+    frame = bytes(int("".join(map(str, bits.bits[i:i + 8])), 2)
+                  for i in range(0, len(bits.bits), 8)) + bytes(80)
+    data = b"DKIF" + struct.pack("<HH4sHHIIII", 0, 32, b"VP90", size, size, rate, 1, frames, 0)
+    for number in range(frames):
+        data += struct.pack("<IQ", len(frame), number) + frame
+    return data
+
+
 TLS_CONFIG = """[req]
 distinguished_name = dn
 prompt = no
@@ -2497,7 +2523,7 @@ def main():
                 "-b:a", "128k", "-t", "12", str(rates_mp4))
             audio_keys = ["id", "e", "n", "c", "d", "t", "sr", "br", "cl", "bps"]
             video_keys = ["id", "e", "n", "w", "h", "f", "p", "an", "ad", "hdr",
-                          "pr", "bd", "br", "dv", "cr"]
+                          "pr", "bd", "br", "dv", "cr", "tc"]
 
             def rate_values():
                 player = Player(args.player, str(rates))
@@ -2536,7 +2562,7 @@ def main():
                 assert video["bd"] == 8 and video["dv"] == 0 and video["cr"] == "", video
                 assert video["pr"].startswith("Main"), video
                 assert len(video_list) == 1, video_list
-                assert list(video_list[0]) == ["id", "e", "n", "pr", "bd", "br", "dv", "cr"]
+                assert list(video_list[0]) == ["id", "e", "n", "pr", "bd", "br", "dv", "cr", "tc"]
                 assert {k: video_list[0][k] for k in video_keys[10:]} == {
                     k: video[k] for k in video_keys[10:]}, (video_list, video)
                 assert current == tracks[0], (current, tracks)
@@ -2633,6 +2659,61 @@ def main():
                        video_values(high_mp4, high_check))
             track_case("v_c/v_l: HEVC Main 10@2.0, 10 bit, BT.2020, no bit rate in MPEG-TS",
                        video_values(main10_ts, main10_check))
+
+            # VP9 profile 2 with PQ and HLG in WebM, H.264 with HLG in
+            # Matroska: "hdr" and "tc" from the transfer characteristic the
+            # container carries. VP9 PQ in DASH with WebM segments (time base
+            # 1/1000): "f" is the frame rate of the stream, not 1000 fps.
+            vp9_raw = root / "vp9.ivf"
+            vp9_raw.write_bytes(vp9_ivf(frames=100))
+            colour = ["-color_primaries", "bt2020", "-colorspace", "bt2020nc"]
+            for name, transfer in (("pq", "smpte2084"), ("hlg", "arib-std-b67")):
+                run(args.ffmpeg, "-y", "-i", str(vp9_raw), "-c", "copy", "-color_trc", transfer,
+                    *colour, str(root / f"vp9-{name}.webm"))
+            run(args.ffmpeg, "-y", "-i", str(high_mp4), "-c", "copy", "-color_trc", "arib-std-b67",
+                *colour, str(root / "h264-hlg.mkv"))
+            (root / "vp9dash").mkdir()
+            run(args.ffmpeg, "-y", "-i", str(vp9_raw), "-c", "copy", "-color_trc", "smpte2084",
+                *colour, "-seg_duration", "1", "-dash_segment_type", "webm", "-f", "dash",
+                str(root / "vp9dash" / "vp9.mpd"))
+            for part in (root / "vp9dash").iterdir():
+                resources["/vp9dash/" + part.name] = part.read_bytes()
+            hdr_types = {"smpte2084": 1, "arib-std-b67": 2}
+
+            def transfer_values(uri, encoding, transfer):
+                def case():
+                    player = Player(args.player, uri)
+                    try:
+                        # "hdr" is set with the first packet: v_c is sent again
+                        seen = [player.wait("v_c")]
+                        while seen[-1].get("hdr") != hdr_types[transfer]:
+                            seen.append(player.wait("v_c"))
+                        player.command("vl")
+                        video_list = player.wait("v_l")
+                    finally:
+                        player.stop()
+                    print(f"{uri} v_c:", seen)
+                    video = seen[-1]
+                    assert list(video) == video_keys, video
+                    assert (video["e"], video["cr"], video["tc"], video["f"]) == (
+                        encoding, "bt2020", transfer, 25000), video
+                    assert all(current["tc"] == transfer and current["f"] == 25000
+                               for current in seen), seen
+                    assert {k: video_list[0][k] for k in video_keys[10:]} == {
+                        k: video[k] for k in video_keys[10:]}, (video_list, video)
+                    if encoding == "V_VP9":
+                        assert video["pr"].startswith("Profile 2"), video
+                return case
+
+            track_case("v_c/v_l: VP9 profile 2 PQ in WebM, hdr 1, tc smpte2084",
+                       transfer_values(str(root / "vp9-pq.webm"), "V_VP9", "smpte2084"))
+            track_case("v_c/v_l: VP9 profile 2 HLG in WebM, hdr 2, tc arib-std-b67",
+                       transfer_values(str(root / "vp9-hlg.webm"), "V_VP9", "arib-std-b67"))
+            track_case("v_c/v_l: H.264 HLG in Matroska, hdr 2, tc arib-std-b67",
+                       transfer_values(str(root / "h264-hlg.mkv"), "V_MPEG4/ISO/AVC",
+                                       "arib-std-b67"))
+            track_case("v_c/v_l: VP9 PQ in DASH with WebM segments, f 25000, hdr 1",
+                       transfer_values(base + "/vp9dash/vp9.mpd", "V_VP9", "smpte2084"))
             assert not failed, failed
 
             sound = root / "sound.ts"
