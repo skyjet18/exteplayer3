@@ -132,9 +132,112 @@ static void dts_dejitter_case(int little_endian, int stream_rate, uint8_t sfreq,
     avcodec_parameters_free(&stream.codecpar);
 }
 
+#if HAVE_CH_LAYOUT && defined(AV_CHANNEL_LAYOUT_7POINT1POINT4_BACK)
+/* One 7.1.4 frame (the layout of the AC-4 decoder) through swresample the
+ * way the PCM path sets it up: front left at value fl, or every channel at
+ * value all. Gives the front left of the S16 output and its lowest sample
+ * (a wrapped sum would turn negative). */
+static void pcm_714_downmix(int out_ch, double maxval, float fl, float all, int *out_fl, int *lowest)
+{
+    enum { N = 256 };
+    AVChannelLayout in = AV_CHANNEL_LAYOUT_7POINT1POINT4_BACK, out;
+    static float planes[12][N];
+    static int16_t dst[N * 8];
+    const uint8_t *src[12];
+    uint8_t *d[1] = {(uint8_t *)dst};
+    SwrContext *swr = swr_alloc();
+    int i, k, n;
+
+    assert(swr);
+    av_channel_layout_default(&out, out_ch);
+    av_opt_set_chlayout(swr, "in_chlayout", &in, 0);
+    av_opt_set_chlayout(swr, "out_chlayout", &out, 0);
+    av_opt_set_int(swr, "in_sample_rate", 48000, 0);
+    av_opt_set_int(swr, "out_sample_rate", 48000, 0);
+    av_opt_set_int(swr, "in_sample_fmt", AV_SAMPLE_FMT_FLTP, 0);
+    av_opt_set_int(swr, "out_sample_fmt", AV_SAMPLE_FMT_S16, 0);
+    if (maxval > 0)
+        av_opt_set_double(swr, "rematrix_maxval", maxval, 0);
+    assert(swr_init(swr) == 0);
+    for (i = 0; i < 12; i++) {
+        for (k = 0; k < N; k++)
+            planes[i][k] = i == 0 ? fl + all : all;
+        src[i] = (const uint8_t *)planes[i];
+    }
+    n = swr_convert(swr, d, N, src, N);
+    assert(n == N);
+    *out_fl = dst[0];
+    *lowest = 0;
+    for (k = 0; k < n * out_ch; k++)
+        if (dst[k] < *lowest)
+            *lowest = dst[k];
+    swr_free(&swr);
+    av_channel_layout_uninit(&out);
+}
+#endif
+
+/* AC-4: the software decoder on every receiver; more than 8 decoded channels
+ * go to the PCM writer as 7.1 at the level of the source. */
+static void ac4_pcm_case(void)
+{
+    int32_t version = 0;
+    static const stb_type_t types[] = {STB_VUPLUS, STB_DREAMBOX, STB_HISILICON, STB_OTHER};
+    unsigned i;
+
+#if LIBAVCODEC_VERSION_INT >= AV_VERSION_INT(60, 21, 100)
+    for (i = 0; i < sizeof(types) / sizeof(types[0]); i++) {
+        stb_type = types[i];
+        assert(!strcmp(Codec2Encoding(AV_CODEC_ID_AC4, AVMEDIA_TYPE_AUDIO, NULL, 0, 0, &version), "A_IPCM"));
+    }
+    stb_type = STB_OTHER;
+#else
+    (void)version;
+    (void)types;
+    (void)i;
+#endif
+    assert(pcm_out_channels(1) == 1);
+    assert(pcm_out_channels(2) == 2);
+    assert(pcm_out_channels(6) == 6);
+    assert(pcm_out_channels(8) == 8);
+    assert(pcm_out_channels(12) == 8);
+    assert(pcm_out_channels(24) == 8);
+    assert(pcm_rematrix_maxval(2) == 0.0);
+    assert(pcm_rematrix_maxval(6) == 0.0);
+    assert(pcm_rematrix_maxval(8) == 0.0);
+    assert(pcm_rematrix_maxval(12) == 3.0);
+
+#if HAVE_CH_LAYOUT && defined(AV_CHANNEL_LAYOUT_7POINT1POINT4_BACK)
+    {
+        int fl_default, fl_kept, lowest;
+        const int quarter = 8192; /* 0.25 in S16 */
+
+        /* 7.1: the swresample default scales the front left down,
+         * 3.0 keeps it */
+        pcm_714_downmix(pcm_out_channels(12), 0, 0.25f, 0, &fl_default, &lowest);
+        pcm_714_downmix(pcm_out_channels(12), pcm_rematrix_maxval(12), 0.25f, 0, &fl_kept, &lowest);
+        assert(fl_default < quarter - 2000);
+        assert(fl_kept >= quarter - 2 && fl_kept <= quarter + 2);
+        /* stereo (-s): the coefficients of a front output add up to more
+         * than 3, so 3.0 still scales, but three times less than the
+         * default */
+        pcm_714_downmix(2, 0, 0.25f, 0, &fl_default, &lowest);
+        pcm_714_downmix(2, pcm_rematrix_maxval(12), 0.25f, 0, &fl_kept, &lowest);
+        assert(fl_default < quarter / 2);
+        assert(fl_kept >= 3 * fl_default - 3 && fl_kept <= quarter + 2);
+        /* all twelve channels at full scale: the sum saturates, it does
+         * not wrap around */
+        pcm_714_downmix(pcm_out_channels(12), pcm_rematrix_maxval(12), 0, 1.0f, &fl_kept, &lowest);
+        assert(fl_kept == 32767 && lowest >= 0);
+        pcm_714_downmix(2, pcm_rematrix_maxval(12), 0, 1.0f, &fl_kept, &lowest);
+        assert(fl_kept == 32767 && lowest >= 0);
+    }
+#endif
+}
+
 int main(void)
 {
     CustomIOCtx_t io = {0};
+    ac4_pcm_case();
     uint8_t bytes[8];
     dts_dejitter_case(0, 48000, 13, 1);
     dts_dejitter_case(0, 96000, 13, 1);

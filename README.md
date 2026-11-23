@@ -1383,7 +1383,7 @@ stdout and ends the player with exit code 1.
 | `-3`, `-e`, `-d`, `-m`, `-w` | AC-3, E-AC-3, DTS, MP3, WMA (WMA2, WMA Pro) software decoding |
 | `-A 0\|1`, `-V 0\|1`, `-U 0\|1` | AMR, Vorbis, Opus software decoding off/on |
 | `-l` | software decoded audio is written as LPCM instead of WAV PCM |
-| `-s` | software decoded audio is mixed down to stereo |
+| `-s` | software decoded audio is mixed down to stereo; without it a source of more than 8 channels (AC-4 7.1.4) is mixed down to 7.1, the most the PCM writers take. AC-4 is always software decoded |
 | `-r` | PCM tracks go to the PCM writer as they are (`A_PCM`), without software decoding and resampling |
 | `-j ms` | PTS dejitter threshold of AAC, AAC LATM and DTS written as bitstream, default 200, `0` off |
 | `-K` | decoded PCM export, see [Optional decoded PCM export](#-optional-decoded-pcm-export) |
@@ -1631,6 +1631,11 @@ also in OpenViX/exteplayer3)
   state of [2f850bd](https://github.com/oe-alliance/exteplayer3/commit/2f850bd).
 - The video track for enigma2 on `/var/run/video.socket` (#36):
   [36d6726](https://github.com/oe-alliance/exteplayer3/commit/36d6726).
+- AC-4 always to the software decoder and a louder mixdown of 10+ channel
+  sources, WXbet: [ca78343](https://github.com/oe-alliance/exteplayer3/commit/ca78343).
+  Here the level rule follows the input channels and AC-4 7.1.4 goes out as
+  7.1; the probe for a decoder that fills only the first channel is not
+  needed with the AC-4 decoder of FFmpeg 9.
 
 **OpenVu** ([OpenVu/exteplayer3](https://github.com/OpenVu/exteplayer3))
 
