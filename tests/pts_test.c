@@ -323,6 +323,24 @@ int main(void)
     assert(pts_clock_update(&clock, 1, &audio, PTS_CLOCK_WRAP - 80, 2) == 20);
     assert(pts_clock_update(&clock, 1, &replacement_audio, 100, 3) == 200);
     assert(pts_clock_update(&clock, 0, &video, 120, 4) == 220);
+    /* The first video keyframe up to 1 s before the start of the timeline
+     * (start time of the container from an audio packet). */
+    pts_clock_reset(&clock, 0);
+    assert(!pts_clock_early_key(&clock, 900000)); /* no start yet */
+    clock.base = 900180; /* audio at 2 ms */
+    clock.base_ready = 1;
+    assert(pts_clock_early_key(&clock, 900000));
+    assert(pts_clock_early_key(&clock, 900180 - 90000));
+    assert(!pts_clock_early_key(&clock, 900180 - 90001)); /* more than 1 s */
+    assert(!pts_clock_early_key(&clock, 900180)); /* not before the start */
+    assert(!pts_clock_early_key(&clock, 903780));
+    assert(!pts_clock_early_key(&clock, PTS_CLOCK_INVALID));
+    /* across the wrap of the 33-bit timestamps */
+    clock.base = 100;
+    assert(pts_clock_early_key(&clock, PTS_CLOCK_WRAP - 80));
+    assert(!pts_clock_early_key(&clock, PTS_CLOCK_WRAP - 90001));
+    clock.base = PTS_CLOCK_WRAP - 10;
+    assert(!pts_clock_early_key(&clock, 5)); /* after the start, behind the wrap */
     epoch_far_apart();
     epoch_real_offsets();
     epoch_wrap();

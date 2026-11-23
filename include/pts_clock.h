@@ -186,6 +186,25 @@ static inline int64_t pts_clock_update(PtsClock *clock, int kind,
     return corrected;
 }
 
+/* The first video keyframe may lie a little before the start of the timeline
+ * (raw is a 90-kHz timestamp that the clock maps below 0): over HTTP the
+ * stream analysis is cut short, FFmpeg can then take the start time of the
+ * container from an audio packet that comes first (2 ms) while the video
+ * starts at 0. Dropped, that keyframe leaves the decoder with frames that
+ * depend on it: no picture until the next keyframe, and on decoders that
+ * need the parameter sets of the keyframe none until a seek. Up to one second
+ * before the start the keyframe is played at 0 instead (the caller decides
+ * that it is the first video packet and a keyframe). */
+#define PTS_CLOCK_EARLY_KEY 90000
+static inline int pts_clock_early_key(const PtsClock *clock, int64_t raw)
+{
+    int64_t before;
+    if (!clock->base_ready || raw == PTS_CLOCK_INVALID)
+        return 0;
+    before = pts_clock_difference(clock->base, raw);
+    return before > 0 && before <= PTS_CLOCK_EARLY_KEY;
+}
+
 static inline int64_t pts_clock_map(const PtsClock *clock, int kind, int64_t raw)
 {
     const PtsTrackClock *track = &clock->track[kind];
