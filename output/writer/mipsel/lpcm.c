@@ -58,6 +58,7 @@
 /* Macros/Constants              */
 /* ***************************** */
 #define LLPCM_VOB_HEADER_LEN (6)
+#define LPCM_MAX_FRAMES_PER_PES (12)
 
 /* ***************************** */
 /* Types                         */
@@ -77,6 +78,7 @@ static int32_t i_frame_num;
 static int32_t i_bitspersample;
 static uint8_t *p_buffer = 0;
 static uint8_t *p_frame_buffer = 0;
+static int32_t i_frames_per_pes = 1;
 static int resetPending = 0;
 /* ***************************** */
 /* Prototypes                    */
@@ -100,7 +102,24 @@ static int resetPending = 0;
  * - number of channels - 1 (3 bits) 1 == 2 channels
  * - dynamic range (8 bits) 0x80 == neutral
  */
- 
+
+/* EP3_LPCM_FRAMES=2..12 puts that many frames in one PES packet, with the
+ * first access unit pointer 3; unset or any other value: one frame and
+ * pointer 0, as always. Read when the frame buffer is allocated, which is
+ * sized for it. */
+static int32_t LpcmFramesPerPes(void)
+{
+    const char *env = getenv("EP3_LPCM_FRAMES");
+    char *end = NULL;
+    long frames;
+    if (!env || !env[0])
+        return 1;
+    frames = strtol(env, &end, 10);
+    if (*end || frames < 1 || frames > LPCM_MAX_FRAMES_PER_PES)
+        return 1;
+    return (int32_t)frames;
+}
+
 /* reset() is called from the command thread while the demuxer thread can be
  * inside writeData(): it only leaves a request, the next writeData() drops
  * the samples kept from before the seek. */
@@ -191,7 +210,8 @@ static int32_t writeData(void *_call)
         {
             free(p_frame_buffer);
         }
-        p_frame_buffer = malloc(i_frame_size);
+        i_frames_per_pes = LpcmFramesPerPes();
+        p_frame_buffer = malloc((i_frame_size - LLPCM_VOB_HEADER_LEN) * i_frames_per_pes + LLPCM_VOB_HEADER_LEN);
         if (!p_buffer || !p_frame_buffer)
         {
             /* both again with the next packet */
@@ -213,20 +233,32 @@ static int32_t writeData(void *_call)
     
     int32_t i_bytes_consumed = 0;
     int32_t i = 0;
-    for ( i = 0; i < i_num_frames; ++i )
+    while ( i < i_num_frames )
     {
+        int32_t i_batch_frames = i_num_frames - i;
+        if (i_batch_frames > i_frames_per_pes)
+            i_batch_frames = i_frames_per_pes;
 
         uint8_t *frame = (uint8_t *)p_frame_buffer;
-        frame[0] = 1;  /* one frame in packet */
+        frame[0] = i_batch_frames;  /* frames in packet */
         frame[1] = 0;
-        frame[2] = 0;  /* no first access unit */
-        frame[3] = (i_frame_num + i) & 0x1f;  /* no emphasis, no mute */
+        if (i_frames_per_pes > 1)
+        {
+            frame[2] = 0x03;  /* first access unit */
+            frame[3] = i_frame_num & 0x1f;  /* no emphasis, no mute */
+        }
+        else
+        {
+            frame[2] = 0;  /* no first access unit */
+            frame[3] = (i_frame_num + i) & 0x1f;  /* no emphasis, no mute */
+        }
         frame[4] = (i_freq_code << 4) | (i_channels - 1);
         frame[5] = 0x80;  /* neutral dynamic range */
 
-        const int i_consume_samples = i_frame_samples - i_buffer_used;
+        const int i_consume_samples = i_batch_frames * i_frame_samples - i_buffer_used;
         const int i_kept_bytes = i_buffer_used * i_channels * 2;
         const int i_consume_bytes = i_consume_samples * i_channels * 2;
+        const int i_payload_size = i_kept_bytes + i_consume_bytes + LLPCM_VOB_HEADER_LEN;
 
 #ifdef WORDS_BIGENDIAN
         memcpy( frame + 6, p_buffer, i_kept_bytes );
@@ -236,10 +268,6 @@ static int32_t writeData(void *_call)
        swab( call->data + i_bytes_consumed, frame + 6 + i_kept_bytes, i_consume_bytes );
 #endif
 
-        i_frame_num++;
-        i_buffer_used = 0;
-        i_bytes_consumed += i_consume_bytes;
-
         /* We need to find i_length by means of next_pts due to possible roundoff errors. */
         uint64_t this_pts = INVALID_PTS_VALUE;
         if (call->Pts != INVALID_PTS_VALUE)
@@ -247,8 +275,13 @@ static int32_t writeData(void *_call)
             this_pts = call->Pts + (i * i_frame_samples + i_start_offset) * 90000 / i_rate;
         }
 
+        i_frame_num += i_batch_frames;
+        i += i_batch_frames;
+        i_buffer_used = 0;
+        i_bytes_consumed += i_consume_bytes;
+
         uint32_t pes_header_size = 0;
-        pes_header_size = InsertPesHeader(PesHeader, i_frame_size+1, MPEG_AUDIO_PES_START_CODE, this_pts, 0);
+        pes_header_size = InsertPesHeader(PesHeader, i_payload_size+1, MPEG_AUDIO_PES_START_CODE, this_pts, 0);
 
         PesHeader[pes_header_size] = 0xa0;
         pes_header_size += 1;
@@ -257,7 +290,7 @@ static int32_t writeData(void *_call)
         iov[0].iov_base = PesHeader;
         iov[0].iov_len  = pes_header_size;
         iov[1].iov_base = frame;
-        iov[1].iov_len  = i_frame_size;
+        iov[1].iov_len  = i_payload_size;
         i_ret_size += call->WriteV(call->fd, iov, 2);
     }
     

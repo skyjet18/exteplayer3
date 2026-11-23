@@ -14,7 +14,7 @@
 
 static struct iovec parts[PARTS];
 static int part_count, calls;
-static uint8_t written[512];
+static uint8_t written[4096];
 static size_t written_size;
 static uint64_t pcm_pts[2];
 static uint8_t xiph[45] = {2, 30, 5};
@@ -544,8 +544,73 @@ static void assert_lpcm_frame(int first)
     int i;
     /* PES header with timestamp, 0xa0, 6 bytes of the DVD header, 80 samples */
     assert(calls == 1 && written_size == 14 + 1 + 6 + 80 * 4 && written[14] == 0xa0);
+    /* one frame, no first access unit */
+    assert(written[15] == 1 && written[16] == 0 && written[17] == 0);
     for (i = 0; i < 80 * 2; i++)
         assert((written[21 + 2 * i] << 8 | written[22 + 2 * i]) == first + i);
+}
+
+/* One PES packet of the LPCM writer at "p" with "frames" frames of 80 stereo
+ * samples whose values start with "first"; returns its size. */
+static size_t assert_lpcm_packet(const uint8_t *p, int frames, int first_access_unit, int frame_num,
+                                 int first, uint64_t pts)
+{
+    size_t size = 14 + 1 + 6 + frames * 80 * 4;
+    int i;
+    assert(((size_t)p[4] << 8 | p[5]) == size - 6 && p[14] == 0xa0);
+    assert(read_pts(p + 9) == pts);
+    assert(p[15] == frames && p[16] == 0 && p[17] == first_access_unit && p[18] == frame_num);
+    for (i = 0; i < frames * 80 * 2; i++)
+        assert((p[21 + 2 * i] << 8 | p[22 + 2 * i]) == first + i);
+    return size;
+}
+
+/* EP3_LPCM_FRAMES=3: seven frames go out as 3 + 3 + 1 per PES packet with
+ * the first access unit pointer 3; 12 is the limit, 13 or text: one frame. */
+static void lpcm_frames_per_pes(void)
+{
+    static const char *const ignored[] = {"0", "13", "3x", "", "-2"};
+    pcmPrivateData_t private = {.bResampling = 1, .channels = 2, .sample_rate = 48000};
+    uint8_t *samples = lpcm_samples(7 * 80 + 10, 0);
+    uint8_t *twelve = lpcm_samples(12 * 80, 0);
+    WriterAVCallData_t call;
+    size_t at = 0;
+    unsigned k;
+
+    setenv("EP3_LPCM_FRAMES", "3", 1);
+    WriterAudioLPCM.reset();
+    call = packet(samples, (7 * 80 + 10) * 4, &private, sizeof(private), capture);
+    assert(WriterAudioLPCM.writeData(&call) == (int32_t)(2 * (21 + 3 * 320) + 21 + 320) && calls == 3);
+    at += assert_lpcm_packet(written + at, 3, 3, 0, 0, 90000);
+    at += assert_lpcm_packet(written + at, 3, 3, 3, 3 * 160, 90000 + 3 * 150);
+    at += assert_lpcm_packet(written + at, 1, 3, 6, 6 * 160, 90000 + 6 * 150);
+    assert(at == written_size);
+
+    setenv("EP3_LPCM_FRAMES", "12", 1);
+    private.bResampling = 1;
+    WriterAudioLPCM.reset();
+    call = packet(twelve, 12 * 80 * 4, &private, sizeof(private), capture);
+    assert(WriterAudioLPCM.writeData(&call) == 21 + 12 * 320 && calls == 1);
+    assert_lpcm_packet(written, 12, 3, 0, 0, 90000);
+
+    for (k = 0; k < sizeof(ignored) / sizeof(ignored[0]); k++)
+    {
+        setenv("EP3_LPCM_FRAMES", ignored[k], 1);
+        WriterAudioLPCM.reset();
+        call = packet(samples, 80 * 4, &private, sizeof(private), capture);
+        assert(WriterAudioLPCM.writeData(&call) == 21 + 320);
+        assert_lpcm_frame(0);
+    }
+
+    unsetenv("EP3_LPCM_FRAMES");
+    private.bResampling = 1;
+    WriterAudioLPCM.reset();
+    call = packet(samples, 80 * 4, &private, sizeof(private), capture);
+    assert(WriterAudioLPCM.writeData(&call) == 21 + 320);
+    assert_lpcm_frame(0);
+    WriterAudioLPCM.reset();
+    free(samples);
+    free(twelve);
 }
 
 /* 48 kHz: 80 samples a frame. Samples kept from one packet go in front of
@@ -1111,6 +1176,7 @@ int main(void)
     pcm_block_duration();
     pcm_block_timestamps();
     lpcm_rest_buffer();
+    lpcm_frames_per_pes();
     adts_frame_with_crc();
     aac_main_keeps_the_sample_rate();
     h264_reset_during_a_write();
