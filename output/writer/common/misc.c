@@ -156,7 +156,9 @@ static bool IsHiSiliconChipsetFile(const char *path)
 }
 
 /* The device tree node is missing on a number of HiSilicon receivers, so
- * also accept what the vendor SDK creates and the chipset name of the box. */
+ * also accept what the vendor SDK creates and the chipset name of the box.
+ * /usr/bin/hihalt (the halt program of the HiSilicon images) as in
+ * OpenVisionE2/exteplayer3 19857571. */
 static bool IsHiSiliconSTB(void)
 {
     static const char *const markers[] = {
@@ -165,6 +167,7 @@ static bool IsHiSiliconSTB(void)
         "/dev/hi_mem",
         "/dev/hi_dmx",
         "/sys/module/hi_media",
+        "/usr/bin/hihalt",
         NULL
     };
     int i;

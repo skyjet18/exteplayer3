@@ -64,6 +64,7 @@ static void proc_hisi(void) { present[0] = "/proc/hisi"; detected(STB_HISILICON)
 static void dev_hi_mem(void) { present[0] = "/dev/hi_mem"; detected(STB_HISILICON); }
 static void dev_hi_dmx(void) { present[0] = "/dev/hi_dmx"; detected(STB_HISILICON); }
 static void module_hi_media(void) { present[0] = "/sys/module/hi_media"; detected(STB_HISILICON); }
+static void usr_bin_hihalt(void) { present[0] = "/usr/bin/hihalt"; detected(STB_HISILICON); }
 static void chipset_hi3798(void) { chipset = "hi3798mv200\n"; detected(STB_HISILICON); }
 static void chipset_upper_case(void) { chipset = "Hi3716MV430\n"; detected(STB_HISILICON); }
 static void chipset_hisi(void) { chipset = "HiSilicon 3798\n"; detected(STB_HISILICON); }
@@ -321,6 +322,7 @@ int main(void)
     failed += run("/dev/hi_mem", dev_hi_mem);
     failed += run("/dev/hi_dmx", dev_hi_dmx);
     failed += run("/sys/module/hi_media", module_hi_media);
+    failed += run("/usr/bin/hihalt", usr_bin_hihalt);
     failed += run("chipset hi3798mv200", chipset_hi3798);
     failed += run("chipset Hi3716MV430", chipset_upper_case);
     failed += run("chipset HiSilicon", chipset_hisi);
