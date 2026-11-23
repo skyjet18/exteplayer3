@@ -63,6 +63,15 @@ static ssize_t pcm_packet(int fd, const struct iovec *iov, int count)
     return record(fd, iov, count);
 }
 
+static uint64_t pcm_block_pts[32];
+
+static ssize_t pcm_blocks(int fd, const struct iovec *iov, int count)
+{
+    assert(count == 2 && calls < 32);
+    pcm_block_pts[calls] = read_pts((const uint8_t *)iov[0].iov_base + 9);
+    return record(fd, iov, count);
+}
+
 static ssize_t vorbis_packet(int fd, const struct iovec *iov, int count)
 {
     static const size_t sizes[] = {30, 5, 7};
@@ -452,6 +461,65 @@ static void pcm_block_duration(void)
     WriterAudioPCM.reset();
     assert(!WriterAudioPCM.writeData(&call) && calls == 2);
     assert(pcm_pts[0] == 90000 && pcm_pts[1] == 90000 + 2700);
+    WriterAudioPCM.reset();
+}
+
+/* Software decoded audio as 48 kHz stereo 16 bit in packets of 1024 samples
+ * (4096 bytes, 1920 ticks): the PCM writer times its 30 ms blocks (5760
+ * bytes, 2700 ticks) by counting from the first packet. A packet whose PTS
+ * says that audio was lost (or that the source jumped) by more than 40 ms
+ * moves the count; a normal stream and small jitter keep it. */
+static void pcm_block_timestamps(void)
+{
+    static uint8_t samples[4096];
+    pcmPrivateData_t private = {.codec_id = AV_CODEC_ID_PCM_S16LE, .channels = 2,
+                                .sample_rate = 48000, .bResampling = 1};
+    WriterAVCallData_t call = packet(samples, sizeof(samples), &private, sizeof(private),
+                                     pcm_blocks);
+    uint64_t pts;
+    int i, blocks;
+
+    /* a normal stream: block k starts at 90000 + k * 2700 */
+    WriterAudioPCM.reset();
+    for (i = 0; i < 9; i++)
+    {
+        call.Pts = 90000 + (uint64_t)i * 1920;
+        WriterAudioPCM.writeData(&call);
+        private.bResampling = 0;
+    }
+    assert(calls == 6); /* 9 * 4096 bytes = 6 blocks + 2304 bytes */
+    for (i = 0; i < calls; i++)
+        assert(pcm_block_pts[i] == 90000 + (uint64_t)i * 2700);
+
+    /* 20 ms of jitter keep the count: the 2304 bytes waiting (1080 ticks)
+     * put the block start 1800 ticks after the counted 106200 */
+    call.Pts = 90000 + 9 * 1920 + 1800;
+    WriterAudioPCM.writeData(&call);
+    assert(calls == 7 && pcm_block_pts[6] == 106200);
+
+    /* 200 ms of audio lost: the next packet comes 18000 ticks late. With
+     * 640 bytes (300 ticks) waiting the block starts at its PTS - 300
+     * instead of the counted 108900; it is written with the packet after. */
+    pts = 90000 + 10 * 1920 + 18000;
+    call.Pts = pts;
+    WriterAudioPCM.writeData(&call);
+    assert(calls == 7);
+    call.Pts = pts + 1920;
+    WriterAudioPCM.writeData(&call);
+    assert(calls == 8 && pcm_block_pts[7] == pts - 300);
+    /* and the count goes on from there */
+    call.Pts = pts + 2 * 1920;
+    WriterAudioPCM.writeData(&call);
+    assert(calls == 9 && pcm_block_pts[8] == pts - 300 + 2700);
+
+    /* a jump back by a second (the source restarts): 1408 bytes (660
+     * ticks) waiting, the block starts at the new PTS - 660 */
+    call.Pts = pts + 3 * 1920 - 90000;
+    WriterAudioPCM.writeData(&call);
+    assert(calls == 9);
+    call.Pts += 1920;
+    WriterAudioPCM.writeData(&call);
+    assert(calls == 10 && pcm_block_pts[9] == pts + 3 * 1920 - 90000 - 660);
     WriterAudioPCM.reset();
 }
 
@@ -1041,6 +1109,7 @@ int main(void)
     vp9_frame();
     vp9_frame_without_pts();
     pcm_block_duration();
+    pcm_block_timestamps();
     lpcm_rest_buffer();
     adts_frame_with_crc();
     aac_main_keeps_the_sample_rate();

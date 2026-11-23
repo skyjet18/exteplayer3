@@ -1627,6 +1627,9 @@ also in OpenViX/exteplayer3)
   [b7970df](https://github.com/OpenVu/exteplayer3/commit/b7970df).
 - No rescale of a missing timestamp of software decoded audio (#6):
   [377d2a9](https://github.com/OpenVu/exteplayer3/commit/377d2a9).
+- PCM blocks timed from the packets again when they drift more than 40 ms
+  from the counted timestamp:
+  [2cfe618](https://github.com/OpenVu/exteplayer3/commit/2cfe618).
 
 **boingbasti** ([boingbasti/e2-serviceapp-vti](https://github.com/boingbasti/e2-serviceapp-vti),
 `exteplayer3-build/src`)

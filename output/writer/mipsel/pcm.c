@@ -60,6 +60,11 @@
 /* Types                         */
 /* ***************************** */
 
+/* The timestamp of a block is counted on from the first packet; when a
+ * packet says otherwise by more than this (40 ms, 90 kHz), the count is
+ * taken from the packet again. */
+#define PCM_REANCHOR_TICKS 3600
+
 /* ***************************** */
 /* Variables                     */
 /* ***************************** */
@@ -225,7 +230,31 @@ static int32_t writeData(void *_call)
         fixed_bufferfilled = 0;
         pcm_printf(40, "PCM fixed_buffersize [%u] [%s]\n", fixed_buffersize, LE ? "LE":"BE");
     }
-    
+
+    /* The blocks are timed by counting 30 ms per block from the first
+     * packet. Audio lost on the way (a gap in decoded audio, a stream that
+     * resumes later) or a timestamp jump of the source without a new header
+     * would leave every following block that far off for the rest of the
+     * playback. So the packet's PTS is checked: the samples already in the
+     * block began their duration before it, and a block start more than
+     * 40 ms away from the counted one is taken over. Normal streams stay
+     * within that and keep the count. */
+    if (call->Pts != INVALID_PTS_VALUE && fixed_buffersize > 0 && fixed_bufferduration > 0)
+    {
+        uint64_t filled = (uint64_t)fixed_bufferfilled * fixed_bufferduration / fixed_buffersize;
+        uint64_t expected = call->Pts >= filled ? call->Pts - filled : call->Pts;
+        int64_t diff = (int64_t)(expected - fixed_buffertimestamp);
+
+        if (fixed_buffertimestamp == INVALID_PTS_VALUE ||
+            diff > PCM_REANCHOR_TICKS || diff < -PCM_REANCHOR_TICKS)
+        {
+            pcm_printf(10, "block timestamp %llu -> %llu (packet PTS %llu)\n",
+                       (unsigned long long)fixed_buffertimestamp,
+                       (unsigned long long)expected, (unsigned long long)call->Pts);
+            fixed_buffertimestamp = expected;
+        }
+    }
+
     while (size > 0)
     {        
         uint32_t cpSize = (fixed_buffersize - fixed_bufferfilled);
