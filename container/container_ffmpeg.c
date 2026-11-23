@@ -702,6 +702,27 @@ static int stream_track_id(const AVFormatContext *av, const AVStream *stream)
     return stream->id;
 }
 
+/* A stream whose codec is not known yet (codec_id NONE, e.g. a private
+ * MPEG-TS stream_type 0x80-0xFF) is left open by container_ffmpeg_update_tracks():
+ * the MPEG-TS demuxer skips a discarded stream before it asks for probing
+ * (request_probe), so discarding it at once prevented FFmpeg from ever
+ * finding the codec. FFmpeg returns no packet of a stream while it probes
+ * it; a packet that still comes with codec_id NONE means the probing found
+ * nothing: the stream is discarded now (1, the packet is to be dropped),
+ * so it costs no reading from here on. */
+static int unprobed_stream_ended(AVStream *stream)
+{
+    enum AVMediaType type = get_codecpar(stream)->codec_type;
+    if (stream->discard == AVDISCARD_ALL ||
+        get_codecpar(stream)->codec_id != AV_CODEC_ID_NONE ||
+        type == AVMEDIA_TYPE_AUDIO || type == AVMEDIA_TYPE_VIDEO ||
+        type == AVMEDIA_TYPE_SUBTITLE)
+        return 0;
+    stream->discard = AVDISCARD_ALL;
+    ffmpeg_printf(10, "stream %d: codec not found by probing, discarded\n", stream->index);
+    return 1;
+}
+
 static void select_subtitle_stream(AVFormatContext *av, int id)
 {
     unsigned int i;
@@ -3384,6 +3405,15 @@ static void FFMPEGThread(Context_t *context)
             drm_key_check_packet(context, cAVIdx, &packet))
         {
             /* still encrypted: its stream has no key and is dropped */
+            wrapped_packet_unref(&packet);
+            releaseMutex(__FILE__, __FUNCTION__,__LINE__);
+            continue;
+        }
+
+        if (!isWaitingForFinish && ffmpegStatus == 0 &&
+            unprobed_stream_ended(avContextTab[cAVIdx]->streams[packet.stream_index]))
+        {
+            /* a stream left open for probing whose codec was not found */
             wrapped_packet_unref(&packet);
             releaseMutex(__FILE__, __FUNCTION__,__LINE__);
             continue;
@@ -6125,6 +6155,13 @@ static int32_t update_tracks(Context_t *context, char *filename, int32_t initial
             case AVMEDIA_TYPE_ATTACHMENT:
             case AVMEDIA_TYPE_NB:
             default:
+                /* not discarded while FFmpeg may still find its codec, see
+                 * unprobed_stream_ended() */
+                if (get_codecpar(stream)->codec_id == AV_CODEC_ID_NONE)
+                {
+                    ffmpeg_printf(10, "stream %d: codec not known yet, left open for probing\n", stream->index);
+                    break;
+                }
                 stream->discard = AVDISCARD_ALL;
                 ffmpeg_err("not handled or unknown codec_type %d\n", get_codecpar(stream)->codec_type);
              break;

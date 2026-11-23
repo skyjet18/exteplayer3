@@ -1696,6 +1696,9 @@ also in OpenViX/exteplayer3)
 - The case of audio and video that count from timestamp origins hours apart,
   found and analysed there (#13 solves it differently):
   [8c3cb3c](https://github.com/boingbasti/e2-serviceapp-vti/commit/8c3cb3c).
+- A stream whose codec is not known yet (private MPEG-TS stream_type) is not
+  discarded before FFmpeg could probe it:
+  [eb75eb1](https://github.com/boingbasti/e2-serviceapp-vti/commit/eb75eb1).
 
 **Blacker91** ([Blacker91/exteplayer3-dreamos](https://github.com/Blacker91/exteplayer3-dreamos),
 the DreamOS build; taken over here directly)

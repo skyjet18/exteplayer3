@@ -687,5 +687,33 @@ int main(void)
         aac_config_set = 0;
         stb_type = STB_OTHER;
     }
+    {
+        /* A stream FFmpeg may still probe (codec_id NONE, e.g. a private
+         * MPEG-TS stream_type) stays open; once a packet of it comes with
+         * codec_id NONE the probing found nothing and it is discarded. */
+        AVFormatContext *av = avformat_alloc_context();
+        AVStream *data, *found, *audio, *gone;
+        assert(av);
+        data = avformat_new_stream(av, NULL);
+        found = avformat_new_stream(av, NULL);
+        audio = avformat_new_stream(av, NULL);
+        gone = avformat_new_stream(av, NULL);
+        assert(data && found && audio && gone);
+        data->codecpar->codec_type = AVMEDIA_TYPE_DATA;
+        data->codecpar->codec_id = AV_CODEC_ID_NONE;
+        found->codecpar->codec_type = AVMEDIA_TYPE_DATA;
+        found->codecpar->codec_id = AV_CODEC_ID_TIMED_ID3;
+        audio->codecpar->codec_type = AVMEDIA_TYPE_AUDIO;
+        audio->codecpar->codec_id = AV_CODEC_ID_NONE;
+        gone->codecpar->codec_type = AVMEDIA_TYPE_UNKNOWN;
+        gone->codecpar->codec_id = AV_CODEC_ID_NONE;
+        gone->discard = AVDISCARD_ALL;
+        assert(unprobed_stream_ended(data) && data->discard == AVDISCARD_ALL);
+        assert(!unprobed_stream_ended(data)); /* once */
+        assert(!unprobed_stream_ended(found) && found->discard != AVDISCARD_ALL);
+        assert(!unprobed_stream_ended(audio) && audio->discard != AVDISCARD_ALL);
+        assert(!unprobed_stream_ended(gone));
+        avformat_free_context(av);
+    }
     return 0;
 }
