@@ -162,6 +162,21 @@ else
   fi
 fi
 
+# ---- tests/first_keyframe.py ----------------------------------------------
+what="first video keyframe before the start time of the container (Matroska over HTTP)"
+if ! have tests/first_keyframe.py; then
+  skip first_keyframe "tests/first_keyframe.py is not in this tree" "$what"
+else
+  selected first_keyframe && player timing
+  if [ $timing = yes ]; then
+    step first_keyframe 300 "$what" \
+      python3 tests/first_keyframe.py --player "$OUT/exteplayer3-timing" --ffmpeg "$FF" \
+      --video-output "$VPES" --audio-output "$APES"
+  else
+    skip first_keyframe "the timing player did not build" "$what"
+  fi
+fi
+
 # ---- tests/hls_switch.py: the four modes the README lists ----------------
 if ! have tests/hls_switch.py; then
   skip hls_switch "tests/hls_switch.py is not in this tree" "HLS audio switching"

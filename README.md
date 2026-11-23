@@ -1671,3 +1671,7 @@ the DreamOS build; taken over here directly)
   [b05c2c7](https://github.com/skyjet18/exteplayer3/commit/b05c2c7a).
 - musl: `fileno()` instead of the glibc FILE internal `_fileno`:
   [b5e3e72](https://github.com/skyjet18/exteplayer3/commit/b5e3e729).
+- The first video keyframe a little before the start time of the container
+  (Matroska over HTTP: the start time came from an audio block, the keyframe
+  was dropped) is played instead of dropped (#83):
+  [bb73bc8](https://github.com/Blacker91/exteplayer3-dreamos/commit/bb73bc8).

@@ -3467,6 +3467,17 @@ static void FFMPEGThread(Context_t *context)
                                       " offset90=%"PRId64"\n",
                                       ptsClock.track[0].raw, ptsClock.base,
                                       ptsClock.track[0].offset);
+                    if (pts == INVALID_PTS_VALUE && first_packet && stream &&
+                        (packet.flags & AV_PKT_FLAG_KEY) && packet.pts != AV_NOPTS_VALUE &&
+                        stream->time_base.num > 0 && stream->time_base.den > 0 &&
+                        pts_clock_early_key(&ptsClock, av_rescale_q(packet.pts, stream->time_base,
+                                                                    (AVRational){1, 90000})))
+                    {
+                        /* See pts_clock_early_key(): the first keyframe a little
+                         * before the start is played at 0, not dropped. */
+                        ffmpeg_printf(10, "first video keyframe before the start time, played at 0\n");
+                        currentVideoPts = videoTrack->pts = pts = 0;
+                    }
                     if (pts == INVALID_PTS_VALUE)
                     {
                         wrapped_packet_unref(&packet);
