@@ -91,7 +91,8 @@ int8_t PlaybackDieNow(int8_t value)
 }
 
 static int reset_pcm(void) { resets++; return 0; }
-stb_type_t GetSTBType(void) { return STB_VUPLUS; }
+static stb_type_t stb_type = STB_VUPLUS;
+stb_type_t GetSTBType(void) { return stb_type; }
 static WriterCaps_t caps = {.dvbStreamType = AUDIOTYPE_RAW};
 static Writer_t pcm_writer = {.reset = reset_pcm, .caps = &caps};
 Writer_t *getWriter(char *encoding)
@@ -362,6 +363,39 @@ static void position_within_the_written_data(Context_t *context, ManagerHandler_
     decoder_answers = 0;
 }
 
+/* EP3_HISI_AV_SYNC=1: on a HiSilicon receiver the hardware A/V sync of the
+ * playback also for streams that are not DASH; off (the default), on other
+ * receivers or with another value nothing changes. */
+static void hisilicon_av_sync(Context_t *context, PlaybackHandler_t *playback)
+{
+    playback->isDash = 0;
+    playback->AVSync = 1;
+    failing_request = 0;
+    audiofd = 1;
+    unsetenv("EP3_HISI_AV_SYNC");
+    stb_type = STB_HISILICON;
+    request_count = 0;
+    /* the timing log behind it asks the PTS of the devices: only the first
+     * request is the sync */
+    assert(!LinuxDvbAVSync(context, "audio"));
+    assert(request_count >= 1 && requests[0] == AUDIO_SET_AV_SYNC && arguments[0] == 0);
+    setenv("EP3_HISI_AV_SYNC", "1", 1);
+    request_count = 0;
+    assert(!LinuxDvbAVSync(context, "audio") && arguments[0] == 1);
+    playback->AVSync = 0;
+    request_count = 0;
+    assert(!LinuxDvbAVSync(context, "audio") && arguments[0] == 0);
+    playback->AVSync = 1;
+    setenv("EP3_HISI_AV_SYNC", "yes", 1);
+    request_count = 0;
+    assert(!LinuxDvbAVSync(context, "audio") && arguments[0] == 0);
+    setenv("EP3_HISI_AV_SYNC", "1", 1);
+    stb_type = STB_VUPLUS;
+    request_count = 0;
+    assert(!LinuxDvbAVSync(context, "audio") && arguments[0] == 0);
+    unsetenv("EP3_HISI_AV_SYNC");
+}
+
 int main(void)
 {
     Context_t context = {0};
@@ -450,6 +484,7 @@ int main(void)
     no_message_for_the_closed_video_device(&context);
     writer_without_reset(&context, &managers);
     position_within_the_written_data(&context, &managers);
+    hisilicon_av_sync(&context, &playback);
     pthread_mutex_destroy(&LinuxDVBmutex);
     return 0;
 }

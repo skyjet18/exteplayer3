@@ -540,12 +540,25 @@ static void LinuxDvbTiming(const char *phase)
     }
 }
 
+/* "1" in the environment variable name, on a HiSilicon receiver only. The
+ * HiSilicon switches are off by default: they come from receivers nobody here
+ * could test on (OpenVu/exteplayer3, an Atto Pixel fork). */
+static bool LinuxDvbHisiOptIn(const char *name)
+{
+    const char *env = getenv(name);
+    return env && env[0] == '1' && env[1] == '\0' && STB_HISILICON == GetSTBType();
+}
+
 /* The caller owns LinuxDVBmutex. */
 static int LinuxDvbApplyAVSync(Context_t *context)
 {
     int requested = context && context->playback ? context->playback->AVSync : 0;
     int dash = context && context->playback && context->playback->isDash;
     int enabled = dash ? requested : 0;
+    /* EP3_HISI_AV_SYNC=1: the hardware A/V sync of the playback also for
+     * streams that are not DASH (OpenVu/exteplayer3 e82045e) */
+    if (!dash && LinuxDvbHisiOptIn("EP3_HISI_AV_SYNC"))
+        enabled = requested;
 #ifdef HAVE_DREAMNEXTGEN
     /* The Dreambox kernel audio backend also needs sync for non-DASH streams. */
     enabled = 1;

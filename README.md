@@ -1293,6 +1293,14 @@ late; trick play is not paced, and a stop or seek ends the wait. With `-b` it
 holds the filling of the RAM buffer. Values in the range of the decoder
 buffer (e.g. `1000`) are a starting point; the setting is read once.
 
+Further HiSilicon switches, all off by default and only effective on a
+HiSilicon receiver with the value `1`. They come from HiSilicon forks and
+are untested here; they are meant for testers of such receivers:
+
+- `EP3_HISI_AV_SYNC=1`: the hardware A/V sync of the playback
+  (`AUDIO_SET_AV_SYNC`) also for streams that are not DASH; otherwise only
+  DASH gets it, as on other receivers.
+
 ---
 
 ## ✅ Receiver validation still required
@@ -1315,7 +1323,9 @@ provider/SSAI behavior. Before deployment, check on representative receivers:
 - The HiSilicon handling has not been validated on a receiver: detection on
   HiSilicon receivers without the device-tree node (and none elsewhere),
   `-b` playback that does not stall, and `EP3_OUTPUT_PACING_MS` on a receiver
-  that plays too fast: speed, lip sync, pause, seek and trick play.
+  that plays too fast: speed, lip sync, pause, seek and trick play. The
+  opt-in switches have not run on any receiver: `EP3_HISI_AV_SYNC` (lip sync
+  of HLS, TS and MP4 with it, also after seeks and audio switches).
 - A source whose audio and video count from different origins (first
   timestamps more than 60 seconds apart): audible audio and its lip sync.
 - The DTS-HD bypass mode has been checked on one receiver only (VU+ Uno 4K
@@ -1513,6 +1523,7 @@ The version number does not change with every feature: keys added after a releas
 | `EP3_DTS_HD_MODE`, `EP3_DTS_PAD` | DTS-HD bypass mode, DTS core-frame padding |
 | `EP3_EAC3_RESTART` | DD+ passthrough restart, see [DD+ passthrough restart](#-dd-passthrough-restart-on-vu-ultimo-4k-and-duo-4k-se) |
 | `EP3_OUTPUT_PACING_MS` | software playback clock, see [HiSilicon receivers](#-hisilicon-receivers) |
+| `EP3_HISI_AV_SYNC` | HiSilicon only, `1`: hardware A/V sync also for streams that are not DASH, see [HiSilicon receivers](#-hisilicon-receivers) |
 | `SSL_CERT_FILE`, `SSL_CERT_DIR`, `EP3_CA_FILES`, `EP3_CA_DEFAULT_FILE` | CA certificates, see [HTTPS](#-https-ca-certificates) |
 | `EP3_FAKE_AUDIO_CLOCK=<ms>` | host build (`tests/build.sh`) only: without video, the fake output reports the position of an audio decoder that plays in real time and stands for `<ms>` after a clear |
 | `EP3_FAKE_VIDEO_LEAD=<ms>` | host build only: the fake video decoder holds up to `<ms>` of video ahead of what it shows, as receiver decoders do |
@@ -1643,6 +1654,9 @@ also in OpenViX/exteplayer3)
 - PCM blocks timed from the packets again when they drift more than 40 ms
   from the counted timestamp:
   [2cfe618](https://github.com/OpenVu/exteplayer3/commit/2cfe618).
+- HiSilicon, opt-in: hardware A/V sync also for streams that are not DASH
+  (`EP3_HISI_AV_SYNC`):
+  [e82045e](https://github.com/OpenVu/exteplayer3/commit/e82045e).
 
 **boingbasti** ([boingbasti/e2-serviceapp-vti](https://github.com/boingbasti/e2-serviceapp-vti),
 `exteplayer3-build/src`)
