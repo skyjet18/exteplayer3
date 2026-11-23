@@ -1,21 +1,77 @@
 <h1 align="center">exteplayer3</h1>
 <p align="center">Core of movie player for E2 based on the libeplayer using the ffmpeg solution</p>
 
-[![Tests](https://github.com/skyjet18/exteplayer3/actions/workflows/tests.yml/badge.svg)](https://github.com/skyjet18/exteplayer3/actions/workflows/tests.yml)
-[![ipk release](https://github.com/skyjet18/exteplayer3/actions/workflows/ipk-release.yml/badge.svg)](https://github.com/skyjet18/exteplayer3/actions/workflows/ipk-release.yml)
-[![Quality Gate Status](https://sonarcloud.io/api/project_badges/measure?project=skyjet18_exteplayer3&metric=alert_status)](https://sonarcloud.io/summary/new_code?id=skyjet18_exteplayer3)
-[![Bugs](https://sonarcloud.io/api/project_badges/measure?project=skyjet18_exteplayer3&metric=bugs)](https://sonarcloud.io/summary/new_code?id=skyjet18_exteplayer3)
-[![Vulnerabilities](https://sonarcloud.io/api/project_badges/measure?project=skyjet18_exteplayer3&metric=vulnerabilities)](https://sonarcloud.io/summary/new_code?id=skyjet18_exteplayer3)
-[![Code Smells](https://sonarcloud.io/api/project_badges/measure?project=skyjet18_exteplayer3&metric=code_smells)](https://sonarcloud.io/summary/new_code?id=skyjet18_exteplayer3)
+<p align="center">
+  <a href="https://github.com/skyjet18/exteplayer3"><img alt="Repository size" src="https://img.shields.io/github/repo-size/skyjet18/exteplayer3.svg"></a>
+  <a href="https://visitorbadge.io/status?path=https://github.com/skyjet18/exteplayer3"><img alt="Views" src="https://api.visitorbadge.io/api/visitors?path=https://github.com/skyjet18/exteplayer3&label=Views&countColor=blue&style=flat"></a>
+  <a href="https://visitorbadge.io/status?path=https://github.com/skyjet18/exteplayer3"><img alt="Visitors today" src="https://api.visitorbadge.io/api/daily?path=https://github.com/skyjet18/exteplayer3&label=Visitors%20Today&countColor=blue&style=flat"></a>
+</p>
 
-[![Latest version](https://img.shields.io/github/v/tag/skyjet18/exteplayer3?filter=v*&label=Latest%20version&color=darkviolet)](https://github.com/skyjet18/exteplayer3/tags)
-[![Release date](https://img.shields.io/github/release-date/skyjet18/exteplayer3?label=From&color=darkviolet)](https://github.com/skyjet18/exteplayer3/releases/latest)
-[![Downloads](https://img.shields.io/github/downloads/skyjet18/exteplayer3/total.svg?label=Downloads)](https://github.com/skyjet18/exteplayer3/releases)
-[![Last commit](https://img.shields.io/github/last-commit/skyjet18/exteplayer3)](https://github.com/skyjet18/exteplayer3/commits)
-[![Commits per year](https://img.shields.io/github/commit-activity/y/skyjet18/exteplayer3.svg?label=commits%2Fyear)](https://github.com/skyjet18/exteplayer3/commits)
-[![Commits per month](https://img.shields.io/github/commit-activity/m/skyjet18/exteplayer3.svg?label=commits%2Fmonth)](https://github.com/skyjet18/exteplayer3/commits)
-[![Commits per week](https://img.shields.io/github/commit-activity/w/skyjet18/exteplayer3.svg?label=commits%2Fweek)](https://github.com/skyjet18/exteplayer3/commits)
-[![Repository size](https://img.shields.io/github/repo-size/skyjet18/exteplayer3.svg)](https://github.com/skyjet18/exteplayer3)
+<div align="center">
+<table>
+  <tr>
+    <td><b>🏗️ Build</b></td>
+    <td>
+      <a href="https://github.com/skyjet18/exteplayer3/actions/workflows/tests.yml"><img alt="Tests" src="https://github.com/skyjet18/exteplayer3/actions/workflows/tests.yml/badge.svg"></a>
+      <a href="https://github.com/skyjet18/exteplayer3/actions/workflows/static-analysis.yml"><img alt="Static analysis" src="https://github.com/skyjet18/exteplayer3/actions/workflows/static-analysis.yml/badge.svg"></a>
+      <a href="https://github.com/skyjet18/exteplayer3/actions/workflows/sonarcloud.yml"><img alt="SonarCloud" src="https://github.com/skyjet18/exteplayer3/actions/workflows/sonarcloud.yml/badge.svg"></a>
+      <a href="https://github.com/skyjet18/exteplayer3/actions/workflows/ipk-release.yml"><img alt="ipk release" src="https://github.com/skyjet18/exteplayer3/actions/workflows/ipk-release.yml/badge.svg"></a>
+    </td>
+  </tr>
+  <tr>
+    <td><b>🔍 Code quality</b></td>
+    <td>
+      <a href="https://sonarcloud.io/summary/new_code?id=skyjet18_exteplayer3"><img alt="Quality Gate" src="https://sonarcloud.io/api/project_badges/measure?project=skyjet18_exteplayer3&metric=alert_status"></a>
+      <a href="https://sonarcloud.io/summary/new_code?id=skyjet18_exteplayer3"><img alt="Reliability" src="https://sonarcloud.io/api/project_badges/measure?project=skyjet18_exteplayer3&metric=reliability_rating"></a>
+      <a href="https://sonarcloud.io/summary/new_code?id=skyjet18_exteplayer3"><img alt="Security" src="https://sonarcloud.io/api/project_badges/measure?project=skyjet18_exteplayer3&metric=security_rating"></a>
+      <a href="https://sonarcloud.io/summary/new_code?id=skyjet18_exteplayer3"><img alt="Maintainability" src="https://sonarcloud.io/api/project_badges/measure?project=skyjet18_exteplayer3&metric=sqale_rating"></a>
+      <br>
+      <a href="https://sonarcloud.io/summary/new_code?id=skyjet18_exteplayer3"><img alt="Bugs" src="https://sonarcloud.io/api/project_badges/measure?project=skyjet18_exteplayer3&metric=bugs"></a>
+      <a href="https://sonarcloud.io/summary/new_code?id=skyjet18_exteplayer3"><img alt="Vulnerabilities" src="https://sonarcloud.io/api/project_badges/measure?project=skyjet18_exteplayer3&metric=vulnerabilities"></a>
+      <a href="https://sonarcloud.io/summary/new_code?id=skyjet18_exteplayer3"><img alt="Code smells" src="https://sonarcloud.io/api/project_badges/measure?project=skyjet18_exteplayer3&metric=code_smells"></a>
+      <a href="https://sonarcloud.io/summary/new_code?id=skyjet18_exteplayer3"><img alt="Duplicated lines" src="https://sonarcloud.io/api/project_badges/measure?project=skyjet18_exteplayer3&metric=duplicated_lines_density"></a>
+      <a href="https://sonarcloud.io/summary/new_code?id=skyjet18_exteplayer3"><img alt="Lines of code" src="https://sonarcloud.io/api/project_badges/measure?project=skyjet18_exteplayer3&metric=ncloc"></a>
+    </td>
+  </tr>
+  <tr>
+    <td><b>📦 Releases</b></td>
+    <td>
+      <a href="https://github.com/skyjet18/exteplayer3/tags"><img alt="Latest version" src="https://img.shields.io/github/v/tag/skyjet18/exteplayer3?filter=v*&label=Latest%20version&color=darkviolet"></a>
+      <a href="https://github.com/skyjet18/exteplayer3/releases/latest"><img alt="Release date" src="https://img.shields.io/github/release-date/skyjet18/exteplayer3?label=From&color=darkviolet"></a>
+      <a href="https://github.com/skyjet18/exteplayer3/releases"><img alt="Downloads" src="https://img.shields.io/github/downloads/skyjet18/exteplayer3/total.svg?label=Downloads"></a>
+      <a href="https://github.com/skyjet18/FFmpeg"><img alt="FFmpeg" src="https://img.shields.io/badge/FFmpeg-6.1%20%7C%209.0-darkgreen.svg"></a>
+    </td>
+  </tr>
+  <tr>
+    <td><b>📈 Activity</b></td>
+    <td>
+      <a href="https://github.com/skyjet18/exteplayer3/commits"><img alt="Last commit" src="https://img.shields.io/github/last-commit/skyjet18/exteplayer3"></a>
+      <a href="https://github.com/skyjet18/exteplayer3/commits"><img alt="Commits per year" src="https://img.shields.io/github/commit-activity/y/skyjet18/exteplayer3.svg?label=commits%2Fyear"></a>
+      <a href="https://github.com/skyjet18/exteplayer3/commits"><img alt="Commits per month" src="https://img.shields.io/github/commit-activity/m/skyjet18/exteplayer3.svg?label=commits%2Fmonth"></a>
+      <a href="https://github.com/skyjet18/exteplayer3/commits"><img alt="Commits per week" src="https://img.shields.io/github/commit-activity/w/skyjet18/exteplayer3.svg?label=commits%2Fweek"></a>
+      <a href="https://github.com/skyjet18/exteplayer3/graphs/contributors"><img alt="Contributors" src="https://img.shields.io/github/contributors/skyjet18/exteplayer3?style=flat"></a>
+    </td>
+  </tr>
+  <tr>
+    <td><b>🤝 Community</b></td>
+    <td>
+      <a href="https://github.com/skyjet18/exteplayer3/stargazers"><img alt="Stars" src="https://img.shields.io/github/stars/skyjet18/exteplayer3?style=flat"></a>
+      <a href="https://github.com/skyjet18/exteplayer3/forks"><img alt="Forks" src="https://img.shields.io/github/forks/skyjet18/exteplayer3?style=flat"></a>
+      <a href="https://github.com/skyjet18/exteplayer3/issues"><img alt="Issues" src="https://img.shields.io/github/issues/skyjet18/exteplayer3?color=blue&style=flat"></a>
+      <a href="https://github.com/skyjet18/exteplayer3/pulls"><img alt="Pull requests welcome" src="https://img.shields.io/badge/PRs-welcome-brightgreen.svg?style=flat"></a>
+    </td>
+  </tr>
+  <tr>
+    <td><b>🧾 Project</b></td>
+    <td>
+      <a href="#-license"><img alt="License GPL-2.0-or-later" src="https://img.shields.io/badge/License-GPL--2.0--or--later-blue.svg"></a>
+      <img alt="Platform Enigma2" src="https://img.shields.io/badge/Platform-Enigma2-orange.svg">
+      <img alt="Top language" src="https://img.shields.io/github/languages/top/skyjet18/exteplayer3?style=flat">
+      <img alt="Architectures" src="https://img.shields.io/badge/arch-ARMv7%20%7C%20MIPS%20%7C%20AArch64%20%7C%20SH4-lightgrey.svg">
+    </td>
+  </tr>
+</table>
+</div>
 
 # Changes and notes since version 183 - generated by copilot during development
 
@@ -39,6 +95,7 @@
 - Reference: [command line](#-command-line-options), [stdin commands](#-stdin-commands),
   [JSON messages](#-json-messages), [environment variables](#-environment-variables),
   [build-time settings](#-build-time-settings), [exit codes](#-exit-codes)
+- [License](#-license)
 - [Credits](#-credits)
 
 ---
@@ -822,6 +879,10 @@ source preprocesses to the same code as before.
 | `main/exteplayer.c` | WMA, Vorbis, Opus and AMR always software decoded; `EPLAYER3_EXTENDED` reports `"trick":1`. |
 | Container/playback | `f<speed>`/`b<speed>` wind forwards and backwards on keyframes, `{"PLAYBACK_TRICK_END":{"dir":1}}` (`-1` backwards) when there is no keyframe beyond the last one; audio after a seek starts with the first video keyframe. |
 
+`exteplayer3_git.bb` builds it for `MACHINE` `dreamone` and `dreamtwo` (the
+define and `output/dream_video.c`), and so do the `aarch64` packages of the
+ipk release workflow.
+
 In this tree the build is only compiled and linked: `tests/run.sh` builds it
 on the host, the receiver behavior was tested in the OE-Alliance tree only.
 
@@ -980,7 +1041,8 @@ The BitBake recipe `exteplayer3_git.bb` compiles `main/`, `tools/`,
 sources and, except on SH4, `output/writer/mipsel/` with shell globs, so new
 source files there need no recipe change. The files of `container/`, of the
 top of `output/` and the SH4 writers are listed one by one (`container/container_ffmpeg.c` includes its
-helpers such as `output_pacing.c` and `cc_ffmpeg.c` itself). Other external
+helpers such as `output_pacing.c` and `cc_ffmpeg.c` itself); for `dreamone` and
+`dreamtwo` it adds `output/dream_video.c` and `-DHAVE_DREAMNEXTGEN`. Other external
 build recipes with explicit source lists must include new files such as
 `tools/pcm_export.c`.
 
@@ -1465,7 +1527,45 @@ The prebuilt packages in `ipk/` are of version 183 (see `ipk/README.md`).
 
 ---
 
+## 📜 License
+
+[![License: GPL v2 or later](https://img.shields.io/badge/License-GPL--2.0--or--later-blue.svg)](https://www.gnu.org/licenses/old-licenses/gpl-2.0.html)
+
+exteplayer3 is free software; you can redistribute it and/or modify it under
+the terms of the GNU General Public License as published by the Free Software
+Foundation; either version 2 of the License, or (at your option) any later
+version. See [LICENSE](LICENSE) for the full text. Files without a notice of
+their own are under this license as well (the recipe declares
+`GPL-2.0-or-later`).
+
+| Part | License | Origin |
+|---|---|---|
+| `main/`, `container/`, `manager/`, `playback/`, `output/`, `tools/`, `include/`, `external/plugins/` | GPL-2.0-or-later | exteplayer3 (samsamsam), based on libeplayer3 |
+| `tools/hevc_hdr.c` | GPL-2.0-or-later | C port of BlackHole/enigma2 `lib/service/hevc_hdr.cpp` (OpenBH contributors) |
+| `external/ffmpeg/src/` | LGPL-2.1-or-later | FFmpeg (bitstream reader, LATM, MPEG-4 audio, Xiph helpers) |
+| `external/flv2mpeg4/` | LGPL-2.1-or-later | flv2mpeg4, vixy project |
+| `include/stm_ioctls.h` | © STMicroelectronics 2005, all rights reserved (no license notice) | LinuxDVB API extensions of the STMicroelectronics SH4 driver |
+
+FFmpeg itself is not part of this repository; the player links the FFmpeg
+of the image or of the package (see [FFmpeg companions](#-ffmpeg-companions)),
+which keeps its own license.
+
+---
+
 ## 🙏 Credits
+
+**👨‍💻 Original author:** exteplayer3 was created by
+<a href="https://gitlab.com/e2i/e2iplayer">**samsamsam**</a> as the player of
+E2iPlayer (first public sources: version 24, April 2016, the first commits
+of this history), built on libeplayer3 of the Enigma2 SH4 projects and on
+FFmpeg. Thanks to samsamsam for the original program! His later versions are
+closed source.
+
+**Maintainer:** skyjet18. The trees of
+[OE-Alliance](https://github.com/oe-alliance/exteplayer3),
+[OpenViX](https://github.com/OpenViX/exteplayer3) and
+[OpenBH](https://github.com/BlackHole/exteplayer3) continue samsamsam's
+player as well; this one has gone its own way since 2019.
 
 Several features and fixes merged since 185 were ported from other
 exteplayer3 trees and Enigma2 projects. Thanks to their authors:

@@ -13,8 +13,33 @@ DEPENDS = "${EXTEPLAYER3_FFMPEG}"
 inherit gitpkgv pkgconfig
 
 SRCREV = "${AUTOREV}"
-PV = "186+git${SRCPV}"
-PKGV = "186+git${GITPKGV}"
+
+# The version of the package is the version of the player: the number of its
+# EPLAYER3_EXTENDED start message in main/exteplayer.c, read when the
+# package is made (as GITPKGV, the source is there then), with the same rule
+# as the ipk release workflow, so a new version needs no change here. While
+# the recipe is parsed the source is not there yet: 0.
+def exteplayer3_version(d):
+    import os
+    import re
+    try:
+        with open(os.path.join(d.getVar('S'), 'main', 'exteplayer.c'), encoding='utf-8', errors='replace') as f:
+            src = f.read()
+    except OSError:
+        return '0'
+    m = re.search(r'EPLAYER3_EXTENDED[^\n]*version', src)
+    if not m:
+        return '0'
+    end = src.find(';', m.start())
+    v = re.search(r'",\s*(\d+)\s*[,)]', src[m.start():end if end >= 0 else len(src)])
+    return v.group(1) if v else '0'
+
+EXTEPLAYER3_VERSION = "${@exteplayer3_version(d)}"
+# not part of the task signatures (it differs between parsing and packaging)
+EXTEPLAYER3_VERSION[vardepvalue] = ""
+
+PV = "git${SRCPV}"
+PKGV = "${EXTEPLAYER3_VERSION}+git${GITPKGV}"
 
 SRC_URI = "git://github.com/skyjet18/exteplayer3.git;branch=master;protocol=https;destsuffix=git"
 
@@ -46,6 +71,14 @@ output/writer/sh4/wmv.c ", " \
 output/linuxdvb_mipsel.c \
 output/writer/mipsel/*.c ", d)}"
 
+# Dreambox One/Two (Amlogic): video through the DreamNextGen backend, as
+# OE-Alliance builds it for these machines (--enable-dreamnextgen)
+EXTEPLAYER3_DEFS ?= ""
+EXTEPLAYER3_DEFS:dreamone = "-DHAVE_DREAMNEXTGEN"
+EXTEPLAYER3_DEFS:dreamtwo = "-DHAVE_DREAMNEXTGEN"
+SOURCE_FILES:append:dreamone = " output/dream_video.c"
+SOURCE_FILES:append:dreamtwo = " output/dream_video.c"
+
 FFMPEG_LIBS = "libavformat libavcodec libswresample libswscale libavutil"
 
 do_compile() {
@@ -58,6 +91,7 @@ do_compile() {
     # linux/dvb/audio.h has AUDIO_GET_PTS up to Linux 4.17 only
     ${CC} ${CFLAGS} ${CPPFLAGS} ${LDFLAGS} $FFMPEG_LDFLAGS \
         -D_FILE_OFFSET_BITS=64 -D_LARGEFILE64_SOURCE -D_LARGEFILE_SOURCE -DHAVE_FLV2MPEG4_CONVERTER \
+        ${EXTEPLAYER3_DEFS} \
         "-DAUDIO_GET_PTS=_IOR('o', 19, __u64)" \
         -I${S}/include -I${S}/external -I${S}/external/flv2mpeg4 \
         $(pkg-config --cflags ${FFMPEG_LIBS}) \
