@@ -1285,7 +1285,8 @@ receivers keep waiting for the device before writing.
 receivers whose devices accept everything so that picture and sound run too
 fast. Unset, empty, `0` or negative leaves it off (the default, on every
 receiver). A positive value holds each video and audio chunk before its write
-until its PTS is at most `<ms>` ahead of real time (audio 500 ms more);
+until its PTS (for video its DTS, which grows in decoding order while the PTS
+of B-frames goes back and forth) is at most `<ms>` ahead of real time (audio 500 ms more);
 subtitles are not held. The clock is anchored at the first chunk, stands during a pause, and is
 anchored again after a seek, after a PTS jump of a stream (more than 2 s back
 or 10 s forward), and when a chunk is more than 2 s beyond the lead or 10 s
@@ -1684,6 +1685,8 @@ also in OpenViX/exteplayer3)
   (Atto Pixel).
 - Opt-in: up to 12 LPCM frames per PES packet (`EP3_LPCM_FRAMES`):
   [4688e0e](https://github.com/OpenVu/exteplayer3/commit/4688e0e).
+- The output pacing of video by the DTS instead of the PTS:
+  [3a8f39c](https://github.com/OpenVu/exteplayer3/commit/3a8f39c).
 
 **boingbasti** ([boingbasti/e2-serviceapp-vti](https://github.com/boingbasti/e2-serviceapp-vti),
 `exteplayer3-build/src`)
