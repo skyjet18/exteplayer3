@@ -1,0 +1,10 @@
+# Line ends: every text file is stored with LF, also when it is committed
+# from Windows (Git converts CRLF on commit); .github/workflows/normalize.yml
+# converts what came in before this file or past it.
+* text=auto eol=lf
+
+# never converted
+*.ipk binary
+*.png binary
+*.jpg binary
+*.pyc binary
