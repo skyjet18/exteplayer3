@@ -1590,6 +1590,27 @@ also in OpenViX/exteplayer3)
   [a8529b0](https://github.com/BlackHole/exteplayer3/commit/a8529b0).
 - DD+ passthrough restart on VU+ Ultimo 4K / Duo 4K SE (#24):
   [4ad6f5a](https://github.com/BlackHole/exteplayer3/commit/4ad6f5a).
+- The idea of the Dolby Atmos (JOC) detection in the track messages (#19):
+  [7e399e8](https://github.com/BlackHole/exteplayer3/commit/7e399e8)
+  (OpenViX c319e03).
+- DD+ passthrough kept running on a DD+ -> DD+ audio switch (#41), own
+  implementation: [02397bd](https://github.com/BlackHole/exteplayer3/commit/02397bd)
+  (OpenViX 7f0c56b).
+- DTS-HD mode on the Ultimo 4K and Duo 4K SE, the model list (#73):
+  [b6213a8](https://github.com/BlackHole/exteplayer3/commit/b6213a8)
+  (OpenViX 10e6e62).
+- The E-AC-3 encoder in the FFmpeg of the ipk packages (#60), as in
+  oe-alliance-core [d87d3cc](https://github.com/oe-alliance/oe-alliance-core/commit/d87d3cc)
+  and [e44beaa](https://github.com/oe-alliance/oe-alliance-core/commit/e44beaa).
+
+**OE-Alliance** ([oe-alliance/exteplayer3](https://github.com/oe-alliance/exteplayer3))
+
+- The DreamNextGen backend for the Dreambox One/Two (#37): 21 commits from
+  [8b605e1](https://github.com/oe-alliance/exteplayer3/commit/8b605e1) to
+  [71dc342](https://github.com/oe-alliance/exteplayer3/commit/71dc342), in the
+  state of [2f850bd](https://github.com/oe-alliance/exteplayer3/commit/2f850bd).
+- The video track for enigma2 on `/var/run/video.socket` (#36):
+  [36d6726](https://github.com/oe-alliance/exteplayer3/commit/36d6726).
 
 **OpenVu** ([OpenVu/exteplayer3](https://github.com/OpenVu/exteplayer3))
 
@@ -1608,3 +1629,22 @@ also in OpenViX/exteplayer3)
 - The case of audio and video that count from timestamp origins hours apart,
   found and analysed there (#13 solves it differently):
   [8c3cb3c](https://github.com/boingbasti/e2-serviceapp-vti/commit/8c3cb3c).
+
+**Blacker91** ([Blacker91/exteplayer3-dreamos](https://github.com/Blacker91/exteplayer3-dreamos),
+the DreamOS build; taken over here directly)
+
+- Live streams: hold the output at the start until audio is buffered,
+  keep watching the audio buffer after it, shorter hold:
+  [c374e6c](https://github.com/skyjet18/exteplayer3/commit/c374e6cf),
+  [195117c](https://github.com/skyjet18/exteplayer3/commit/195117cf),
+  [1c0154f](https://github.com/skyjet18/exteplayer3/commit/1c0154fb).
+- Dreambox: VP9 in 32 kB PES chunks:
+  [6afa655](https://github.com/skyjet18/exteplayer3/commit/6afa6558).
+- MP2 audio as `AUDIOTYPE_MPEG` like enigma2 live TV:
+  [dfae547](https://github.com/skyjet18/exteplayer3/commit/dfae5478).
+- H.264: no avcC SPS/PPS in front of a stream that carries its own:
+  [f1d9327](https://github.com/skyjet18/exteplayer3/commit/f1d9327b).
+- H.264/H.265: up to 1024 iovecs per frame:
+  [b05c2c7](https://github.com/skyjet18/exteplayer3/commit/b05c2c7a).
+- musl: `fileno()` instead of the glibc FILE internal `_fileno`:
+  [b5e3e72](https://github.com/skyjet18/exteplayer3/commit/b5e3e729).
