@@ -1300,6 +1300,9 @@ are untested here; they are meant for testers of such receivers:
 - `EP3_HISI_AV_SYNC=1`: the hardware A/V sync of the playback
   (`AUDIO_SET_AV_SYNC`) also for streams that are not DASH; otherwise only
   DASH gets it, as on other receivers.
+- `EP3_HISI_NO_CLEAR=1`: no `VIDEO_CLEAR_BUFFER` / `AUDIO_CLEAR_BUFFER` when
+  the devices are opened and when the video starts; the clears of a seek, a
+  track switch or a stop stay.
 
 ---
 
@@ -1325,7 +1328,9 @@ provider/SSAI behavior. Before deployment, check on representative receivers:
   `-b` playback that does not stall, and `EP3_OUTPUT_PACING_MS` on a receiver
   that plays too fast: speed, lip sync, pause, seek and trick play. The
   opt-in switches have not run on any receiver: `EP3_HISI_AV_SYNC` (lip sync
-  of HLS, TS and MP4 with it, also after seeks and audio switches).
+  of HLS, TS and MP4 with it, also after seeks and audio switches),
+  `EP3_HISI_NO_CLEAR` (start of the picture and sound, no old picture of an
+  earlier playback).
 - A source whose audio and video count from different origins (first
   timestamps more than 60 seconds apart): audible audio and its lip sync.
 - The DTS-HD bypass mode has been checked on one receiver only (VU+ Uno 4K
@@ -1524,6 +1529,7 @@ The version number does not change with every feature: keys added after a releas
 | `EP3_EAC3_RESTART` | DD+ passthrough restart, see [DD+ passthrough restart](#-dd-passthrough-restart-on-vu-ultimo-4k-and-duo-4k-se) |
 | `EP3_OUTPUT_PACING_MS` | software playback clock, see [HiSilicon receivers](#-hisilicon-receivers) |
 | `EP3_HISI_AV_SYNC` | HiSilicon only, `1`: hardware A/V sync also for streams that are not DASH, see [HiSilicon receivers](#-hisilicon-receivers) |
+| `EP3_HISI_NO_CLEAR` | HiSilicon only, `1`: no decoder buffer clears at the open and the video start |
 | `SSL_CERT_FILE`, `SSL_CERT_DIR`, `EP3_CA_FILES`, `EP3_CA_DEFAULT_FILE` | CA certificates, see [HTTPS](#-https-ca-certificates) |
 | `EP3_FAKE_AUDIO_CLOCK=<ms>` | host build (`tests/build.sh`) only: without video, the fake output reports the position of an audio decoder that plays in real time and stands for `<ms>` after a clear |
 | `EP3_FAKE_VIDEO_LEAD=<ms>` | host build only: the fake video decoder holds up to `<ms>` of video ahead of what it shows, as receiver decoders do |
@@ -1657,6 +1663,11 @@ also in OpenViX/exteplayer3)
 - HiSilicon, opt-in: hardware A/V sync also for streams that are not DASH
   (`EP3_HISI_AV_SYNC`):
   [e82045e](https://github.com/OpenVu/exteplayer3/commit/e82045e).
+- HiSilicon, opt-in: no decoder buffer clears at the start
+  (`EP3_HISI_NO_CLEAR`):
+  [e2919c1](https://github.com/OpenVu/exteplayer3/commit/e2919c1), as also in
+  [leandrotsampa/exteplayer3 08284a5](https://github.com/leandrotsampa/exteplayer3/commit/08284a5)
+  (Atto Pixel).
 
 **boingbasti** ([boingbasti/e2-serviceapp-vti](https://github.com/boingbasti/e2-serviceapp-vti),
 `exteplayer3-build/src`)

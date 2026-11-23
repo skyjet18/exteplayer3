@@ -549,6 +549,15 @@ static bool LinuxDvbHisiOptIn(const char *name)
     return env && env[0] == '1' && env[1] == '\0' && STB_HISILICON == GetSTBType();
 }
 
+/* EP3_HISI_NO_CLEAR=1: no VIDEO/AUDIO_CLEAR_BUFFER when the devices are
+ * opened and when the video starts (OpenVu/exteplayer3 e2919c1,
+ * leandrotsampa/exteplayer3 08284a5); the clears of a seek, a switch or a
+ * stop stay. */
+static bool LinuxDvbSkipStartClear(void)
+{
+    return LinuxDvbHisiOptIn("EP3_HISI_NO_CLEAR");
+}
+
 /* The caller owns LinuxDVBmutex. */
 static int LinuxDvbApplyAVSync(Context_t *context)
 {
@@ -887,8 +896,8 @@ int LinuxDvbOpen(Context_t  *context __attribute__((unused)), char *type)
             linuxdvb_err("failed to open %s - errno %d, %s\n", VIDEODEV, errno, strerror(errno));
             return cERR_LINUXDVB_ERROR;
         }
- 
-        if (ioctl( videofd, VIDEO_CLEAR_BUFFER) == -1)
+
+        if (!LinuxDvbSkipStartClear() && ioctl( videofd, VIDEO_CLEAR_BUFFER) == -1)
         {
             linuxdvb_err("VIDEO_CLEAR_BUFFER: ERROR %d, %s\n", errno, strerror(errno));
         }
@@ -922,7 +931,7 @@ int LinuxDvbOpen(Context_t  *context __attribute__((unused)), char *type)
             return cERR_LINUXDVB_ERROR;
         }
 
-        if (ioctl( audiofd, AUDIO_CLEAR_BUFFER) == -1)
+        if (!LinuxDvbSkipStartClear() && ioctl( audiofd, AUDIO_CLEAR_BUFFER) == -1)
         {
             linuxdvb_err("AUDIO_CLEAR_BUFFER: ERROR %d, %s\n", errno, strerror(errno));
         }
@@ -1083,8 +1092,8 @@ int LinuxDvbPlay(Context_t  *context, char *type) {
         {
             linuxdvb_err("VIDEO_CONTINUE: ERROR %d, %s\n", errno, strerror(errno));
         }
-        
-        if (ioctl( videofd, VIDEO_CLEAR_BUFFER) == -1)
+
+        if (!LinuxDvbSkipStartClear() && ioctl( videofd, VIDEO_CLEAR_BUFFER) == -1)
         {
             linuxdvb_err("VIDEO_CLEAR_BUFFER: ERROR %d, %s\n", errno, strerror(errno));
         }

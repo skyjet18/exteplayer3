@@ -396,6 +396,47 @@ static void hisilicon_av_sync(Context_t *context, PlaybackHandler_t *playback)
     unsetenv("EP3_HISI_AV_SYNC");
 }
 
+/* EP3_HISI_NO_CLEAR=1: on a HiSilicon receiver no VIDEO/AUDIO_CLEAR_BUFFER
+ * when the devices are opened; off or on other receivers the clears stay. */
+static void hisilicon_no_clear(Context_t *context)
+{
+    int saved_video = videofd, saved_audio = audiofd;
+    bool saved_buffered = isBufferedOutput;
+    int on;
+
+    isBufferedOutput = false;
+    failing_request = 0;
+    stb_type = STB_HISILICON;
+    for (on = 0; on <= 1; on++)
+    {
+        if (on)
+            setenv("EP3_HISI_NO_CLEAR", "1", 1);
+        else
+            unsetenv("EP3_HISI_NO_CLEAR");
+        videofd = audiofd = -1;
+        opens = 0;
+        succeed_at = 1;
+        request_count = 0;
+        assert(!LinuxDvbOpen(context, "video"));
+        assert((requests[0] == VIDEO_CLEAR_BUFFER) == !on);
+        assert(requests[on ? 0 : 1] == VIDEO_SELECT_SOURCE);
+        request_count = 0;
+        assert(!LinuxDvbOpen(context, "audio"));
+        assert((requests[0] == AUDIO_CLEAR_BUFFER) == !on);
+        assert(requests[on ? 0 : 1] == AUDIO_SELECT_SOURCE);
+    }
+    stb_type = STB_VUPLUS;
+    videofd = -1;
+    opens = 0;
+    request_count = 0;
+    assert(!LinuxDvbOpen(context, "video") && requests[0] == VIDEO_CLEAR_BUFFER);
+    unsetenv("EP3_HISI_NO_CLEAR");
+    succeed_at = 0;
+    videofd = saved_video;
+    audiofd = saved_audio;
+    isBufferedOutput = saved_buffered;
+}
+
 int main(void)
 {
     Context_t context = {0};
@@ -485,6 +526,7 @@ int main(void)
     writer_without_reset(&context, &managers);
     position_within_the_written_data(&context, &managers);
     hisilicon_av_sync(&context, &playback);
+    hisilicon_no_clear(&context);
     pthread_mutex_destroy(&LinuxDVBmutex);
     return 0;
 }
