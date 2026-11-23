@@ -198,6 +198,57 @@ static void epoch_preserve_timeline(void)
     assert(pts_clock_update(&clock, 0, &epoch_video, 900000 + SECONDS(600), 6) == SECONDS(600));
 }
 
+/* Server-side ad insertion with separate renditions: audio and video jump
+ * to a new origin at the same media time, but the audio gets there 1 s of
+ * media earlier (its segments were read ahead after a late video segment).
+ * The audio kept running: it continues from its own timestamps. Anchored to
+ * where the video is at that moment, it would lag 1 s from then on. A track
+ * whose packets stopped for 2 s or more is anchored to the other one. */
+static void ssai_jump_while_running(void)
+{
+    static int video, audio;
+    const int64_t base = 900000, later = HOURS(1);
+    PtsClock clock = {0};
+    int64_t now = 0, v = 0, a = 0;
+    int i, k;
+
+    /* in step, the A/V delta locks (between -1 frame and 0: it is measured
+     * when either track has just been read) */
+    for (i = 0; i < 200; i++)
+    {
+        now += 40000;
+        assert(pts_clock_update(&clock, 0, &video, base + i * 3600, now) == i * 3600);
+        assert(pts_clock_update(&clock, 1, &audio, base + i * 3600, now + 1) == i * 3600);
+    }
+    assert(clock.delta_locked && clock.delta <= 0 && clock.delta >= -3600);
+    /* a video segment comes 1 s late: 1 s of audio alone */
+    for (i = 200; i < 225; i++)
+    {
+        now += 40000;
+        assert(pts_clock_update(&clock, 1, &audio, base + i * 3600, now) == i * 3600);
+    }
+    /* then the video from where it stopped, the audio 25 frames ahead; the
+     * new origin starts at frame 240 for both */
+    for (k = 0; k <= 70; k++)
+    {
+        int vf = 200 + k, af = 225 + k;
+        now += 40000;
+        v = pts_clock_update(&clock, 0, &video, (vf >= 240 ? later : 0) + base + vf * 3600, now);
+        a = pts_clock_update(&clock, 1, &audio, (af >= 240 ? later : 0) + base + af * 3600, now + 1);
+        assert(v == vf * 3600);
+        assert(a == af * 3600);
+    }
+    /* the audio stops for 3 s and comes back from yet another origin: it
+     * is anchored to the video with the learned delta */
+    for (i = 0; i < 75; i++)
+    {
+        now += 40000;
+        v = pts_clock_update(&clock, 0, &video, later + base + (271 + i) * 3600, now);
+    }
+    a = pts_clock_update(&clock, 1, &audio, HOURS(5), now + 1);
+    assert(a == clock.track[0].corrected + clock.delta);
+}
+
 int main(void)
 {
     PtsClock clock = {0};
@@ -277,5 +328,6 @@ int main(void)
     epoch_wrap();
     epoch_single_track();
     epoch_preserve_timeline();
+    ssai_jump_while_running();
     return 0;
 }
