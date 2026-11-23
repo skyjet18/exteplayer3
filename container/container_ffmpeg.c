@@ -3633,7 +3633,11 @@ static void FFMPEGThread(Context_t *context)
                     }
 
                     ls_on_video(context, pts);
-                    if (Write(context->output->video->Write, context, &avOut, pts) < 0)
+                    /* the output pacing (EP3_OUTPUT_PACING_MS) goes by the DTS:
+                     * it grows with every frame in decoding order, the PTS of
+                     * B-frames goes back and forth */
+                    if (Write(context->output->video->Write, context, &avOut,
+                              dts != INVALID_PTS_VALUE ? dts : pts) < 0)
                     {
                         ffmpeg_err("writing data to video device failed\n");
                     }
