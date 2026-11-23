@@ -769,6 +769,25 @@ void stereo_software_decoder_set(const int32_t val)
     stereo_software_decoder = val;
 }
 
+/* The PCM writers take at most 8 channels (lpcm.c refuses more). A decoded
+ * source with more, AC-4 7.1.4 has 12, is mixed down to 7.1. */
+#define PCM_MAX_CHANNELS 8
+
+static int32_t pcm_out_channels(const int32_t in_channels)
+{
+    return in_channels > PCM_MAX_CHANNELS ? PCM_MAX_CHANNELS : in_channels;
+}
+
+/* For S16 output swresample scales a downmix matrix until no output can
+ * clip (rematrix_maxval 1.0). With the four height channels folded in that
+ * costs 5 dB on 7.1 and up to 12 dB on stereo (-s) against the source;
+ * 3.0 keeps the level of the AC-4 7.1.4 samples of the FFmpeg test suite
+ * without a clipped sample. Fewer channels keep the swresample default. */
+static double pcm_rematrix_maxval(const int32_t in_channels)
+{
+    return in_channels > PCM_MAX_CHANNELS ? 3.0 : 0.0;
+}
+
 void pcm_audio_channel_set(const int32_t val)
 {
     pcm_audio_channel = val;
@@ -962,6 +981,11 @@ static char* Codec2Encoding(int32_t codec_id, int32_t media_type, uint8_t *extra
         return "A_IPCM";
     case AV_CODEC_ID_MLP:
         return "A_IPCM";
+#if LIBAVCODEC_VERSION_INT >= AV_VERSION_INT(60, 21, 100)
+    /* no receiver decodes AC-4: always the software decoder */
+    case AV_CODEC_ID_AC4:
+        return "A_IPCM";
+#endif
     case AV_CODEC_ID_RA_144:
         return "A_IPCM";
     case AV_CODEC_ID_RA_288:
@@ -3937,12 +3961,20 @@ static void FFMPEGThread(Context_t *context)
                                 downmix = 1;
                             }
 #endif
+                            int32_t in_channels = out_channels;
+                            double rematrix_maxval = pcm_rematrix_maxval(in_channels);
 
 #if HAVE_CH_LAYOUT
                             if(downmix)
                             {
                                 av_channel_layout_default(&out_channel_layout, 2);
                                 out_channels = 2;
+                            }
+                            else if (pcm_out_channels(in_channels) != in_channels)
+                            {
+                                out_channels = pcm_out_channels(in_channels);
+                                av_channel_layout_uninit(&out_channel_layout);
+                                av_channel_layout_default(&out_channel_layout, out_channels);
                             }
 
                             av_opt_set_chlayout(swr, "in_chlayout", &c->ch_layout,	0);
@@ -3953,10 +3985,23 @@ static void FFMPEGThread(Context_t *context)
                                 out_channel_layout = AV_CH_LAYOUT_STEREO_DOWNMIX;
                                 out_channels = 2;
                             }
+                            else if (pcm_out_channels(in_channels) != in_channels)
+                            {
+                                out_channels = pcm_out_channels(in_channels);
+                                out_channel_layout = av_get_default_channel_layout(out_channels);
+                            }
 
                             av_opt_set_int(swr, "in_channel_layout",    c->channel_layout,	0);
                             av_opt_set_int(swr, "out_channel_layout",   out_channel_layout,	0);
 #endif
+                            if (out_channels != in_channels)
+                            {
+                                ffmpeg_printf(10, "PCM: %d channels mixed down to %d\n", in_channels, out_channels);
+                            }
+                            if (rematrix_maxval > 0)
+                            {
+                                av_opt_set_double(swr, "rematrix_maxval", rematrix_maxval, 0);
+                            }
                             av_opt_set_int(swr, "in_sample_rate",		c->sample_rate,		0);
                             av_opt_set_int(swr, "out_sample_rate",		out_sample_rate,	0);
                             av_opt_set_int(swr, "in_sample_fmt",		c->sample_fmt,		0);
