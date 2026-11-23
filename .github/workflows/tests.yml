@@ -17,20 +17,31 @@ name: Tests
 # Results: the "Summary" page of a run has one table per job; the logs of
 # every test are attached to the run as artifacts ("logs-ffmpeg-...").
 # The scripts are in .github/tests/.
+#
+# Single tests by hand: Actions -> Tests -> Run workflow, "tests" = step ids
+# from the result table, comma separated (e.g. hls_switch-timing, or
+# hls_switch for all its modes, ffmpeg for the companion tests). Only the
+# host player variants those tests need are built. Pushes and pull requests
+# always run everything.
 
 on:
   push:
     branches: [master]
   pull_request:
   workflow_dispatch:
+    inputs:
+      tests:
+        description: 'Only these tests: step ids, comma separated (e.g. integration,hls_switch-timing; hls_switch = all its modes; ffmpeg = the FFmpeg companion tests). Empty = all.'
+        default: ''
 
 # read access to the repository is all this needs
 permissions:
   contents: read
 
-# a newer push to the same branch / pull request cancels the older run
+# a newer push to the same branch / pull request cancels the older run; a run
+# of single tests by hand cancels only a run of the same selection
 concurrency:
-  group: tests-${{ github.event.pull_request.number || github.ref }}
+  group: tests-${{ github.event.pull_request.number || github.ref }}-${{ github.event_name == 'workflow_dispatch' && inputs.tests || 'all' }}
   cancel-in-progress: true
 
 jobs:
@@ -121,12 +132,30 @@ jobs:
         echo "FFmpeg ${{ matrix.ffmpeg }}: \`$FFMPEG_REPO\` \`$FFMPEG_BRANCH\` at \`$SHA\` ($HIT), configure \`$FFMPEG_CONFIGURE\`" >> "$GITHUB_STEP_SUMMARY"
 
     - name: Host tests of exteplayer3
+      env:
+        TESTS: ${{ github.event_name == 'workflow_dispatch' && inputs.tests || '' }}
+        TESTS_RAN: ${{ runner.temp }}/tests-ran.txt
       run: bash .github/tests/run-host-tests.sh . "$RUNNER_TEMP/host-tests" "FFmpeg ${{ matrix.ffmpeg }}"
 
     # also when the player tests failed
     - name: Companion tests of the FFmpeg tree
       if: ${{ !cancelled() }}
+      env:
+        TESTS: ${{ github.event_name == 'workflow_dispatch' && inputs.tests || '' }}
+        TESTS_RAN: ${{ runner.temp }}/tests-ran.txt
       run: bash .github/tests/run-ffmpeg-tests.sh "$RUNNER_TEMP/host-tests/logs/ffmpeg" "FFmpeg ${{ matrix.ffmpeg }}"
+
+    # a selection by hand that matches no test must not end green
+    - name: Selected tests ran
+      if: ${{ !cancelled() && github.event_name == 'workflow_dispatch' && inputs.tests != '' }}
+      env:
+        TESTS: ${{ inputs.tests }}
+      run: |
+        if [ ! -s "$RUNNER_TEMP/tests-ran.txt" ]; then
+          echo "::error::no test matches the selection \"$TESTS\" (step ids: see the result table of a full run)"
+          exit 1
+        fi
+        echo "Selected tests that ran: $(sort -u "$RUNNER_TEMP/tests-ran.txt" | tr '\n' ' ')" | tee -a "$GITHUB_STEP_SUMMARY"
 
     - name: Keep the logs
       if: ${{ !cancelled() }}

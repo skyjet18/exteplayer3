@@ -890,6 +890,13 @@ on the host, the receiver behavior was tested in the OE-Alliance tree only.
 
 ## 🧪 Native validation
 
+The workflow `Tests` runs all of these on every push and pull request, once
+with FFmpeg 6.1 and once with FFmpeg 9. Single tests can be run by hand:
+Actions → Tests → Run workflow, `tests` = step ids from its result table,
+comma separated (e.g. `hls_switch-timing`; `hls_switch` for all its modes,
+`ffmpeg` for the companion tests of the FFmpeg tree). Only the host player
+variants those tests need are built, so such a run takes minutes.
+
 Set `FFMPEG_SOURCE` to the companion source tree and `FFMPEG_BUILD` to its
 configured, built out-of-tree native directory:
 

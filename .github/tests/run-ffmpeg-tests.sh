@@ -15,10 +15,18 @@ LOGS=$(cd "$1" && pwd)
 TITLE=${2:-FFmpeg}
 failed=0
 rows=""
+# selected / test_ran: tests chosen by hand (TESTS, "ffmpeg" = all of these),
+# see select.sh
+. "$(dirname "$0")/select.sh"
 
 step() { # step <id> <seconds> <command...>
   local id=$1 tmo=$2 start=$SECONDS state rc
   shift 2
+  if ! selected "$id" ffmpeg; then
+    rows="$rows| $id | not run: not selected | |"$'\n'
+    return
+  fi
+  test_ran "$id"
   echo "::group::$id"
   echo "+ $*"
   (cd "$FFMPEG_BUILD" && timeout -k 10 "$tmo" "$@") 2>&1 | tee "$LOGS/$id.log"
