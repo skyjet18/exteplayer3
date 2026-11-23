@@ -1269,7 +1269,7 @@ every second, which finds a parent that ended before the signal was set up.
 A receiver counts as HiSilicon (`STB_HISILICON`) when, after the Dreambox and
 VU+ tests, the device-tree node `soc/hisilicon_clock` exists, or one of the
 vendor SDK paths `/proc/hisi`, `/dev/hi_mem`, `/dev/hi_dmx`,
-`/sys/module/hi_media` exists, or the first line of `/proc/stb/info/chipset`
+`/sys/module/hi_media` or the image's `/usr/bin/hihalt` exists, or the first line of `/proc/stb/info/chipset`
 starts with `hi3` or contains `hisi` (case-insensitive, e.g. `hi3798mv200`).
 Before, only the device-tree node was tested and other HiSilicon receivers
 were treated as generic, without the HiSilicon handling of AAC, MJPEG, VP9
@@ -1716,3 +1716,8 @@ the DreamOS build; taken over here directly)
   (Matroska over HTTP: the start time came from an audio block, the keyframe
   was dropped) is played instead of dropped (#83):
   [bb73bc8](https://github.com/Blacker91/exteplayer3-dreamos/commit/bb73bc8).
+
+**OpenVisionE2 / WXbet** ([OpenVisionE2/exteplayer3](https://github.com/OpenVisionE2/exteplayer3))
+
+- `/usr/bin/hihalt` as one more marker of a HiSilicon receiver:
+  [1985757](https://github.com/OpenVisionE2/exteplayer3/commit/19857571).
