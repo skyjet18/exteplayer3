@@ -715,5 +715,54 @@ int main(void)
         assert(!unprobed_stream_ended(gone));
         avformat_free_context(av);
     }
+    {
+        /* Dreambox: AC-3 and E-AC-3 that are not at 48 kHz go to AC3 at
+         * 48 kHz, unless EP3_AC3_48K=0; other boxes, 48 kHz, other codecs
+         * and AC-3 decoded in software are left as they are. */
+        AVFormatContext *av = avformat_alloc_context();
+        AVStream *s;
+        const int ac3 = audio_transcode_caps() & AUDIO_XCODE_AC3;
+        assert(av);
+        s = avformat_new_stream(av, NULL);
+        assert(s);
+        s->codecpar->codec_type = AVMEDIA_TYPE_AUDIO;
+        unsetenv("EP3_AC3_48K");
+
+        stb_type = STB_DREAMBOX;
+        s->codecpar->codec_id = AV_CODEC_ID_AC3;
+        s->codecpar->sample_rate = 44100;
+        assert(AudioTranscoderAc3To48k(s, "A_AC3"));
+        assert(AudioTranscoderTarget(s, "A_AC3") == ac3);
+        assert(!AudioTranscoderAc3To48k(s, "A_IPCM"));
+        assert(!AudioTranscoderTarget(s, "A_IPCM"));
+        s->codecpar->codec_id = AV_CODEC_ID_EAC3;
+        s->codecpar->sample_rate = 32000;
+        assert(AudioTranscoderAc3To48k(s, "A_EAC3"));
+        assert(AudioTranscoderTarget(s, "A_EAC3") == ac3);
+        s->codecpar->sample_rate = 48000;
+        assert(!AudioTranscoderAc3To48k(s, "A_EAC3"));
+        assert(!AudioTranscoderTarget(s, "A_EAC3"));
+        s->codecpar->sample_rate = 0;
+        assert(!AudioTranscoderAc3To48k(s, "A_EAC3"));
+        s->codecpar->codec_id = AV_CODEC_ID_AAC;
+        s->codecpar->sample_rate = 44100;
+        assert(!AudioTranscoderAc3To48k(s, "A_AAC"));
+
+        s->codecpar->codec_id = AV_CODEC_ID_AC3;
+        setenv("EP3_AC3_48K", "0", 1);
+        assert(!AudioTranscoderAc3To48k(s, "A_AC3"));
+        assert(!AudioTranscoderTarget(s, "A_AC3"));
+        setenv("EP3_AC3_48K", "1", 1);
+        assert(AudioTranscoderAc3To48k(s, "A_AC3"));
+        unsetenv("EP3_AC3_48K");
+
+        stb_type = STB_OTHER;
+        assert(!AudioTranscoderAc3To48k(s, "A_AC3"));
+        assert(!AudioTranscoderTarget(s, "A_AC3"));
+        stb_type = STB_VUPLUS;
+        assert(!AudioTranscoderAc3To48k(s, "A_AC3"));
+        stb_type = STB_OTHER;
+        avformat_free_context(av);
+    }
     return 0;
 }

@@ -2534,6 +2534,26 @@ static int AudioTranscoderIsHEAAC(AVStream *stream)
     return 0;
 }
 
+/* Dreambox: AC-3 or E-AC-3 at a rate other than 48 kHz (44.1 kHz in most
+ * cases) that would go to the decoder of the box is encoded again to AC3
+ * 5.1 at 48 kHz. The box changes the rate of its HDMI output between
+ * 48 and 44.1 kHz with the stream, and soundbars and receivers on HDMI ARC
+ * stutter after that until the next seek, also at a clean start.
+ * EP3_AC3_48K=0 turns it off. As in Blacker91/exteplayer3-dreamos e1eef5a. */
+static int AudioTranscoderAc3To48k(AVStream *stream, const char *encoding)
+{
+    enum AVCodecID id = get_codecpar(stream)->codec_id;
+    const char *env;
+
+    if ((id != AV_CODEC_ID_AC3 && id != AV_CODEC_ID_EAC3) ||
+        (strcmp(encoding, "A_AC3") && strcmp(encoding, "A_EAC3")) ||
+        get_codecpar(stream)->sample_rate <= 0 || get_codecpar(stream)->sample_rate == 48000 ||
+        GetSTBType() != STB_DREAMBOX)
+        return 0;
+    env = getenv("EP3_AC3_48K");
+    return !env || strcmp(env, "0");
+}
+
 /* 0, or the codec the audio stream is to be encoded to */
 static int AudioTranscoderTarget(AVStream *stream, const char *encoding)
 {
@@ -2549,6 +2569,8 @@ static int AudioTranscoderTarget(AVStream *stream, const char *encoding)
         dolby = dts_ac3_transcode;
     else if (id == AV_CODEC_ID_TRUEHD || id == AV_CODEC_ID_MLP)
         dolby = truehd_ac3_transcode;
+    else if (AudioTranscoderAc3To48k(stream, encoding))
+        dolby = 1;
 
     if (dolby)
         /* AC3 also when E-AC-3 is asked for and its encoder is missing */

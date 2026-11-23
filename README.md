@@ -789,6 +789,15 @@ they differ by more than 200 ms. A failed setup or encoder is logged once
 or a seek; playback continues. Stereo downmix (`-s`) is not applied to
 transcoded tracks.
 
+On a Dreambox, AC-3 and E-AC-3 tracks at a sample rate other than 48 kHz
+(mostly 44.1 kHz) are encoded to AC-3 5.1 at 48 kHz without an option, when
+they would go to the receiver's decoder (not with `-3`/`-e` software decoding
+or `-K`) and an AC-3 encoder is available. The box switches the rate of its
+HDMI output between 48 and 44.1 kHz with the stream, and soundbars and AV
+receivers on HDMI ARC stutter after the switch until the next seek, also at a
+clean start. `EP3_AC3_48K=0` turns this off. Track JSON stays as described
+above (`e` is `A_AC3`/`A_EAC3`, `sr` the rate of the source).
+
 ---
 
 ## 🔑 CENC keys per KID
@@ -1535,6 +1544,7 @@ The version number does not change with every feature: keys added after a releas
 | `EP3_H264_LEVEL41` | H.264 SPS level limit |
 | `EP3_H264_CONSTRAINED_HIGH` | H.264 "Constrained High" flags of High profile SPS cleared (default on) |
 | `EP3_DTS_HD_MODE`, `EP3_DTS_PAD` | DTS-HD bypass mode, DTS core-frame padding |
+| `EP3_AC3_48K` | `0`: no AC-3 encoding of AC-3/E-AC-3 that is not at 48 kHz on a Dreambox, see [Optional audio transcoding](#-optional-audio-transcoding) |
 | `EP3_EAC3_RESTART` | DD+ passthrough restart, see [DD+ passthrough restart](#-dd-passthrough-restart-on-vu-ultimo-4k-and-duo-4k-se) |
 | `EP3_OUTPUT_PACING_MS` | software playback clock, see [HiSilicon receivers](#-hisilicon-receivers) |
 | `EP3_HISI_AV_SYNC` | HiSilicon only, `1`: hardware A/V sync also for streams that are not DASH, see [HiSilicon receivers](#-hisilicon-receivers) |
@@ -1722,6 +1732,9 @@ the DreamOS build; taken over here directly)
   (Matroska over HTTP: the start time came from an audio block, the keyframe
   was dropped) is played instead of dropped (#83):
   [bb73bc8](https://github.com/Blacker91/exteplayer3-dreamos/commit/bb73bc8).
+- AC-3 and E-AC-3 that are not at 48 kHz encoded to AC-3 at 48 kHz on a
+  Dreambox (`EP3_AC3_48K`):
+  [e1eef5a](https://github.com/Blacker91/exteplayer3-dreamos/commit/e1eef5a).
 
 **OpenVisionE2 / WXbet** ([OpenVisionE2/exteplayer3](https://github.com/OpenVisionE2/exteplayer3))
 
