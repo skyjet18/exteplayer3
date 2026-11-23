@@ -1,0 +1,76 @@
+name: Normalize
+
+# Keeps line ends and file modes of master clean by itself, as a commit of
+# its own after the push (nothing to do by hand):
+#   - text files with CRLF line ends get LF (.gitattributes already converts
+#     new commits; this catches files that came in before or past it);
+#   - *.sh files are executable, everything else is not, except *.py, which
+#     keep their mode (some are run directly, others with python3).
+# Binary files (Git's own test: a NUL byte in the first 8000 bytes) and
+# symbolic links are left alone. The commit is made with the GITHUB_TOKEN,
+# so it starts no further workflow runs.
+
+on:
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: normalize
+  cancel-in-progress: false
+
+jobs:
+  normalize:
+    name: Line ends and file modes
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+    - name: Check out this repository
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+    - name: Normalize
+      run: |
+        set -eu
+        # line ends of the text files
+        git ls-files -z | while IFS= read -r -d '' f; do
+          [ -f "$f" ] && [ ! -L "$f" ] || continue
+          grep -Iq . "$f" || continue
+          if grep -q $'\r$' "$f"; then
+            sed -i 's/\r$//' "$f"
+            echo "LF: $f"
+          fi
+        done
+        # file modes: *.sh executable, *.py as they are, the rest not
+        git ls-files -s | while read -r mode _ _ path; do
+          case "$path" in
+            *.sh)
+              if [ "$mode" = 100644 ]; then
+                git update-index --chmod=+x -- "$path"
+                echo "755: $path"
+              fi ;;
+            *.py) ;;
+            *)
+              if [ "$mode" = 100755 ]; then
+                git update-index --chmod=-x -- "$path"
+                echo "644: $path"
+              fi ;;
+          esac
+        done
+        git add -u
+        if git diff --cached --quiet; then
+          echo "nothing to normalize" >> "$GITHUB_STEP_SUMMARY"
+          exit 0
+        fi
+        {
+          echo "### Normalized"
+          echo '```'
+          git diff --cached --summary --stat
+          echo '```'
+        } >> "$GITHUB_STEP_SUMMARY"
+        git -c user.name="github-actions[bot]" \
+            -c user.email="41898299+github-actions[bot]@users.noreply.github.com" \
+            commit -q -m "normalize line ends and file modes"
+        git push origin HEAD:${GITHUB_REF_NAME}
