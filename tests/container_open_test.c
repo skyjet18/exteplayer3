@@ -7,6 +7,9 @@
 /* The container allocates through these: a countdown that reaches zero fails. */
 static int malloc_fails, strdup_fails, av_malloc_fails, context_fails;
 static void *av_block;
+/* the sizes the container asks malloc() for, while a case counts them */
+static size_t malloc_sizes[8];
+static int mallocs = 8;
 
 static int due(int *countdown)
 {
@@ -15,6 +18,8 @@ static int due(int *countdown)
 
 static void *test_malloc(size_t size)
 {
+    if (mallocs < 8)
+        malloc_sizes[mallocs++] = size;
     return due(&malloc_fails) ? NULL : malloc(size);
 }
 
@@ -96,6 +101,19 @@ static void rtmp_parameter_allocation_fails(void)
         assert(open_input(rtmp) == cERR_CONTAINER_FFMPEG_NOMEM && !avContextTab[0]);
     }
     assert(!__lsan_do_recoverable_leak_check());
+}
+
+/* conn, swfUrl and swfVfy take values of the uri with strcpy() and strcat():
+ * each buffer holds the whole uri with its terminating NUL. */
+static void rtmp_parameter_buffers_hold_the_uri(void)
+{
+    mallocs = 0;
+    malloc_fails = 3; /* the open ends at the third buffer */
+    assert(open_input(rtmp) == cERR_CONTAINER_FFMPEG_NOMEM && !avContextTab[0]);
+    assert(mallocs == 3);
+    for (int parameter = 0; parameter < 3; parameter++)
+        assert(malloc_sizes[parameter] == strlen(rtmp) + 1);
+    mallocs = 8; /* no more counting */
 }
 
 static void format_context_allocation_fails(void)
@@ -308,6 +326,7 @@ int main(void)
     rtmp_proto_impl = 1; /* the native rtmp protocol, which takes its parameters from the uri */
     rtmp_uri_allocation_fails();
     rtmp_parameter_allocation_fails();
+    rtmp_parameter_buffers_hold_the_uri();
     format_context_allocation_fails();
     missing_file_leaves_no_context();
     io_buffer_allocation_closes_the_file();

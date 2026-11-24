@@ -1791,3 +1791,5 @@ the DreamOS build; taken over here directly)
 - CENC KIDs and keys also as UUID and base64/base64url (ClearKey JSON), see
   [CENC keys per KID](#-cenc-keys-per-kid):
   [0c739c6](https://github.com/neutrino-images/ni-libstb-hal/commit/0c739c6).
+- The rtmp parameter buffers one byte short of the terminating NUL (GetAway):
+  [910f926](https://github.com/neutrino-images/ni-libstb-hal/commit/910f926db76cef5158048537f65c1d5cec84a53e).

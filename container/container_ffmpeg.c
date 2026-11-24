@@ -5065,9 +5065,13 @@ int32_t container_ffmpeg_init_av_context(Context_t *context, char *filename, uin
             // check if uri have additional params
             if (strtok(baseUri, " ") != NULL )
             {
-                char *conn = malloc(strlen(filename));
-                char *swfUrl = malloc(strlen(filename));
-                char *swfVfy = malloc(strlen(filename));
+                /* every value comes from the uri behind its first space: the
+                 * whole uri with its terminating NUL holds each of them, and
+                 * all conn values with the spaces between them */
+                size_t paramSize = strlen(filename) + 1;
+                char *conn = malloc(paramSize);
+                char *swfUrl = malloc(paramSize);
+                char *swfVfy = malloc(paramSize);
                 char *poseq, *key, *value;
                 if (!conn || !swfUrl || !swfVfy)
                 {
