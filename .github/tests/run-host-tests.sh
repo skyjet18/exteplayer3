@@ -199,6 +199,28 @@ else
   fi
 fi
 
+# ---- tests/chapters.py ------------------------------------------------------
+what="chapters (c_l, cl) of MKV/MP4/M4A/Ogg, seeks gf<seconds.ms> and ga<seconds>"
+if ! have tests/chapters.py; then
+  skip chapters "tests/chapters.py is not in this tree" "$what"
+else
+  selected chapters && player host
+  selected chapters-asan && player asan
+  if [[ $host = yes ]]; then
+    step chapters 600 "$what" \
+      python3 tests/chapters.py --player "$OUT/exteplayer3-host" --ffmpeg "$FF"
+  else
+    skip chapters "the host player did not build" "$what"
+  fi
+  if [[ $asan = yes ]]; then
+    step chapters-asan 900 "the same with the ASan + UBSan player" \
+      env ASAN_OPTIONS=detect_leaks=0 \
+      python3 tests/chapters.py --player "$OUT/exteplayer3-asan" --ffmpeg "$FF"
+  else
+    skip chapters-asan "the ASan player did not build" "the same with the ASan + UBSan player"
+  fi
+fi
+
 # ---- tests/hls_switch.py: the four modes the README lists ----------------
 if ! have tests/hls_switch.py; then
   skip hls_switch "tests/hls_switch.py is not in this tree" "HLS audio switching"

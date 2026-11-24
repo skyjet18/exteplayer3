@@ -158,6 +158,8 @@ static int64_t trickStartNs = 0;
 static int32_t trickMiss = 0;               /* seeks that found no keyframe beyond the last one */
 #endif
 static bool g_zero_seek = false;
+/* absolute seek on the first keyframe at or after the target (ga) */
+static bool g_seek_after = false;
 /* relative seek: the decoder position it counts from (90 kHz) and its offset */
 static int64_t g_seek_from_pts = INVALID_PTS_VALUE;
 static int64_t g_seek_offset_us = 0;
@@ -3142,6 +3144,7 @@ static void FFMPEGThread(Context_t *context)
     int64_t seek_target_seconds = 0;
     bool do_seek_target_seconds = false;
     bool zero_seek = false;
+    bool seek_after = false;
     int64_t seek_from_pts = INVALID_PTS_VALUE;
     int64_t seek_offset_us = 0;
     /* where reading has started: 0 or the last seek target, -1 unknown */
@@ -3257,6 +3260,7 @@ static void FFMPEGThread(Context_t *context)
             do_seek_target_seconds = g_do_seek_target_seconds;
             seek_target_seconds = g_seek_target_seconds;
             zero_seek = g_zero_seek;
+            seek_after = g_seek_after;
             seek_from_pts = g_seek_from_pts;
             seek_offset_us = g_seek_offset_us;
             g_do_seek_target_seconds = false;
@@ -3321,9 +3325,21 @@ static void FFMPEGThread(Context_t *context)
                             target_us = av_sat_add64(target_us, avContextTab[i]->start_time);
                         }
                         if (!(zero_seek && !use_custom_io[i] && avContextTab[i]->duration <= 0) &&
-                            (zero_seek || fast_http_ts_seek(avContextTab[i], relative_us) < 0))
+                            (zero_seek || seek_after || fast_http_ts_seek(avContextTab[i], relative_us) < 0))
                         {
-                            if (avformat_seek_file(avContextTab[i], -1, INT64_MIN, target_us, INT64_MAX, 0) < 0)
+                            /* ga: the first keyframe at or after the target (the
+                             * decoder of the box shows what it gets, from the
+                             * keyframe on); none there (the end): the one before */
+                            int seeked = -1;
+                            if (seek_after)
+                            {
+                                seeked = avformat_seek_file(avContextTab[i], -1, target_us, target_us, INT64_MAX, 0);
+                                if (seeked < 0)
+                                    ffmpeg_printf(10, "no keyframe after %"PRId64" us in context %u\n", target_us, i);
+                            }
+                            if (seeked < 0)
+                                seeked = avformat_seek_file(avContextTab[i], -1, INT64_MIN, target_us, INT64_MAX, 0);
+                            if (seeked < 0)
                                 ffmpeg_err("timestamp seek failed for context %u\n", i);
                             else if (zero_seek)
                             {
@@ -3352,6 +3368,7 @@ static void FFMPEGThread(Context_t *context)
             }
             do_seek_target_seconds = false;
             do_seek_target_bytes = false;
+            seek_after = false;
             if (OutputPacingLeadMs() > 0)
                 OutputPacingReset();
             
@@ -5629,6 +5646,111 @@ static void cover_export(void)
     E2iSendMsg("{\"cover\":{}}\n");
 }
 
+/* The chapters of the main input (avContextTab[0]) for c_l, taken at the
+ * open. The command loop reads them under their own lock: the container lock
+ * is held by the play thread while a read waits for the network. */
+static pthread_mutex_t chapters_mutex = PTHREAD_MUTEX_INITIALIZER;
+static ContainerChapter_t *chapters = NULL;
+static int32_t chaptersCount = 0;
+
+static int compare_chapters(const void *a, const void *b)
+{
+    const ContainerChapter_t *x = a;
+    const ContainerChapter_t *y = b;
+
+    if (x->start_ms != y->start_ms)
+        return x->start_ms < y->start_ms ? -1 : 1;
+    return x->index < y->index ? -1 : (x->index > y->index);
+}
+
+static void chapters_free(void)
+{
+    int32_t i;
+
+    pthread_mutex_lock(&chapters_mutex);
+    for (i = 0; i < chaptersCount; ++i)
+        free(chapters[i].title);
+    free(chapters);
+    chapters = NULL;
+    chaptersCount = 0;
+    pthread_mutex_unlock(&chapters_mutex);
+}
+
+/* A time of a chapter in ms from origin_us, the start of the input: the base
+ * of the positions (J) and of the absolute seeks (gf, ga), which add it to
+ * their target. Rounded down, so that ga<ms/1000> does not pass a keyframe
+ * at the start of the chapter; 0 for a time before the origin. */
+static int64_t chapter_ms(int64_t time, AVRational time_base, int64_t origin_us)
+{
+    int64_t us = av_rescale_q_rnd(time, time_base, AV_TIME_BASE_Q, AV_ROUND_DOWN);
+
+    us = av_sat_sub64(us, origin_us);
+    return us > 0 ? us / 1000 : 0;
+}
+
+/* Sorted by the start; the end of a chapter without one is its start. */
+static void chapters_take(const AVFormatContext *avContext)
+{
+    ContainerChapter_t *list = NULL;
+    int32_t count = 0;
+    unsigned int i;
+    int64_t origin_us;
+
+    chapters_free();
+    if (!avContext || !avContext->nb_chapters || !avContext->chapters)
+        return;
+    origin_us = avContext->start_time != AV_NOPTS_VALUE ? avContext->start_time : 0;
+    if (avContext->nb_chapters > INT32_MAX / sizeof(*list))
+        return;
+    list = calloc(avContext->nb_chapters, sizeof(*list));
+    if (!list)
+    {
+        ffmpeg_err("out of memory for %u chapters\n", avContext->nb_chapters);
+        return;
+    }
+    for (i = 0; i < avContext->nb_chapters; ++i)
+    {
+        const AVChapter *ch = avContext->chapters[i];
+        const AVDictionaryEntry *title;
+
+        if (!ch || ch->start == AV_NOPTS_VALUE || ch->time_base.num <= 0 || ch->time_base.den <= 0)
+            continue;
+        title = av_dict_get(ch->metadata, "title", NULL, 0);
+        list[count].title = strdup(title && title->value ? title->value : "");
+        if (!list[count].title)
+            break;
+        list[count].start_ms = chapter_ms(ch->start, ch->time_base, origin_us);
+        if (ch->end == AV_NOPTS_VALUE || ch->end < ch->start)
+            list[count].end_ms = list[count].start_ms;
+        else
+            list[count].end_ms = chapter_ms(ch->end, ch->time_base, origin_us);
+        list[count].index = (int32_t)i;
+        count += 1;
+    }
+    qsort(list, count, sizeof(*list), compare_chapters);
+    ffmpeg_printf(10, "%d chapters\n", count);
+
+    pthread_mutex_lock(&chapters_mutex);
+    chapters = list;
+    chaptersCount = count;
+    pthread_mutex_unlock(&chapters_mutex);
+}
+
+/* Calls fn for every chapter in the order of their start, under the lock of
+ * the chapters: fn must not take the container lock. Returns their number. */
+int32_t container_ffmpeg_chapters(void (*fn)(void *opaque, int32_t id, const ContainerChapter_t *chapter), void *opaque)
+{
+    int32_t i;
+    int32_t count;
+
+    pthread_mutex_lock(&chapters_mutex);
+    count = chaptersCount;
+    for (i = 0; fn && i < count; ++i)
+        fn(opaque, i, &chapters[i]);
+    pthread_mutex_unlock(&chapters_mutex);
+    return count;
+}
+
 int32_t container_ffmpeg_init(Context_t *context, PlayFiles_t *playFilesNames)
 {
     ffmpeg_printf(10, ">\n");
@@ -5704,6 +5826,8 @@ int32_t container_ffmpeg_init(Context_t *context, PlayFiles_t *playFilesNames)
     terminating = 0;
     latestPts = 0;
     isContainerRunning = 1;
+    /* with a separate audio input (-x) the first one is the video */
+    chapters_take(avContextTab[0]);
     res = container_ffmpeg_update_tracks(context, playFilesNames->szFirstFile, 1);
     if (res == cERR_CONTAINER_FFMPEG_NO_ERROR)
     {
@@ -6599,6 +6723,7 @@ static int32_t container_ffmpeg_stop(Context_t *context)
     }
 
     isContainerRunning = 0;
+    chapters_free();
     context->playback->isDash = 0;
     dashAudioResetPending = 0;
     avformat_network_deinit();
@@ -6715,21 +6840,40 @@ static int32_t container_ffmpeg_trick_pts(int64_t *pts)
 }
 #endif
 
+static int32_t container_ffmpeg_seek_us(Context_t *context, int64_t offset_us, uint8_t absolute, bool after);
+
 static int32_t container_ffmpeg_seek(Context_t *context, int64_t sec, uint8_t absolute)
 {
-    int zero_seek = !absolute && sec == 0;
+    if (sec > INT64_MAX / AV_TIME_BASE || sec < INT64_MIN / AV_TIME_BASE)
+    {
+        ffmpeg_err("seek target is out of range\n");
+        return cERR_CONTAINER_FFMPEG_ERR;
+    }
+    return container_ffmpeg_seek_us(context, sec * AV_TIME_BASE, absolute, false);
+}
+
+/* An absolute seek to a target in ms (gf123.456). after: on the first
+ * keyframe at or after the target instead of the one before it (ga). */
+static int32_t container_ffmpeg_seek_ms(Context_t *context, int64_t ms, bool after)
+{
+    if (ms > INT64_MAX / 1000 || ms < INT64_MIN / 1000)
+    {
+        ffmpeg_err("seek target is out of range\n");
+        return cERR_CONTAINER_FFMPEG_ERR;
+    }
+    return container_ffmpeg_seek_us(context, ms * 1000, 1, after);
+}
+
+static int32_t container_ffmpeg_seek_us(Context_t *context, int64_t offset_us, uint8_t absolute, bool after)
+{
+    int zero_seek = !absolute && offset_us == 0;
     int64_t target_us;
     Track_t *videoTrack = NULL;
     Track_t *audioTrack = NULL;
     int64_t from_pts = INVALID_PTS_VALUE;
     int64_t read_us = -1;
 
-    if (sec > INT64_MAX / AV_TIME_BASE || sec < INT64_MIN / AV_TIME_BASE)
-    {
-        ffmpeg_err("seek target is out of range\n");
-        return cERR_CONTAINER_FFMPEG_ERR;
-    }
-    target_us = sec * AV_TIME_BASE;
+    target_us = offset_us;
     /* The playback layer holds isSeeking until the output has been reset. */
     getMutex_wr(__FILE__, __FUNCTION__,__LINE__);
     /* An input that cannot seek (http without ranges, a pipe) only goes
@@ -6746,7 +6890,7 @@ static int32_t container_ffmpeg_seek(Context_t *context, int64_t sec, uint8_t ab
     releaseMutex(__FILE__, __FUNCTION__,__LINE__);
     if (!absolute) 
     {
-        ffmpeg_printf(10, "seeking %"PRId64" sec\n", sec);
+        ffmpeg_printf(10, "seeking %"PRId64" us\n", offset_us);
 
         int64_t length = 0;
 
@@ -6771,7 +6915,7 @@ static int32_t container_ffmpeg_seek(Context_t *context, int64_t sec, uint8_t ab
          * - in these cases just ignore seek command
          */
 
-        if (sec == 0 && cur_sec > length)
+        if (zero_seek && cur_sec > length)
         {
             ffmpeg_err("sec = 0 ignoring\n");
             return cERR_CONTAINER_FFMPEG_ERR;
@@ -6809,7 +6953,8 @@ static int32_t container_ffmpeg_seek(Context_t *context, int64_t sec, uint8_t ab
     g_zero_seek = zero_seek;
     g_seek_target_seconds = target_us;
     g_seek_from_pts = from_pts;
-    g_seek_offset_us = sec * AV_TIME_BASE;
+    g_seek_offset_us = offset_us;
+    g_seek_after = after;
     g_do_seek_target_seconds = true;
     g_stamp = context->playback->stamp;
     releaseSeekMutex();
@@ -7199,6 +7344,16 @@ static int32_t Command(void  *_context, ContainerCmd_t command, void *argument)
     case CONTAINER_SEEK_ABS: 
     {
         ret = container_ffmpeg_seek(context, (int64_t)*((int64_t*)argument), -1);
+        break;
+    }
+    case CONTAINER_SEEK_ABS_MS:
+    {
+        ret = container_ffmpeg_seek_ms(context, *((int64_t*)argument), false);
+        break;
+    }
+    case CONTAINER_SEEK_ABS_MS_AFTER:
+    {
+        ret = container_ffmpeg_seek_ms(context, *((int64_t*)argument), true);
         break;
     }
     case CONTAINER_LENGTH: 

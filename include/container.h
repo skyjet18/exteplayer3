@@ -2,6 +2,15 @@
 #define CONTAINER_H_
 
 #include <stdio.h>
+#include <stdint.h>
+
+/* A chapter of the main input (c_l), times in ms from the start of the input */
+typedef struct ContainerChapter_s {
+    int64_t start_ms;
+    int64_t end_ms;
+    char *title;        /* "" when the chapter has none */
+    int32_t index;      /* its place in the input, for chapters with the same start */
+} ContainerChapter_t;
 
 typedef enum { 
 CONTAINER_INIT, 
@@ -25,6 +34,8 @@ CONTAINER_GET_BUFFER_SIZE,
 CONTAINER_GET_BUFFER_STATUS,
 CONTAINER_STOP_BUFFER,
 CONTAINER_UPDATE_DURATION,
+CONTAINER_SEEK_ABS_MS,
+CONTAINER_SEEK_ABS_MS_AFTER,
 #ifdef HAVE_DREAMNEXTGEN
 CONTAINER_TRICK,
 CONTAINER_TRICK_PTS,
