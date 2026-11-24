@@ -3874,7 +3874,10 @@ static void FFMPEGThread(Context_t *context)
                     lastAudioContextIdx = cAVIdx;
                 }
                 
+                /* the writers get the whole struct: the codec data pointer
+                 * and its size are only set for Vorbis, Opus and WMA */
                 pcmPrivateData_t pcmExtradata;
+                memset(&pcmExtradata, 0, sizeof(pcmExtradata));
 #if HAVE_CH_LAYOUT
                 pcmExtradata.channels              = get_codecpar(audioTrack->stream)->ch_layout.nb_channels;
 #else
