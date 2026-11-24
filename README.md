@@ -1793,3 +1793,7 @@ the DreamOS build; taken over here directly)
   [0c739c6](https://github.com/neutrino-images/ni-libstb-hal/commit/0c739c6).
 - The rtmp parameter buffers one byte short of the terminating NUL (GetAway):
   [910f926](https://github.com/neutrino-images/ni-libstb-hal/commit/910f926db76cef5158048537f65c1d5cec84a53e).
+- The PCM header of the audio writers zero-initialised, without stack
+  contents in its codec data pointer and size (GetAway, Thilo Graf):
+  [101d3d4](https://github.com/neutrino-images/ni-libstb-hal/commit/101d3d473b75c93b570e9ee00418e88d64384f30),
+  [ce0b9bb](https://github.com/neutrino-images/ni-libstb-hal/commit/ce0b9bb695c69968fd94544de4fd7d04a27cafc8).

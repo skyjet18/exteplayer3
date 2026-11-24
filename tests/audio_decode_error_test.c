@@ -140,10 +140,15 @@ static int writes;
 static int32_t audio_write(void *context, void *data)
 {
     AudioVideoOut_t *out = data;
+    const pcmPrivateData_t *header = (const pcmPrivateData_t *)out->extradata;
 
     (void)context;
     assert(writes < 64);
-    new_headers[writes] = ((pcmPrivateData_t *)out->extradata)->bResampling;
+    assert(out->extralen == sizeof(*header));
+    /* decoded PCM has no codec data: nothing of the stack is left in the
+     * header the writers get */
+    assert(!header->private_data && !header->private_size);
+    new_headers[writes] = header->bResampling;
     written[writes++] = out->pts;
     return 0;
 }
@@ -200,6 +205,17 @@ static Manager_t other_mgr = {.Command = no_track};
 static ManagerHandler_t manager = {.audio = &audio_mgr, .video = &other_mgr, .subtitle = &other_mgr};
 static Context_t context = {.playback = &playback, .output = &output, .manager = &manager};
 
+/* Fills the stack the play thread gets next with a pattern: a header field
+ * the thread leaves unset keeps it instead of a zero by chance. */
+static __attribute__((noinline)) void poison_stack(void)
+{
+    volatile unsigned char area[128 * 1024];
+    size_t i;
+
+    for (i = 0; i < sizeof(area); i++)
+        area[i] = 0xa5;
+}
+
 /* A WMA Pro file of 48 kHz stereo, played with the software decoder. */
 static void play(int count, int64_t bad)
 {
@@ -233,6 +249,7 @@ static void play(int count, int64_t bad)
     next_packet = queued_frames = sent_packets = refused_packets = writes = 0;
     playback.isPlaying = 1;
 
+    poison_stack();
     FFMPEGThread(&context);
 
     avContextTab[0] = NULL;
