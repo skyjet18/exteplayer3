@@ -5490,6 +5490,145 @@ int32_t container_ffmpeg_init_av_context(Context_t *context, char *filename, uin
     return 0;
 }
 
+/* --cover <path>: the cover embedded in the file (ID3 APIC, FLAC/Ogg picture,
+ * MP4 covr, Matroska cover attachment) is written to path as it is, never
+ * decoded and never sent to the video device. One {"cover":{...}} message
+ * after the open, {"cover":{}} when the file has none. */
+#define COVER_MAX_SIZE (8 * 1024 * 1024)
+static char *g_cover_path;
+
+void cover_path_set(const char *path)
+{
+    av_freep(&g_cover_path);
+    if (!path || !path[0])
+        return;
+    g_cover_path = av_strdup(path);
+    if (!g_cover_path)
+        ffmpeg_err("cannot allocate the cover path\n");
+}
+
+static const char *cover_type(const uint8_t *data, int size)
+{
+    if (size >= 3 && data[0] == 0xFF && data[1] == 0xD8 && data[2] == 0xFF)
+        return "jpeg";
+    if (size >= 8 && !memcmp(data, "\x89PNG\r\n\x1a\n", 8))
+        return "png";
+    return "bin";
+}
+
+/* the front cover: ID3v2 / FLAC picture type 3, Matroska cover.jpg / cover.png */
+static int cover_front(AVStream *stream)
+{
+    AVDictionaryEntry *tag = av_dict_get(stream->metadata, "comment", NULL, 0);
+    if (tag && !av_strcasecmp(tag->value, "Cover (front)"))
+        return 1;
+    tag = av_dict_get(stream->metadata, "filename", NULL, 0);
+    return tag && !av_strncasecmp(tag->value, "cover", 5);
+}
+
+/* to path.tmp, then renamed: a reader never sees a part of the picture */
+static int cover_write(const char *path, const uint8_t *data, int size)
+{
+    char *tmp = av_asprintf("%s.tmp", path);
+    const uint8_t *p = data;
+    size_t left = size;
+    int fd, err = 0;
+    if (!tmp)
+        return AVERROR(ENOMEM);
+    /* readable by the owner (the front end runs as the same user) and its
+     * group, not by others */
+    fd = open(tmp, O_WRONLY | O_CREAT | O_TRUNC, 0640);
+    if (fd < 0)
+        err = errno;
+    while (fd >= 0 && left)
+    {
+        ssize_t n = write(fd, p, left);
+        if (n < 0 && errno == EINTR)
+            continue;
+        if (n <= 0)
+        {
+            err = n < 0 ? errno : EIO;
+            break;
+        }
+        p += n;
+        left -= n;
+    }
+    if (fd >= 0 && close(fd) && !err)
+        err = errno;
+    if (fd >= 0 && !err && rename(tmp, path))
+        err = errno;
+    if (fd >= 0 && err)
+        unlink(tmp);
+    if (err)
+        ffmpeg_err("cannot write the cover to %s: %s\n", path, strerror(err));
+    av_free(tmp);
+    return err ? AVERROR(err) : 0;
+}
+
+static void cover_export(void)
+{
+    const uint8_t *data = NULL;
+    int size = 0, width = 0, height = 0, best = 0;
+    char *file;
+    uint32_t c;
+    unsigned int i;
+    if (!g_cover_path)
+        return;
+    for (c = 0; c < IPTV_AV_CONTEXT_MAX_NUM && avContextTab[c]; c++)
+    {
+        AVFormatContext *av = avContextTab[c];
+        for (i = 0; i < av->nb_streams; i++)
+        {
+            AVStream *stream = av->streams[i];
+            AVCodecParameters *par = get_codecpar(stream);
+            const uint8_t *d;
+            int s, score;
+            if (stream->disposition & AV_DISPOSITION_ATTACHED_PIC)
+            {
+                d = stream->attached_pic.data;
+                s = stream->attached_pic.size;
+                score = 2 + cover_front(stream);
+            }
+            else if (par->codec_type == AVMEDIA_TYPE_ATTACHMENT && cover_front(stream))
+            {
+                /* a cover attachment whose mimetype is no image type, which
+                 * the demuxer does not make an attached picture */
+                d = par->extradata;
+                s = par->extradata_size;
+                if (!d || !strcmp(cover_type(d, s), "bin"))
+                    continue;
+                score = 1;
+            }
+            else
+                continue;
+            if (!d || s <= 0 || score <= best)
+                continue;
+            if (s > COVER_MAX_SIZE)
+            {
+                ffmpeg_err("cover of stream %u: %d bytes, more than %d, not written\n", i, s, COVER_MAX_SIZE);
+                continue;
+            }
+            best = score;
+            data = d;
+            size = s;
+            width = par->codec_type == AVMEDIA_TYPE_VIDEO && par->width > 0 ? par->width : 0;
+            height = par->codec_type == AVMEDIA_TYPE_VIDEO && par->height > 0 ? par->height : 0;
+        }
+    }
+    file = data && cover_write(g_cover_path, data, size) == 0 ? json_escape_metadata(g_cover_path) : NULL;
+    if (file)
+    {
+        E2iSendMsg("{\"cover\":{\"file\":\"%s\",\"type\":\"%s\",\"w\":%d,\"h\":%d,\"size\":%d}}\n",
+                   file, cover_type(data, size), width, height, size);
+        av_free(file);
+        return;
+    }
+    /* no cover: the file of an earlier one is not this file's cover */
+    if (unlink(g_cover_path) && errno != ENOENT)
+        ffmpeg_err("cannot remove the old cover %s: %s\n", g_cover_path, strerror(errno));
+    E2iSendMsg("{\"cover\":{}}\n");
+}
+
 int32_t container_ffmpeg_init(Context_t *context, PlayFiles_t *playFilesNames)
 {
     ffmpeg_printf(10, ">\n");
@@ -5566,6 +5705,10 @@ int32_t container_ffmpeg_init(Context_t *context, PlayFiles_t *playFilesNames)
     latestPts = 0;
     isContainerRunning = 1;
     res = container_ffmpeg_update_tracks(context, playFilesNames->szFirstFile, 1);
+    if (res == cERR_CONTAINER_FFMPEG_NO_ERROR)
+    {
+        cover_export();
+    }
     return res;
 }
 

@@ -83,6 +83,7 @@
 - [Video track for enigma2](#-video-track-for-enigma2)
 - [Optional decoded PCM export](#-optional-decoded-pcm-export)
 - [Start position](#-start-position)
+- [Embedded cover](#-embedded-cover)
 - [Optional audio transcoding](#-optional-audio-transcoding)
 - [CENC keys per KID](#-cenc-keys-per-kid)
 - [DreamNextGen build (Dreambox One/Two)](#dreamnextgen-build-dreambox-onetwo)
@@ -738,6 +739,42 @@ is a parameter error.
 
 ---
 
+## 🖼️ Embedded cover
+
+Audio files often carry their cover: an ID3v2 `APIC` frame (MP3), a picture
+block (FLAC, Ogg `METADATA_BLOCK_PICTURE`), `covr` (M4A), an attachment
+(Matroska). FFmpeg shows such a picture as a video stream with
+`AV_DISPOSITION_ATTACHED_PIC`; the player never plays it as video.
+
+`--cover <path>` (opt-in, nothing changes without it) writes that picture
+after the open, as the file has it (JPEG or PNG bytes, nothing decoded or
+converted), to `<path>`, and sends one message before `PLAYBACK_OPEN`:
+
+```
+{"cover":{"file":"/tmp/cover.img","type":"jpeg","w":500,"h":500,"size":48211}}
+{"cover":{}}
+```
+
+- `type`: from the first bytes, `jpeg` (`FF D8 FF`), `png` (`89 50 4E 47 ...`),
+  otherwise `bin`. `w`/`h`: the picture size when FFmpeg knows it, else `0`.
+  `size`: bytes written.
+- `{"cover":{}}`: the file has no cover (or it could not be written). The
+  file at `<path>` is then removed, so an earlier cover is never taken for
+  the one of this file. With a cover the file at `<path>` is replaced.
+- Written to `<path>.tmp` first and renamed: a reader sees the old file or
+  the whole new one.
+- Several pictures: the front cover first (ID3/FLAC picture type 3,
+  `Cover (front)`; Matroska `cover.*`), else the first one. A Matroska
+  attachment named `cover*` whose mimetype is no image type (FFmpeg makes no
+  attached picture of it) is taken when it starts with JPEG or PNG bytes.
+- A picture larger than 8 MiB is not written (`{"cover":{}}`).
+- Once per run, after the open; the player plays one file per run.
+
+`EPLAYER3_EXTENDED` carries `"cover":1`. An invalid value (empty path) is a
+parameter error.
+
+---
+
 ## 🔁 Optional audio transcoding
 
 | Option | Meaning |
@@ -957,6 +994,9 @@ export FFMPEG_EXTRA_LIBS="-lxml2" # plus any other dependencies of this static b
 sh tests/run.sh
 sh tests/build.sh /path/to/test-output/exteplayer3-host
 python3 tests/integration.py \
+  --player /path/to/test-output/exteplayer3-host \
+  --ffmpeg "$FFMPEG_BUILD/ffmpeg"
+python3 tests/cover.py \
   --player /path/to/test-output/exteplayer3-host \
   --ffmpeg "$FFMPEG_BUILD/ffmpeg"
 make -C "$FFMPEG_BUILD" fate-hls-selection fate-mpegts-probe fate-dash-live
@@ -1464,6 +1504,7 @@ stdout and ends the player with exit code 1.
 | `-Z`, `-X`, `-E`, `-Y`, `--dts-ac3`, `--truehd-ac3`, `--dts-eac3`, `--truehd-eac3`, `--heaac-aaclc` | audio transcoding, see [Optional audio transcoding](#-optional-audio-transcoding) |
 | `--audio-channel left\|stereo\|right` | dual mono channel at the start (`0\|1\|2`, default stereo) |
 | `--start seconds` | start position, see [Start position](#-start-position) |
+| `--cover path` | embedded cover of the file written to `path`, message `cover`, see [Embedded cover](#-embedded-cover) |
 | `-t index`, `-9 index` | audio and subtitle track switched on at the start, as a position in `a_l` and `s_l` (sent as `ai<index>` and `si<index>`) |
 | `-Q 0\|1\|2`, `-D 0\|1`, `-M WIDTHxHEIGHT` | HLS/DASH quality, default audio only, H.264 resolution limit, see [Adaptive playback](#-adaptive-playback-and-metadata) |
 | `-P id` | program ID of a multi-program stream (also an HLS program) |
@@ -1533,6 +1574,7 @@ All messages are single lines on stderr.
 | Message | When |
 |---|---|
 | `EPLAYER3_EXTENDED` | first line: version and features, see [below](#-start-message-eplayer3_extended-version-and-features) |
+| `cover` | `--cover`: after the open, before `PLAYBACK_OPEN`: `file`, `type`, `w`, `h`, `size`, or `{}` without a cover, see [Embedded cover](#-embedded-cover) |
 | `PLAYBACK_OPEN` | after the open: `OutputName`, `file`, `sts` (negative: failed, exit code 10) |
 | `OUTPUT_OPEN`, `PLAYBACK_PLAY` | start of the playback, then `v_c`, `a_l`, `a_c`, `s_l`, `s_c` (`a_s`, `s_s` with `-t`, `-9`) |
 | `FF_ERROR` | `msg`, `code`: open or read error, see [HTTP input](#-http-input-hls-options-and-stall-limits); `"code":-13` with `No key for KID <kid> (video)` before the stop of a video without a key |
@@ -1572,6 +1614,7 @@ default of `0` (`.get(key, 0)`) and test the feature, not the version.
 | `drmkey` | bit mask `1`-`3` | `1` `--key <kid>:<key>`, `2` `--key-request` (`DRM_KEY_REQ`, answer on stdin `dk <kid>:<key>`; only with an FFmpeg that has `decryption_key_url`), see [CENC keys per KID](#-cenc-keys-per-kid) | 187 |
 | `mpdopt` | `1` | OE-A options after `.mpd` in the URL (`&0=` `&1=` `&5=` `&6=` `&7=` `&8=`) are read and taken off it | 187 |
 | `forcedonly` | `1` | `--forced-only` and stdin `so1`/`so0`/`so` (answer `s_o`): only forced subtitle cues are sent | with #81 |
+| `cover` | `1` | `--cover <path>`: the embedded cover is written to path, message `cover`, see [Embedded cover](#-embedded-cover) | after 187 |
 
 The version number does not change with every feature: keys added after a release come in builds that still report the previous version (e.g. most keys above came in builds that reported 186 before the release of 187). A front end should therefore test the key, not the version.
 
