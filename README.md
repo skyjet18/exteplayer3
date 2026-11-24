@@ -822,9 +822,31 @@ above (`e` is `A_AC3`/`A_EAC3`, `sr` the rate of the source).
 ## 🔑 CENC keys per KID
 
 Streams in CENC (MP4, DASH, HLS fMP4) often use a key per track or per
-resolution. The keys are given per KID, not per stream:
+resolution. The keys are given per KID, not per stream.
 
-- `--key <kid>:<key>` (32 hex digits each, repeatable) preloads keys. They go
+A KID or key (16 bytes) is taken in any of these forms, wherever the player
+reads one (`--key`, `dk`, `&5=`/`&6=`/`&7=`, `-5`/`-6`/`-7`, and `-f` with
+`decryption_keys`, `cenc_decryption_keys`, `decryption_key`,
+`cenc_decryption_key` and their `_video_key`/`_audio_key` variants):
+
+| Form | Example |
+| --- | --- |
+| 32 hex digits, upper or lower case | `00112233445566778899AABBCCDDEEFF` |
+| the same with `0x` ahead | `0x00112233445566778899aabbccddeeff` |
+| UUID, 8-4-4-4-12 hex digits | `00112233-4455-6677-8899-aabbccddeeff` |
+| 22 base64url characters, no padding (`kid`/`k` of a ClearKey JWK) | `ABEiM0RVZneImaq7zN3u_w` |
+| base64, 24 characters with `==` or 22 without | `ABEiM0RVZneImaq7zN3u/w==` |
+
+Both base64 alphabets are taken (`+` `/` and `-` `_` stand for the same
+bits); the 4 bits beyond the 16 bytes in the last character have to be 0.
+FFmpeg gets them as 32 lower case hex digits (`kid=key:kid=key` for the
+`*decryption_keys` options). Other lengths, other characters, dashes
+elsewhere, `0x` before a UUID, a single `=` or `=` elsewhere than the `==`
+at the end are not taken: `--key`, `dk` and `&5=` refuse them (the message
+names the forms), `-5`/`-6`/`-7` and `-f` hand them to FFmpeg unchanged. KIDs in the player's own messages
+(`DRM_KEY_REQ`, `DRM_KEY`, `DRM_KEY_DROP`) stay 32 lower case hex digits.
+
+- `--key <kid>:<key>` (repeatable) preloads keys. They go
   to FFmpeg as `decryption_keys` (mov), `cenc_decryption_keys` (DASH) and
   `seg_format_options=decryption_keys=...` (HLS), which the patched FFmpeg
   6.1 and 9.0 trees have. Nothing is asked. With `release/6.1-patched` MP4
@@ -876,8 +898,8 @@ resolution. The keys are given per KID, not per stream:
     `audio_rep_index`; with an FFmpeg whose DASH demuxer does not have them
     (`release/6.1-patched`) they are ignored with a log line;
   - `&5=<key>`: a key for every KID, `&6=<key>` / `&7=<key>`: for the KIDs
-    of the video / the audio (32 hex digits). These are default keys: a KID
-    with a key of its own (`--key`, `dk`) has that one, and a KID a default
+    of the video / the audio (32 hex digits or one of the other forms
+    above). These are default keys: a KID with a key of its own (`--key`, `dk`) has that one, and a KID a default
     key applies to is not asked for with `--key-request`. With an FFmpeg that
     has `decryption_key_url` the player answers them itself; otherwise they
     go to FFmpeg as the DASH options the OE-A player sets
@@ -1447,7 +1469,7 @@ stdout and ends the player with exit code 1.
 | `-P id` | program ID of a multi-program stream (also an HLS program) |
 | `-0 index`, `-1 index` | MPEG-DASH video and audio representation index (`video_rep_index`, `audio_rep_index`) |
 | `-5 key`, `-6 key`, `-7 key` | CENC decryption key for all streams, for video, for audio (`cenc_decryption_key`, `cenc_decryption_video_key`, `cenc_decryption_audio_key`) |
-| `--key kid:key` | CENC key of a KID, 32 hex digits each, repeatable (MP4, DASH, HLS fMP4), see [CENC keys per KID](#-cenc-keys-per-kid) |
+| `--key kid:key` | CENC key of a KID, 32 hex digits (also `0x` hex, UUID, base64 or base64url) each, repeatable (MP4, DASH, HLS fMP4), see [CENC keys per KID](#-cenc-keys-per-kid) |
 | `--key-request` | ask the front end for the key of other KIDs: `DRM_KEY_REQ`, answer on stdin `dk` (`"drmkey"` & 2: only with an FFmpeg that has `decryption_key_url`) |
 | `--key-timeout s` | how long `--key-request` waits for the answer, default 10 |
 | `<url>.mpd&5=key` | OE-A options after `.mpd` in the url (`&0=` `&1=` `&5=` `&6=` `&7=` `&8=`), taken off it before the open, see [CENC keys per KID](#-cenc-keys-per-kid) |
@@ -1766,3 +1788,6 @@ the DreamOS build; taken over here directly)
 - The best DASH audio representation of the first track's language instead
   of the first one (disposition, channels, bandwidth), TangoCash:
   [ce94a37](https://github.com/neutrino-images/ni-libstb-hal/commit/ce94a37).
+- CENC KIDs and keys also as UUID and base64/base64url (ClearKey JSON), see
+  [CENC keys per KID](#-cenc-keys-per-kid):
+  [0c739c6](https://github.com/neutrino-images/ni-libstb-hal/commit/0c739c6).

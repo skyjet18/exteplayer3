@@ -13,7 +13,8 @@
  * --key-request the front end is asked for the others, it gets
  *   {"DRM_KEY_REQ":{"kid":"<32 hex>","type":"video","pssh":[{"system":"<uuid>","data":"<base64 box>"}]}}
  * and answers on stdin with
- *   dk <kid>:<key> [<kid>:<key> ...]    (32 hex digits each)
+ *   dk <kid>:<key> [<kid>:<key> ...]    (32 hex digits each, or one of the
+ *                                       other forms of drm_key16.h)
  *   dk <kid>:-                          (no key for that KID)
  * The demuxer waits for the answer (--key-timeout, 10 s); no answer is no
  * key. Without --key-request a KID that is not known has no key at once,
@@ -25,6 +26,7 @@
  */
 
 #include <libavutil/base64.h>
+#include "drm_key16.h"
 #if LIBAVUTIL_VERSION_MAJOR >= 56
 #include <libavutil/encryption_info.h>
 #endif
@@ -55,24 +57,11 @@ static int (*drmOrigIoOpen)(struct AVFormatContext *s, AVIOContext **pb, const c
                             int flags, AVDictionary **options) = NULL;
 #endif
 
-/* 32 hex digits to lower case; 0 if it is not */
+/* A KID or key (32 hex digits, "0x" and 32 hex digits, UUID, base64 or
+ * base64url, see drm_key16.h) as 32 lower case hex digits; 0 if it is not */
 static int32_t drm_hex32(char *dst, const char *src, size_t len)
 {
-    size_t i;
-    if (len != 32)
-    {
-        return 0;
-    }
-    for (i = 0; i < 32; i++)
-    {
-        if (!isxdigit((unsigned char)src[i]))
-        {
-            return 0;
-        }
-        dst[i] = (char)tolower((unsigned char)src[i]);
-    }
-    dst[32] = '\0';
-    return 1;
+    return drm_key16(dst, src, len);
 }
 
 /* with drmKeyMutex held */
@@ -227,7 +216,7 @@ int32_t ffmpeg_mpd_url_option(char digit, const char *value, size_t len)
         if (!drm_hex32(text, value, len))
         {
             /* not printed: it may be a key */
-            ffmpeg_err("url option &%c=: not a key of 32 hex digits (%d characters), ignored\n", digit, (int)len);
+            ffmpeg_err("url option &%c=: not a key (%d characters), ignored; " DRM_KEY16_FORMS "\n", digit, (int)len);
             return -1;
         }
         pthread_mutex_lock(&drmKeyMutex);
@@ -273,7 +262,7 @@ int32_t ffmpeg_drm_key_command(const char *line)
         if (drm_key_add_pair(p, len) < 0)
         {
             /* not the pair itself: it may hold a key */
-            ffmpeg_err("dk: pair %d (%d characters) is not <kid>:<key> or <kid>:- (32 hex digits each)\n", (int)count + 1, (int)len);
+            ffmpeg_err("dk: pair %d (%d characters) is not <kid>:<key> or <kid>:-; " DRM_KEY16_FORMS "\n", (int)count + 1, (int)len);
             return -1;
         }
         count++;

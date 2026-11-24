@@ -44,6 +44,7 @@
 #include <pthread.h>
 
 #include "strbuffer.h"
+#include "drm_key16.h"
 #include "common.h"
 #include "misc.h"
 
@@ -528,6 +529,41 @@ finish:
  * default keys, --key and dk keys win (ffmpeg_mpd_url_option()). The per-KID
  * way is --key and --key-request. */
 #define MPD_URL_OPTION_MAX 256
+
+/* -5, -6, -7 and -f with a key option of FFmpeg: a KID or key in one of the
+ * forms of drm_key16.h goes to FFmpeg as 32 hex digits (decryption_keys and
+ * cenc_decryption_keys: every pair of "kid=key:kid=key"); anything else as
+ * it is, FFmpeg reports it */
+static void key_option_set(const char *name, const char *value)
+{
+    static const char *const single[] = {"cenc_decryption_key", "cenc_decryption_video_key",
+                                         "cenc_decryption_audio_key", "decryption_key",
+                                         "decryption_video_key", "decryption_audio_key", NULL};
+    char key[33];
+    char *keys = NULL;
+    size_t i;
+
+    if (!strcmp(name, "decryption_keys") || !strcmp(name, "cenc_decryption_keys"))
+    {
+        /* a pair and its ":" of 46 characters at least become 66 */
+        size_t size = 2 * strlen(value) + 66;
+        keys = malloc(size);
+        if (keys && drm_key16_list(keys, size, value))
+        {
+            value = keys;
+        }
+    }
+    for (i = 0; single[i]; i++)
+    {
+        if (!strcmp(name, single[i]) && drm_key16(key, value, strlen(value)))
+        {
+            value = key;
+            break;
+        }
+    }
+    ffmpeg_av_dict_set(name, value, 0);
+    free(keys);
+}
 
 static void mpd_url_options(char *url)
 {
@@ -1364,7 +1400,7 @@ static int ParseParams(int argc,char* argv[], PlayFiles_t *playbackFiles, int *p
         case OPT_KEY:
             if (ffmpeg_drm_key_add(optarg) < 0)
             {
-                printf("--key: <kid>:<key>, 32 hex digits each, not \"%s\"\n", optarg);
+                printf("--key: <kid>:<key> (" DRM_KEY16_FORMS "), not \"%s\"\n", optarg);
                 ret = -1;
             }
             break;
@@ -1564,15 +1600,15 @@ static int ParseParams(int argc,char* argv[], PlayFiles_t *playbackFiles, int *p
             break;
 
         case '5':
-            ffmpeg_av_dict_set("cenc_decryption_key", optarg, 0);
+            key_option_set("cenc_decryption_key", optarg);
             break;
 
         case '6':
-            ffmpeg_av_dict_set("cenc_decryption_video_key", optarg, 0);
+            key_option_set("cenc_decryption_video_key", optarg);
             break;
 
         case '7':
-            ffmpeg_av_dict_set("cenc_decryption_audio_key", optarg, 0);
+            key_option_set("cenc_decryption_audio_key", optarg);
             break;
 
         case 'f':
@@ -1583,7 +1619,7 @@ static int ParseParams(int argc,char* argv[], PlayFiles_t *playbackFiles, int *p
             {
                 *ffval = '\0';
                 ffval += 1;
-                ffmpeg_av_dict_set(ffopt, ffval, 0);
+                key_option_set(ffopt, ffval);
                 if (!strcmp(ffopt, "ca_file") || !strcmp(ffopt, "cafile"))
                 {
                     free(g_ca_file);
@@ -1863,7 +1899,7 @@ int main(int argc, char* argv[])
         printf("[-Y] [--heaac-aaclc] HE-AAC transcoding to AAC-LC (not for AAC decoded in software, -a)\n");
         printf("     all of them need the encoder in FFmpeg (\"xcode\" in EPLAYER3_EXTENDED) and are off with -K\n");
         printf("[--audio-channel left|stereo|right] dual mono channel at start (0|1|2, default stereo; stdin am<n>)\n");
-        printf("[--key kid:key] CENC key of a KID, 32 hex digits each, repeatable (MP4, DASH, HLS fMP4)\n");
+        printf("[--key kid:key] CENC key of a KID, 32 hex digits (also 0x hex, UUID, base64 or base64url) each, repeatable (MP4, DASH, HLS fMP4)\n");
         printf("[--key-request] ask the front end for the key of other KIDs: DRM_KEY_REQ, answer on stdin dk kid:key or dk kid:-\n");
         printf("                (\"drmkey\" & 2 in EPLAYER3_EXTENDED: only with an FFmpeg that has decryption_key_url)\n");
         printf("[--key-timeout s] how long --key-request waits for the answer (default 10)\n");
@@ -1893,9 +1929,9 @@ int main(int argc, char* argv[])
         printf("[-x separateAudioUri]\n");
         printf("[-0 idx] video MPEG-DASH representation index\n");
         printf("[-1 idx] audio MPEG-DASH representation index\n");
-        printf("[-5 key] MPEG-DASH cenc decryption key of all streams, 32 hex digits (default key)\n");
-        printf("[-6 key] MPEG-DASH cenc decryption key of the video streams, 32 hex digits\n");
-        printf("[-7 key] MPEG-DASH cenc decryption key of the audio streams, 32 hex digits\n");
+        printf("[-5 key] MPEG-DASH cenc decryption key of all streams, 32 hex digits, UUID, base64 or base64url (default key)\n");
+        printf("[-6 key] MPEG-DASH cenc decryption key of the video streams, 32 hex digits, UUID, base64 or base64url\n");
+        printf("[-7 key] MPEG-DASH cenc decryption key of the audio streams, 32 hex digits, UUID, base64 or base64url\n");
         printf("[-f ffopt=ffval] any other ffmpeg option\n");
         printf("[-F path] additional file with moov atom data (used for mp4 playback in progressive download mode)\n");
         printf("[-O offset] moov atom offset in the original file (used for mp4 playback in progressive download mode)\n");

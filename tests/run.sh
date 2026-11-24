@@ -4,7 +4,7 @@ set -eu
 : "${FFMPEG_BUILD:?Set FFMPEG_BUILD to the configured native FFmpeg build}"
 cd "$(dirname "$0")/.."
 tmp=$(mktemp -d)
-trap 'rm -f "$tmp/manager" "$tmp/container" "$tmp/output" "$tmp/dvb" "$tmp/pts" "$tmp/pcm_export" "$tmp/playback" "$tmp/buffering" "$tmp/writer_wait"; rmdir "$tmp"' EXIT HUP INT TERM
+trap 'rm -f "$tmp/manager" "$tmp/container" "$tmp/output" "$tmp/dvb" "$tmp/pts" "$tmp/pcm_export" "$tmp/playback" "$tmp/buffering" "$tmp/writer_wait" "$tmp/drm_key16"; rmdir "$tmp"' EXIT HUP INT TERM
 # Graphic subtitles without exteplayer3png.so: the PNG encoder of libavcodec,
 # read back with its decoder; LeakSanitizer checks the encoder of each picture.
 ${CC:-cc} -g -fsanitize=address,undefined -ffunction-sections -fdata-sections \
@@ -16,6 +16,11 @@ ${CC:-cc} -g -fsanitize=address,undefined -ffunction-sections -fdata-sections \
 ASAN_OPTIONS=detect_leaks=1 timeout 20 "$tmp/png"
 rm -f "$tmp/png"
 cc=${CC:-cc}
+# The forms of a CENC KID or key (--key, dk, &5=, -5/-6/-7, -f decryption_keys):
+# hex, 0x hex, UUID and base64url to 32 hex digits, the rest refused.
+$cc -g -fsanitize=address,undefined -Wall -Werror -Iinclude tests/drm_key16_test.c -o "$tmp/drm_key16"
+timeout 20 "$tmp/drm_key16"
+rm -f "$tmp/drm_key16"
 # Decoder restarts of the DVB output: the audio restart behind a buffer clear
 # and the video writer on OUTPUT_SWITCH "video".
 $cc -g -fsanitize=undefined -ffunction-sections -fdata-sections \
