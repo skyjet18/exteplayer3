@@ -5,6 +5,7 @@ name: Tests
 # against a native build of the patched FFmpeg of skyjet18/FFmpeg:
 #   - tests/run.sh             the small test programs (ASan / UBSan)
 #   - tests/integration.py     with the normal and with the ASan player
+#   - tests/cover.py           --cover, with the normal and with the ASan player
 #   - tests/hls_switch.py      PCM export, compressed, software, timing mode
 #   - the companion tests of the FFmpeg tree (fate-hls-selection,
 #     fate-mpegts-probe, fate-dash-live, tests/dash_http.py, hls_http.py)

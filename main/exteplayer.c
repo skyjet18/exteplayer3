@@ -90,6 +90,7 @@ extern void        sel_program_id_set(const int32_t val);
 extern void adaptive_quality_set(int32_t mode, int32_t default_audio);
 extern void h264_resolution_limit_set(int32_t width, int32_t height);
 extern void start_position_set(int64_t us);
+extern void cover_path_set(const char *path);
 
 extern void pcm_resampling_set(int32_t val);
 extern void stereo_software_decoder_set(int32_t val);
@@ -1338,6 +1339,7 @@ static int ParseParams(int argc,char* argv[], PlayFiles_t *playbackFiles, int *p
     {
         OPT_START = 0x200, /* --start, not a transcoding option */
         OPT_FORCED_ONLY = 0x201, /* --forced-only, neither */
+        OPT_COVER = 0x202, /* --cover, neither */
         OPT_DTS_AC3 = 0x100,
         OPT_TRUEHD_AC3,
         OPT_DTS_EAC3,
@@ -1352,6 +1354,7 @@ static int ParseParams(int argc,char* argv[], PlayFiles_t *playbackFiles, int *p
     {
         {"start",       required_argument, NULL, OPT_START},
         {"forced-only", no_argument, NULL, OPT_FORCED_ONLY},
+        {"cover",       required_argument, NULL, OPT_COVER},
         {"dts-ac3",     no_argument, NULL, OPT_DTS_AC3},
         {"truehd-ac3",  no_argument, NULL, OPT_TRUEHD_AC3},
         {"dts-eac3",    no_argument, NULL, OPT_DTS_EAC3},
@@ -1415,6 +1418,17 @@ static int ParseParams(int argc,char* argv[], PlayFiles_t *playbackFiles, int *p
             break;
         case OPT_FORCED_ONLY:
             subtitle_forced_only_set(1);
+            break;
+        case OPT_COVER:
+            if (!optarg[0])
+            {
+                printf("Invalid --cover value: empty path\n");
+                ret = -1;
+            }
+            else
+            {
+                cover_path_set(optarg);
+            }
             break;
         case 'G':
             g_graphic_sub_path = optarg;
@@ -1851,6 +1865,7 @@ int main(int argc, char* argv[])
     /* hlsseg: HLS segments played directly, 1: any name (.js, .png, none), 2: an image in front of the TS data */
     /* drmkey: 1 --key <kid>:<key>, 2 --key-request (DRM_KEY_REQ, stdin dk <kid>:<key>) */
     /* mpdopt: the OE-A options after .mpd in the url (&0= &1= &5= &6= &7= &8=) are taken off */
+    /* cover: the option --cover <path> is known (embedded cover to path, "cover" message) */
     E2iSendMsg("{\"EPLAYER3_EXTENDED\":{\"version\":%d"
                ",\"start\":1"
                ",\"xcode\":%d"
@@ -1863,6 +1878,7 @@ int main(int argc, char* argv[])
                ",\"hlsseg\":%d"
                ",\"drmkey\":%d"
                ",\"mpdopt\":1"
+               ",\"cover\":1"
                "}}\n", 187,
                audio_transcode_caps(),
                hls_segment_caps(), ffmpeg_drm_key_caps());
@@ -1922,6 +1938,8 @@ int main(int argc, char* argv[])
         printf("[-t index] audio track switched on at start, position in the audio track list (0 - first, as stdin ai<n>)\n");
         printf("[-9 index] subtitle track switched on at start, position in the subtitle track list (0 - first, as stdin si<n>)\n");
         printf("[--forced-only] only forced subtitle cues: flagged PGS pictures, every cue of a forced track of other formats (stdin so1/so0)\n");
+        printf("[--cover path] embedded cover of the file (ID3 APIC, FLAC/Ogg picture, MP4 covr, Matroska cover) written\n");
+        printf("               as it is to path, message {\"cover\":{\"file\":...}} or {\"cover\":{}} (\"cover\" in EPLAYER3_EXTENDED)\n");
         printf("[--start seconds] start position, before the first packet (not for live streams; \"start\" in EPLAYER3_EXTENDED)\n");
         printf("[-h headers] set custom HTTP headers \"Name: value\\r\\nName: value\\r\\n\"\n");
         printf("[-u user-agent] set custom http User-Agent header\n");
