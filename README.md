@@ -107,6 +107,23 @@
   switching during playback.
 - `-D 0|1`: retain all HLS audio renditions (default), or prefer default audio.
   Groups without a default retain their available tracks.
+- DASH start audio track: the DASH demuxer exports every audio representation
+  as a track of its own, in manifest order. Without `-t` the player no longer
+  starts with the first one but with the best one of the same language as the
+  first (the language stays the choice of the front end), close to
+  `av_find_best_stream()`: first the disposition (not hearing/visually
+  impaired, then default), then a track the decoder of the box takes over one
+  decoded to PCM or transcoded by the player (software decoding/transcoding
+  options of the codec), then more channels (compared only when both are
+  known), then the higher bandwidth of the manifest (else the codec bit
+  rate). The software decoder comes before the channels because its PCM
+  reaches HDMI as PCM 2.0 on Vu+ boxes: a 5.1 track decoded in software
+  (AC-4, E-AC-3 with `-e`) brings no surround there, only CPU load, so stereo
+  AAC or a 5.1 AC-3/E-AC-3 bitstream to the decoder is preferred.
+  With `-Q 1` (lowest) fewer channels and less bandwidth win. `-P`, an
+  `audio_rep_index` (`-1`, `&1=` after `.mpd`) and a track chosen with `-t`
+  or `ai` always win. HLS keeps its `DEFAULT=YES` rule, files and TS keep the
+  first track. `-L FFMPEG_DEBUG_LEVEL:1` logs a choice other than the first.
 - `EP3_H264_LEVEL41=0|1`: H.264 SPS level limit. On MIPS builds a `level_idc`
   above 4.1 in the SPS taken from `avcC` (baseline, main, extended and high
   profile) is written to the decoder as 4.1, as every version before 185 did;
@@ -522,7 +539,9 @@ The player requests `hls_quality_mode`, `hls_audio_default_only` and
 unchanged for other callers. Automatic HLS preselection is bypassed for an
 explicit program or active resolution limit so the player can inspect all
 eligible programs after probing. Without `-t`, HLS starts with the audio
-rendition marked `DEFAULT=YES` (the first track when none is marked).
+rendition marked `DEFAULT=YES` (the first track when none is marked); DASH
+starts with the best audio representation of the first track's language (see
+[Adaptive playback](#-adaptive-playback-and-metadata)).
 
 Live DASH media-fragment opens now retry transient failures globally, with at
 most two retries separated by interruptible 400 ms delays. VOD, initialization
@@ -1740,3 +1759,10 @@ the DreamOS build; taken over here directly)
 
 - `/usr/bin/hihalt` as one more marker of a HiSilicon receiver:
   [1985757](https://github.com/OpenVisionE2/exteplayer3/commit/19857571).
+
+**neutrino-images / ni-libstb-hal** ([neutrino-images/ni-libstb-hal](https://github.com/neutrino-images/ni-libstb-hal),
+`libeplayer3`)
+
+- The best DASH audio representation of the first track's language instead
+  of the first one (disposition, channels, bandwidth), TangoCash:
+  [ce94a37](https://github.com/neutrino-images/ni-libstb-hal/commit/ce94a37).

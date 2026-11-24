@@ -550,6 +550,86 @@ static int select_dash_video(AVFormatContext *av)
     return best;
 }
 
+/* Bandwidth of a DASH audio representation from the manifest, else the bit
+ * rate of the codec parameters, 0 if unknown. */
+static int64_t dash_audio_bandwidth(AVStream *stream)
+{
+    int64_t rate = variant_bandwidth(stream->metadata);
+    if (rate <= 0 && get_codecpar(stream)->bit_rate > 0)
+        rate = get_codecpar(stream)->bit_rate;
+    return rate;
+}
+
+/* > 0 if audio track a is the better start track, < 0 if b is, 0 if equal:
+ * the disposition weighted as av_find_best_stream() does (not impaired, then
+ * default), then a track the decoder of the box takes over one decoded or
+ * transcoded here, then the channel count (when known for both), then the
+ * bandwidth. -Q 1 (lowest) prefers fewer channels and less bandwidth.
+ * Decoded here comes before channels: the PCM of the software decoder
+ * reaches HDMI as PCM 2.0 on Vu+ boxes, so a software 5.1 track (AC-4,
+ * E-AC-3 with -e) brings no surround, only CPU load. */
+static int dash_audio_compare(const Track_t *a, const Track_t *b)
+{
+    AVStream *sa = a->stream, *sb = b->stream;
+    int da = !(sa->disposition & (AV_DISPOSITION_HEARING_IMPAIRED | AV_DISPOSITION_VISUAL_IMPAIRED)) +
+             !!(sa->disposition & AV_DISPOSITION_DEFAULT);
+    int db = !(sb->disposition & (AV_DISPOSITION_HEARING_IMPAIRED | AV_DISPOSITION_VISUAL_IMPAIRED)) +
+             !!(sb->disposition & AV_DISPOSITION_DEFAULT);
+    int ha = !a->inject_as_pcm && !a->transcode;
+    int hb = !b->inject_as_pcm && !b->transcode;
+    int64_t ba = dash_audio_bandwidth(sa), bb = dash_audio_bandwidth(sb);
+    int lowest = g_quality_mode == 1;
+
+    if (da != db)
+        return da > db ? 1 : -1;
+    if (ha != hb)
+        return ha ? 1 : -1;
+    if (a->channels > 0 && b->channels > 0 && a->channels != b->channels)
+        return (a->channels > b->channels) != lowest ? 1 : -1;
+    if (ba != bb)
+        return (ba > bb) != lowest ? 1 : -1;
+    return 0;
+}
+
+/* MPEG-DASH exports every audio representation as a stream of its own, in
+ * manifest order. Without a requested track the player starts with the best
+ * one (dash_audio_compare()) of the language of the first track instead of
+ * the first one; the language itself stays the choice of the front end (-t).
+ * Other inputs, -P and an audio_rep_index (-1, &1=) keep the first track.
+ * Returns the index in tracks of the track to start with. */
+static int32_t select_dash_audio(Track_t *tracks, int32_t count, int32_t first)
+{
+    AVFormatContext *av;
+    AVDictionaryEntry *rep;
+    const char *lang;
+    int32_t best = first, i;
+
+    if (first < 0 || first >= count || !tracks[first].stream ||
+        tracks[first].AVIdx < 0 || tracks[first].AVIdx >= IPTV_AV_CONTEXT_MAX_NUM)
+        return first;
+    av = avContextTab[tracks[first].AVIdx];
+    if (!av || !av->iformat || strcmp(av->iformat->name, "dash") || g_sel_program_id > 0)
+        return first;
+    rep = av_dict_get(g_avio_opts, "audio_rep_index", NULL, 0);
+    if (rep && atoi(rep->value) >= 0)
+        return first;
+    lang = tracks[first].Name ? tracks[first].Name : "";
+    for (i = first + 1; i < count; i++)
+    {
+        if (tracks[i].pending || tracks[i].Id < 0 || !tracks[i].stream ||
+            tracks[i].AVIdx != tracks[first].AVIdx ||
+            strcasecmp(tracks[i].Name ? tracks[i].Name : "", lang))
+            continue;
+        if (dash_audio_compare(&tracks[i], &tracks[best]) > 0)
+            best = i;
+    }
+    if (best != first)
+        ffmpeg_printf(1, "DASH: audio track %d (%d channels, %" PRId64 " bit/s) instead of the first %d\n",
+                      tracks[best].Id, tracks[best].channels, dash_audio_bandwidth(tracks[best].stream),
+                      tracks[first].Id);
+    return best;
+}
+
 static int subtitle_is_forced(AVStream *stream)
 {
     AVDictionaryEntry *title;
@@ -6230,7 +6310,12 @@ static int32_t update_tracks(Context_t *context, char *filename, int32_t initial
                     break;
                 }
             }
-            
+
+            if (!currAudioTrack)
+            {
+                selTrackIdx = select_dash_audio(Tracks, TrackCount, selTrackIdx);
+            }
+
             if (selTrackIdx > -1)
             {
                 ((AVStream*)Tracks[selTrackIdx].stream)->discard = AVDISCARD_DEFAULT;
