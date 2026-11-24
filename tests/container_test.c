@@ -453,6 +453,110 @@ int main(void)
         avformat_free_context(av);
     }
     {
+        /* DASH audio without a requested track: the best representation of
+         * the language of the first one, not the first one. */
+        static const struct {
+            const char *lang, *bandwidth;
+            int channels, software;
+        } reps[] = {
+            {"en", "128000", 2, 0},  /* 0: first, stereo AAC */
+            {"EN", "384000", 6, 0},  /* 1: 5.1 E-AC-3 to the decoder */
+            {"de", "640000", 6, 0},  /* 2: other language */
+            {"en", "448000", 6, 1},  /* 3: 5.1 decoded here (A_IPCM) */
+            {"en", "96000", 2, 0},   /* 4: stereo, lowest bandwidth */
+            {"en", "1", 2, 0},       /* 5: pending (an old track) */
+        };
+        AVFormatContext *av = avformat_alloc_context();
+        AVInputFormat dash = {.name = "dash"}, hls = {.name = "hls"}, mp4 = {.name = "mov,mp4,m4a,3gp,3g2,mj2"};
+        Track_t tracks[6];
+        int i;
+        assert(av);
+        memset(tracks, 0, sizeof(tracks));
+        for (i = 0; i < 6; i++) {
+            AVStream *stream = avformat_new_stream(av, NULL);
+            assert(stream);
+            stream->codecpar->codec_type = AVMEDIA_TYPE_AUDIO;
+            av_dict_set(&stream->metadata, "variant_bitrate", reps[i].bandwidth, 0);
+            tracks[i].Name = (char *)reps[i].lang;
+            tracks[i].Id = i + 1;
+            tracks[i].stream = stream;
+            tracks[i].channels = reps[i].channels;
+            tracks[i].inject_as_pcm = reps[i].software;
+        }
+        tracks[5].pending = 1;
+        tracks[5].channels = 8;
+        av->iformat = &dash;
+        avContextTab[0] = av;
+        adaptive_quality_set(0, 0);
+        /* of the tracks for the decoder of the box the one with more
+         * channels (5.1 AC-3 over stereo AAC), not the 5.1 one decoded here
+         * although it has more bandwidth */
+        assert(select_dash_audio(tracks, 6, 0) == 1);
+        /* a 5.1 track decoded here (PCM 2.0 on HDMI) loses to a stereo one
+         * for the decoder of the box */
+        tracks[1].inject_as_pcm = 1;
+        assert(select_dash_audio(tracks, 6, 0) == 0);
+        tracks[1].inject_as_pcm = 0;
+        tracks[1].transcode = 1;
+        assert(select_dash_audio(tracks, 6, 0) == 0);
+        tracks[1].transcode = 0;
+        /* both decoded here: channels again */
+        tracks[0].inject_as_pcm = tracks[1].inject_as_pcm = tracks[4].inject_as_pcm = 1;
+        assert(select_dash_audio(tracks, 6, 0) == 3);
+        tracks[0].inject_as_pcm = tracks[1].inject_as_pcm = tracks[4].inject_as_pcm = 0;
+        tracks[3].inject_as_pcm = 0;
+        assert(select_dash_audio(tracks, 6, 0) == 3);
+        tracks[3].inject_as_pcm = 1;
+        tracks[3].transcode = 1;
+        assert(select_dash_audio(tracks, 6, 0) == 1);
+        tracks[3].transcode = 0;
+        /* channels unknown for one of two: bandwidth */
+        tracks[3].inject_as_pcm = 0;
+        tracks[3].channels = 0;
+        assert(select_dash_audio(tracks, 6, 0) == 3);
+        tracks[3].inject_as_pcm = 1;
+        tracks[3].channels = 6;
+        /* -Q 1: fewest channels, lowest bandwidth; -Q 2 as Auto */
+        adaptive_quality_set(1, 0);
+        assert(select_dash_audio(tracks, 6, 0) == 4);
+        adaptive_quality_set(2, 0);
+        assert(select_dash_audio(tracks, 6, 0) == 1);
+        adaptive_quality_set(0, 0);
+        /* disposition first: default, not impaired (as av_find_best_stream) */
+        av->streams[0]->disposition = AV_DISPOSITION_DEFAULT;
+        assert(select_dash_audio(tracks, 6, 0) == 0);
+        av->streams[0]->disposition = 0;
+        av->streams[1]->disposition = AV_DISPOSITION_HEARING_IMPAIRED;
+        assert(select_dash_audio(tracks, 6, 0) == 0); /* 3 is decoded here */
+        tracks[3].inject_as_pcm = 0;
+        assert(select_dash_audio(tracks, 6, 0) == 3);
+        tracks[3].inject_as_pcm = 1;
+        av->streams[1]->disposition = 0;
+        /* the language of the first track */
+        assert(select_dash_audio(tracks, 6, 2) == 2);
+        /* an explicit choice wins: -P, audio_rep_index (-1, &1=) */
+        sel_program_id_set(1);
+        assert(select_dash_audio(tracks, 6, 0) == 0);
+        sel_program_id_set(-1);
+        ffmpeg_av_dict_set("audio_rep_index", "0", 0);
+        assert(select_dash_audio(tracks, 6, 0) == 0);
+        ffmpeg_av_dict_set("audio_rep_index", "-1", 0);
+        assert(select_dash_audio(tracks, 6, 0) == 1);
+        ffmpeg_av_dict_set("audio_rep_index", NULL, 0);
+        /* other inputs keep the first track (HLS has its DEFAULT=YES rule) */
+        av->iformat = &hls;
+        assert(select_dash_audio(tracks, 6, 0) == 0);
+        av->iformat = &mp4;
+        assert(select_dash_audio(tracks, 6, 0) == 0);
+        av->iformat = &dash;
+        assert(select_dash_audio(tracks, 6, -1) == -1);
+        tracks[0].AVIdx = 1;
+        assert(select_dash_audio(tracks, 6, 0) == 0); /* no second input */
+        avContextTab[0] = NULL;
+        av->iformat = NULL;
+        avformat_free_context(av);
+    }
+    {
         PlaybackHandler_t playback = {.Command = seek_playback, .isPlaying = 1};
         Manager_t track_manager = {.Command = seek_manager};
         ManagerHandler_t managers = {.audio = &track_manager, .video = &track_manager};

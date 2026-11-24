@@ -2504,6 +2504,43 @@ def main():
                     player.stop()
             print("PASS HLS/DASH: a variant whose video has no writer is passed over")
 
+            # DASH audio without -t: of the language of the first track the
+            # representation with more channels, -Q 1 the one with fewer; a
+            # file with the same tracks starts with the first one.
+            run(args.ffmpeg, "-y", "-i", str(media), "-map", "0:v", "-map", "0:a", "-map", "0:a",
+                "-c:v", "mpeg2video", "-c:a:0", "aac", "-ac:a:0", "2", "-b:a:0", "96k",
+                "-c:a:1", "ac3", "-ac:a:1", "6", "-b:a:1", "384k",
+                "-metadata:s:a:0", "language=eng", "-metadata:s:a:1", "language=eng", "-t", "6",
+                "-single_file", "1", "-seg_duration", "1", "-f", "dash", str(root / "audiobest.mpd"))
+            mpd = ET.parse(root / "audiobest.mpd").getroot()
+            for representation in mpd.findall(".//d:Representation", ns):
+                segments = representation.find("d:SegmentList", ns)
+                segment_base = ET.Element(f"{{{ns['d']}}}SegmentBase")
+                segment_base.append(segments.find("d:Initialization", ns))
+                representation.remove(segments)
+                representation.append(segment_base)
+            resources["/audiobest.mpd"] = ET.tostring(mpd)
+            for single_file in root.glob("audiobest-stream*.mp4"):
+                resources["/" + single_file.name] = single_file.read_bytes()
+            audiobest = root / "audiobest.mkv"
+            run(args.ffmpeg, "-y", "-i", str(media), "-map", "0:v", "-map", "0:a", "-map", "0:a",
+                "-c:v", "copy", "-c:a:0", "aac", "-ac:a:0", "2", "-b:a:0", "96k",
+                "-c:a:1", "ac3", "-ac:a:1", "6", "-b:a:1", "384k", "-t", "6", str(audiobest))
+            for options, uri, channels in (([], base + "/audiobest.mpd", 6),
+                                           (["-Q", "1"], base + "/audiobest.mpd", 2),
+                                           ([], str(audiobest), 2)):
+                player = Player(args.player, *options, uri)
+                try:
+                    assert player.wait("PLAYBACK_PLAY")["sts"] == 0
+                    tracks = player.wait("a_l")
+                    assert sorted(track["c"] for track in tracks) == [2, 6], (uri, tracks)
+                    current = player.wait("a_c")
+                    assert current["c"] == channels, (options, uri, current, tracks)
+                finally:
+                    player.stop()
+            print("PASS DASH audio: the best representation of the first language without -t "
+                  "(more channels, -Q 1 fewer); a file keeps its first track")
+
             latin = root / "latin1.mkv"
             language = b"Fran\xe7ais \xc3\xa9t\xc3\xa9"  # 0xE7 is Latin-1, the rest UTF-8
             run(args.ffmpeg, "-y", "-i", str(media), "-c", "copy",
