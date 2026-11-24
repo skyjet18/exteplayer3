@@ -570,7 +570,16 @@ static int32_t PlaybackTerminate(Context_t  *context)
     return ret;
 }
 
-static int32_t PlaybackSeek(Context_t  *context, int64_t *pos, uint8_t absolute) 
+static int32_t PlaybackSeekCmd(Context_t  *context, int64_t *pos, ContainerCmd_t containerCmd);
+
+static int32_t PlaybackSeek(Context_t  *context, int64_t *pos, uint8_t absolute)
+{
+    return PlaybackSeekCmd(context, pos, absolute ? CONTAINER_SEEK_ABS : CONTAINER_SEEK);
+}
+
+/* containerCmd: CONTAINER_SEEK (pos in s from the position), CONTAINER_SEEK_ABS
+ * (pos in s), CONTAINER_SEEK_ABS_MS or CONTAINER_SEEK_ABS_MS_AFTER (pos in ms) */
+static int32_t PlaybackSeekCmd(Context_t  *context, int64_t *pos, ContainerCmd_t containerCmd)
 {
     int32_t ret = cERR_PLAYBACK_NO_ERROR;
 
@@ -589,14 +598,7 @@ static int32_t PlaybackSeek(Context_t  *context, int64_t *pos, uint8_t absolute)
          */
         playback_stamp += 1;
         context->playback->stamp = (void *)(uintptr_t)playback_stamp;
-        if (absolute)
-        {
-            ret = context->container->selectedContainer->Command(context, CONTAINER_SEEK_ABS, pos);
-        }
-        else
-        {
-            ret = context->container->selectedContainer->Command(context, CONTAINER_SEEK, pos);
-        }
+        ret = context->container->selectedContainer->Command(context, containerCmd, pos);
         if (ret == 0)
         {
             ret = context->output->Command(context, OUTPUT_CLEAR, NULL);
@@ -897,6 +899,16 @@ static int32_t Command(void* _context, PlaybackCmd_t command, void *argument)
         case PLAYBACK_SEEK_ABS: 
         {
             ret = PlaybackSeek(context, (int64_t*)argument, -1);
+            break;
+        }
+        case PLAYBACK_SEEK_ABS_MS:
+        {
+            ret = PlaybackSeekCmd(context, (int64_t*)argument, CONTAINER_SEEK_ABS_MS);
+            break;
+        }
+        case PLAYBACK_SEEK_ABS_MS_AFTER:
+        {
+            ret = PlaybackSeekCmd(context, (int64_t*)argument, CONTAINER_SEEK_ABS_MS_AFTER);
             break;
         }
         case PLAYBACK_PTS: 

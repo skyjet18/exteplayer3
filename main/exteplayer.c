@@ -63,6 +63,7 @@ extern int32_t ffmpeg_drm_key_audio_switch(void);
 extern int32_t ffmpeg_drm_key_stop(void);
 extern int  container_ffmpeg_audio_info_gen(void);
 extern int  container_ffmpeg_subtitle_info_gen(void);
+extern int32_t container_ffmpeg_chapters(void (*fn)(void *opaque, int32_t id, const ContainerChapter_t *chapter), void *opaque);
 extern int  container_ffmpeg_audio_live_info(int32_t track_id, int *channels, const char **description,
                                               AudioStreamInfo_t *info);
 extern int  container_ffmpeg_video_live_info(int32_t track_id, VideoStreamInfo_t *info);
@@ -325,6 +326,59 @@ static const char *JsonEscape(char *dst, size_t size, const char *src)
     }
     dst[pos] = '\0';
     return dst;
+}
+
+/* The seconds of a seek command in ms: "123", " 123.456", "-5.5". A fraction
+ * past ms is cut off. Returns 1 when the value has a fraction ('.'), 0 for
+ * whole seconds and -1 without a number (*ms is 0 then). Not locale
+ * dependent. */
+static int ParseSeekMs(const char *text, int64_t *ms)
+{
+    const char *p = text;
+    int64_t seconds = 0;
+    int64_t fraction = 0;
+    int negative = 0;
+    int digits = 0;
+    int fractional = 0;
+    int scale = 100;
+
+    *ms = 0;
+    while (' ' == *p || '\t' == *p)
+    {
+        ++p;
+    }
+    if ('-' == *p || '+' == *p)
+    {
+        negative = '-' == *p;
+        ++p;
+    }
+    for (; *p >= '0' && *p <= '9'; ++p, ++digits)
+    {
+        /* far beyond any media: kept there */
+        if (seconds < 1000000000000LL)
+        {
+            seconds = seconds * 10 + (*p - '0');
+        }
+    }
+    if ('.' == *p)
+    {
+        fractional = 1;
+        for (++p; *p >= '0' && *p <= '9'; ++p, ++digits)
+        {
+            fraction += (*p - '0') * scale;
+            scale /= 10;
+        }
+    }
+    if (!digits)
+    {
+        return -1;
+    }
+    *ms = seconds * 1000 + fraction;
+    if (negative)
+    {
+        *ms = -*ms;
+    }
+    return fractional;
 }
 
 void E2iStartMsg(void)
@@ -1130,6 +1184,39 @@ static void FormatTracks(strbuffer_t *cache, const char *argvBuff, const TrackDe
     strbuffer_add( cache, "]}\n");
 }
 
+static void FormatChapter(void *opaque, int32_t id, const ContainerChapter_t *chapter)
+{
+    strbuffer_t *line = opaque;
+    /* the title is not cut: every byte takes at most 6 */
+    size_t titleSize = strlen(chapter->title) * 6 + 1;
+    char *title = malloc(titleSize);
+    char head[96];
+
+    snprintf(head, sizeof(head), "%s{\"id\":%d,\"s\":%"PRId64",\"e\":%"PRId64",\"t\":\"",
+             id ? "," : "", id, chapter->start_ms, chapter->end_ms);
+    strbuffer_add(line, head);
+    strbuffer_add(line, title ? JsonEscape(title, titleSize, chapter->title) : "");
+    strbuffer_add(line, "\"}");
+    free(title);
+}
+
+/* c_l: the chapters of the main input, in the order of their start, at the
+ * open after the track lists and on the command cl. Times in ms. */
+static void SendChapters(void)
+{
+    strbuffer_t *line = strbuffer_init(256);
+
+    if (NULL == line)
+    {
+        return;
+    }
+    strbuffer_add(line, "{\"c_l\":[");
+    container_ffmpeg_chapters(FormatChapter, line);
+    strbuffer_add(line, "]}\n");
+    E2iSendMsg("%s", line->buffer ? line->buffer : "{\"c_l\":[]}\n");
+    strbuffer_free(line);
+}
+
 static int HandleTracks(Manager_t *ptrManager, const PlaybackCmd_t playbackSwitchCmd, const char *argvBuff)
 {
     int commandRetVal = 0;
@@ -1866,6 +1953,8 @@ int main(int argc, char* argv[])
     /* drmkey: 1 --key <kid>:<key>, 2 --key-request (DRM_KEY_REQ, stdin dk <kid>:<key>) */
     /* mpdopt: the OE-A options after .mpd in the url (&0= &1= &5= &6= &7= &8=) are taken off */
     /* cover: the option --cover <path> is known (embedded cover to path, "cover" message) */
+    /* c_l: the chapters (c_l at the open, stdin command cl) */
+    /* seekms: gf/gc take seconds with a fraction (gf123.456), ga<seconds> lands at or after */
     E2iSendMsg("{\"EPLAYER3_EXTENDED\":{\"version\":%d"
                ",\"start\":1"
                ",\"xcode\":%d"
@@ -1879,6 +1968,8 @@ int main(int argc, char* argv[])
                ",\"drmkey\":%d"
                ",\"mpdopt\":1"
                ",\"cover\":1"
+               ",\"c_l\":1"
+               ",\"seekms\":1"
                "}}\n", 187,
                audio_transcode_caps(),
                hls_segment_caps(), ffmpeg_drm_key_caps());
@@ -2184,6 +2275,7 @@ int main(int argc, char* argv[])
                 HandleTracks(g_player->manager->subtitle, PLAYBACK_SWITCH_SUBTITLE, cmd);
             }
             HandleTracks(g_player->manager->subtitle, (PlaybackCmd_t)-1, "sc");
+            SendChapters();
         }
 
         while(g_player->playback->isPlaying && 0 == PlaybackDieNow(0))
@@ -2300,6 +2392,12 @@ int main(int argc, char* argv[])
             }
             case 'c':
             {
+                /* cl: the chapters (c_l) again */
+                if ('l' == argvBuff[1])
+                {
+                    SendChapters();
+                    break;
+                }
                 commandRetVal = g_player->playback->Command(g_player, PLAYBACK_CONTINUE, NULL);
                 E2iSendMsg("{\"PLAYBACK_CONTINUE\":{\"sts\":%d}}\n", commandRetVal);
                 break;
@@ -2353,8 +2451,34 @@ int main(int argc, char* argv[])
                 int64_t length = 0;
                 int32_t lengthInt = 0;
                 int64_t sec = 0;
-                int8_t force = ('f' == argvBuff[1]) ? 1 : 0; // f - force, c - check
-                
+                int64_t gotoMs = 0;
+                int8_t after = ('a' == argvBuff[1]) ? 1 : 0; // a - as f, at or after the target
+                int8_t force = ('f' == argvBuff[1] || after) ? 1 : 0; // f - force, c - check
+
+                /* seconds with a fraction (gf123.456) or ga: the target in ms */
+                if (ParseSeekMs(argvBuff + 2, &gotoMs) > 0 || after)
+                {
+                    if (0 <= gotoMs || force)
+                    {
+                        commandRetVal = g_player->playback->Command(g_player, PLAYBACK_LENGTH, (void*)&length);
+                        E2iSendMsg("{\"PLAYBACK_LENGTH\":{\"length\":%"PRId64", \"sts\":%d}}\n", length, commandRetVal);
+
+                        if (10 <= length || force)
+                        {
+                            int64_t ms = gotoMs;
+                            if (!force && gotoMs >= length * 1000)
+                            {
+                                ms = (length - 10) * 1000;
+                            }
+                            commandRetVal = g_player->playback->Command(g_player,
+                                after ? PLAYBACK_SEEK_ABS_MS_AFTER : PLAYBACK_SEEK_ABS_MS, (void*)&ms);
+                            E2iSendMsg("{\"PLAYBACK_SEEK_ABS\":{\"sec\":%"PRId64", \"ms\":%"PRId64", \"after\":%d, \"sts\":%d}}\n",
+                                       ms / 1000, ms, after, commandRetVal);
+                        }
+                    }
+                    break;
+                }
+
                 sscanf(argvBuff+2, "%d", &gotoPos);
                 if(0 <= gotoPos || force)
                 {

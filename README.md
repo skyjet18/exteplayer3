@@ -84,6 +84,7 @@
 - [Optional decoded PCM export](#-optional-decoded-pcm-export)
 - [Start position](#-start-position)
 - [Embedded cover](#-embedded-cover)
+- [Chapters](#-chapters)
 - [Optional audio transcoding](#-optional-audio-transcoding)
 - [CENC keys per KID](#-cenc-keys-per-kid)
 - [DreamNextGen build (Dreambox One/Two)](#dreamnextgen-build-dreambox-onetwo)
@@ -775,6 +776,38 @@ parameter error.
 
 ---
 
+## 📖 Chapters
+
+At the start the player sends the chapters of the input in one line, right
+after the track lists (`a_l`, `a_c`, `s_l`, `s_c`); stdin `cl` sends it again:
+
+`{"c_l":[{"id":0,"s":0,"e":4321,"t":"Intro"},{"id":1,"s":4321,"e":8000,"t":"Say \"hi\""}]}`
+
+| Key | Meaning |
+|---|---|
+| `id` | position in the list, from `0` |
+| `s`, `e` | start and end in ms (whole numbers) from the start of the media: the same base as the position `J` and the seeks `gf`/`ga` (the `start_time` of the input is taken off, a file muxed with a 10 s offset has its first chapter at `0`); rounded down, `0` for a time before the start |
+| `t` | the `title` of the chapter, JSON-escaped as track names (UTF-8 passed through, other bytes from 0x80 as `\u00xx`), `""` without one |
+
+The list is sorted by the start and has no limit; an input without chapters
+gives `{"c_l":[]}`. The chapters are whatever FFmpeg exposes: Matroska, MP4,
+M4A/M4B (QuickTime chapter track or Nero `chpl`), Ogg (`CHAPTERxxx` comments),
+also over HTTP. FFmpeg fills in an end that the file does not have (the start
+of the next chapter, the end of the last one is the duration); one that is
+still unknown is sent as the start. With a separate audio input (`-x`) the
+chapters are those of the first input. HLS and DASH have none. The list is
+taken at the open and does not change.
+
+To jump to a chapter a front end seeks to its start with `gf<seconds>`, which
+takes a fraction (`gf4.321`): `s / 1000` as it is. The decoder of the box shows what it gets from
+the keyframe on, so the playback starts at the keyframe before the target;
+`ga<seconds>` starts at the first keyframe at or after it instead (the one
+before when there is none behind the target). `EPLAYER3_EXTENDED` carries
+`"c_l":1` and `"seekms":1`. An older player ignores `cl` without an answer,
+reads `gf4.321` as `gf4` and `ga<seconds>` as `gc<seconds>`.
+
+---
+
 ## 🔁 Optional audio transcoding
 
 | Option | Meaning |
@@ -997,6 +1030,9 @@ python3 tests/integration.py \
   --player /path/to/test-output/exteplayer3-host \
   --ffmpeg "$FFMPEG_BUILD/ffmpeg"
 python3 tests/cover.py \
+  --player /path/to/test-output/exteplayer3-host \
+  --ffmpeg "$FFMPEG_BUILD/ffmpeg"
+python3 tests/chapters.py \
   --player /path/to/test-output/exteplayer3-host \
   --ffmpeg "$FFMPEG_BUILD/ffmpeg"
 make -C "$FFMPEG_BUILD" fate-hls-selection fate-mpegts-probe fate-dash-live
@@ -1546,7 +1582,8 @@ track switch or list waits for the reading thread.
 | `q` | stop | `PLAYBACK_STOP` |
 | `p`, `c` | pause, continue | `PLAYBACK_PAUSE`, `PLAYBACK_CONTINUE` |
 | `f<speed>`, `b<speed>`, `m<speed>` | fast forward, fast backward, slow motion | `PLAYBACK_FASTFORWARD`, `PLAYBACK_FASTBACKWARD`, `PLAYBACK_SLOWMOTION` with `speed` and `sts` |
-| `gc<sec>`, `gf<sec>` | seek to a position; `c` only for a length of at least 10 s and at most to 10 s before the end, `f` without these checks | `PLAYBACK_LENGTH`, `PLAYBACK_SEEK_ABS` |
+| `gc<sec>`, `gf<sec>` | seek to a position, on the keyframe before it; `c` only for a length of at least 10 s and at most to 10 s before the end, `f` without these checks. `<sec>` may have a fraction (`gf754.321`, ms; a `.` whatever the locale) | `PLAYBACK_LENGTH`, `PLAYBACK_SEEK_ABS` (`sec`, `sts`; with a fraction also `ms`, `after`) |
+| `ga<sec>` | as `gf`, but on the first keyframe at or after the position (the one before when there is none behind it), see [Chapters](#-chapters) | `PLAYBACK_LENGTH`, `{"PLAYBACK_SEEK_ABS":{"sec":4, "ms":4321, "after":1, "sts":0}}` |
 | `kc<sec>`, `kf<sec>` | seek by seconds; `c` keeps the target between the start and 5 s before the end | `J`, `PLAYBACK_LENGTH`, `PLAYBACK_SEEK` |
 | `j` | position | `{"J":{"ms":...,"lms":...}}` (`lms`, the last PTS the demuxer read, when known); every eleventh `j` also `PLAYBACK_LENGTH` |
 | `l` | length | `{"PLAYBACK_LENGTH":{"length":...,"sts":0}}` |
@@ -1559,6 +1596,7 @@ track switch or list waits for the reading thread.
 | `sl`, `sc` | subtitle track list, current subtitle track | `s_l`, `s_c` |
 | `s<id>`, `si<index>`, `s-1` | switch subtitles, `-1` off | `{"s_s":{"id":...,"sts":...}}` |
 | `vl`, `vc` | video track list, current video track | `v_l`, `v_c` |
+| `cl` | chapters | `c_l` |
 | `dk <kid>:<key>`, `dk <kid>:-` | CENC key of a KID, or none; several pairs per line, also keys that were not asked for | `{"DRM_KEY":{"kid":...,"sts":...}}` for an asked KID |
 
 The end of a command pipe acts as `q`, see the notes on stdin above. A
@@ -1576,10 +1614,11 @@ All messages are single lines on stderr.
 | `EPLAYER3_EXTENDED` | first line: version and features, see [below](#-start-message-eplayer3_extended-version-and-features) |
 | `cover` | `--cover`: after the open, before `PLAYBACK_OPEN`: `file`, `type`, `w`, `h`, `size`, or `{}` without a cover, see [Embedded cover](#-embedded-cover) |
 | `PLAYBACK_OPEN` | after the open: `OutputName`, `file`, `sts` (negative: failed, exit code 10) |
-| `OUTPUT_OPEN`, `PLAYBACK_PLAY` | start of the playback, then `v_c`, `a_l`, `a_c`, `s_l`, `s_c` (`a_s`, `s_s` with `-t`, `-9`) |
+| `OUTPUT_OPEN`, `PLAYBACK_PLAY` | start of the playback, then `v_c`, `a_l`, `a_c`, `s_l`, `s_c` (`a_s`, `s_s` with `-t`, `-9`), `c_l` |
 | `FF_ERROR` | `msg`, `code`: open or read error, see [HTTP input](#-http-input-hls-options-and-stall-limits); `"code":-13` with `No key for KID <kid> (video)` before the stop of a video without a key |
 | `a_l`, `a_c`, `s_l`, `s_c`, `v_l`, `v_c`, `v_e` | tracks, see [Adaptive playback and metadata](#-adaptive-playback-and-metadata) |
 | | audio `a_l`/`a_c`: `id`, `e`, `n`, `c`, `d`, `t`, `sr`, `br`, `cl`, `bps`; subtitles `s_l`/`s_c`: `id`, `e`, `n`, `f`, `t`; `v_c`: `id`, `e`, `n`, `w`, `h`, `f`, `p`, `an`, `ad`, `hdr`, `pr`, `bd`, `br`, `dv`, `cr`, `tc`; `v_l` entries: `id`, `e`, `n`, `pr`, `bd`, `br`, `dv`, `cr`, `tc` |
+| `c_l` | chapters: `{"c_l":[{"id","s","e","t"}]}` (ms), see [Chapters](#-chapters) |
 | `DRM_KEY_REQ` | `--key-request`: `kid`, `type`, `pssh` (`system`, `data`): a KID without a key, once per KID, see [CENC keys per KID](#-cenc-keys-per-kid) |
 | `DRM_KEY` | `kid`, `sts`: outcome of a request, `0` key, `-1` none (`dk <kid>:-`), `-2` no answer within `--key-timeout` |
 | `DRM_KEY_DROP` | `kid`, `type`, `id`, `switch`: a track without a key was dropped; `switch` is the audio track switched to, `-1` none |
@@ -1598,7 +1637,7 @@ player version and what this build supports. The name dates from the first
 commit (v24) and stays, because front ends (E2iPlayer, ServiceApp) detect the
 player by it; the OE-A player sends `{"EPLAYER3_EXTENDED":{"version":185}}`.
 
-`{"EPLAYER3_EXTENDED":{"version":187,"start":1,"xcode":7,"achannel":1,"hlsseg":3,"drmkey":3,"mpdopt":1}}`
+`{"EPLAYER3_EXTENDED":{"version":187,"start":1,"xcode":7,"achannel":1,"forcedonly":1,"hlsseg":3,"drmkey":3,"mpdopt":1,"c_l":1,"seekms":1}}`
 
 A missing key means "not supported": front ends should read every key with a
 default of `0` (`.get(key, 0)`) and test the feature, not the version.
@@ -1615,6 +1654,8 @@ default of `0` (`.get(key, 0)`) and test the feature, not the version.
 | `mpdopt` | `1` | OE-A options after `.mpd` in the URL (`&0=` `&1=` `&5=` `&6=` `&7=` `&8=`) are read and taken off it | 187 |
 | `forcedonly` | `1` | `--forced-only` and stdin `so1`/`so0`/`so` (answer `s_o`): only forced subtitle cues are sent | with #81 |
 | `cover` | `1` | `--cover <path>`: the embedded cover is written to path, message `cover`, see [Embedded cover](#-embedded-cover) | after 187 |
+| `c_l` | `1` | chapters: `c_l` after the track lists, stdin `cl`, see [Chapters](#-chapters) | 187 |
+| `seekms` | `1` | `gc`/`gf` take a fraction of a second (`gf754.321`), `ga<seconds>` lands on the first keyframe at or after the position | 187 |
 
 The version number does not change with every feature: keys added after a release come in builds that still report the previous version (e.g. most keys above came in builds that reported 186 before the release of 187). A front end should therefore test the key, not the version.
 
@@ -1829,10 +1870,11 @@ the DreamOS build; taken over here directly)
 `libeplayer3`)
 
 - The best DASH audio representation of the first track's language instead
-  of the first one (disposition, channels, bandwidth), TangoCash:
+  of the first one, TangoCash (here a track for the decoder of the box first,
+  then channels and bandwidth):
   [ce94a37](https://github.com/neutrino-images/ni-libstb-hal/commit/ce94a37).
 - CENC KIDs and keys also as UUID and base64/base64url (ClearKey JSON), see
-  [CENC keys per KID](#-cenc-keys-per-kid):
+  [CENC keys per KID](#-cenc-keys-per-kid), TangoCash:
   [0c739c6](https://github.com/neutrino-images/ni-libstb-hal/commit/0c739c6).
 - The rtmp parameter buffers one byte short of the terminating NUL (GetAway):
   [910f926](https://github.com/neutrino-images/ni-libstb-hal/commit/910f926db76cef5158048537f65c1d5cec84a53e).
