@@ -361,6 +361,39 @@ def check_drm_keys(args, root, audio, video, resources, base, seen):
     print("PASS CENC keys --key: MP4" + (" and DASH (a KID per track)" if dash else "")
           + " play with the preloaded keys, no request; malformed --key refused")
 
+    # the other forms of a KID or key: UUID, 0x hex, base64url (ClearKey
+    # JWK), in --key and in the FFmpeg option cenc_decryption_keys (-f)
+    def uuid(hex_):
+        return f"{hex_[:8]}-{hex_[8:12]}-{hex_[12:16]}-{hex_[16:20]}-{hex_[20:]}"
+
+    def b64url(hex_):
+        return base64.urlsafe_b64encode(bytes.fromhex(hex_)).decode().rstrip("=")
+
+    def b64(hex_):
+        return base64.b64encode(bytes.fromhex(hex_)).decode()
+
+    forms = [(str(single), ["--key", f"{uuid(kid_a).upper()}:{b64url(key_a)}"]),
+             (str(single), ["--key", f"{b64url(kid_a)}:0x{key_a.upper()}"]),
+             (str(single), ["--key", f"{b64(kid_a)}:{b64(key_a)}"])]
+    if dash:
+        forms.append((base + "/drm.mpd", ["--key", f"{uuid(kid_a)}:{uuid(key_a)}",
+                                          "--key", f"0X{kid_v}:{b64url(key_v)}"]))
+        # a padded base64 KID: its "==" in front of the "=" of the pair
+        forms.append((base + "/drm.mpd", ["-f", f"cenc_decryption_keys={b64(kid_a)}={b64url(key_a)}:"
+                                                f"{b64url(kid_v)}=0x{key_v}"]))
+    for target, options in forms:
+        messages, lefts = drm_play(args, [*options, target])
+        assert not requests(messages), (options, messages)
+        assert sine_played(lefts), (options, len(lefts), max(map(abs, lefts), default=0), messages[-12:],
+                                    drm_last_log)
+    for wrong in (f"{kid_a}:{b64url(key_a)[:-1]}", f"{kid_a}:{b64(key_a)[:-1]}", f"{uuid(kid_a)}0:{key_a}",
+                  f"0x{uuid(kid_a)}:{key_a}"):
+        invalid = subprocess.run([args.player, "--key", wrong, str(single)], capture_output=True, timeout=5)
+        assert invalid.returncode != 0 and b"--key: " in invalid.stdout, (wrong, invalid.stdout)
+    print("PASS CENC keys as UUID, 0x hex, base64 and base64url: --key"
+          + (" and -f cenc_decryption_keys" if dash else "")
+          + " play; 21 base64url characters, a single \"=\", a UUID of 37 and 0x before a UUID refused")
+
     # OE-A options after .mpd in the url ("mpdopt"): each &<0|1|5|6|7|8>=
     # is taken off, the rest of the url (a query string around them) is
     # opened as it was; &50= is not one of them
@@ -383,6 +416,7 @@ def check_drm_keys(args, root, audio, video, resources, base, seen):
         for options, url in (([], f"/drm-one.mpd&5={key_a}"),
                              ([], f"/drm-one.mpd?a=b&5={key_a}&c=d"),
                              ([], f"/drm.mpd&6={key_v}&7={key_a}"),
+                             ([], f"/drm.mpd&6={uuid(key_v)}&7={b64url(key_a)}"),
                              (["--key", f"{kid_v}:{key_v}"], f"/drm.mpd&5={key_a}"),
                              (["--key", f"{kid_a}:{key_a}", "--key", f"{kid_v}:{key_v}"],
                               f"/drm.mpd&5={wrong}&7={wrong}")):
@@ -416,6 +450,13 @@ def check_drm_keys(args, root, audio, video, resources, base, seen):
     # the front end is asked once per KID and answers
     messages, lefts = drm_play(args, ["--key-request", str(single)], {kid_a: key_a})
     assert [(r["kid"], r["type"]) for r in requests(messages)] == [(kid_a, "audio")], messages
+    assert results(messages) == {kid_a: 0}, messages
+    assert sine_played(lefts), (len(lefts), max(map(abs, lefts), default=0), messages[-12:], drm_last_log)
+    # dk with the other forms: a UUID KID (in front, not asked for) and a
+    # base64url key; a pair the player does not take would end the line
+    # before the answer
+    messages, lefts = drm_play(args, ["--key-request", str(single)], {kid_a: b64url(key_a)},
+                               extra_pairs=(f"{uuid(kid_v).upper()}:{b64url(key_v)}",))
     assert results(messages) == {kid_a: 0}, messages
     assert sine_played(lefts), (len(lefts), max(map(abs, lefts), default=0), messages[-12:], drm_last_log)
     messages, lefts = drm_play(args, ["--key-request", base + "/drm.mpd"],
