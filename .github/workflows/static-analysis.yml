@@ -184,7 +184,7 @@ jobs:
         sudo apt-get update -q
         sudo apt-get install -y -q build-essential pkg-config nasm libxml2-dev libssl-dev zlib1g-dev
         mkdir -p "$DIR/src" "$DIR/build"
-        curl -sSL --retry 5 --retry-all-errors "https://github.com/$REPO/archive/$COMMIT.tar.gz" -o "$RUNNER_TEMP/ff.tar.gz"
+        curl --proto '=https' -sSL --retry 5 --retry-all-errors "https://github.com/$REPO/archive/$COMMIT.tar.gz" -o "$RUNNER_TEMP/ff.tar.gz"
         tar -xzf "$RUNNER_TEMP/ff.tar.gz" --strip-components=1 -C "$DIR/src"
         cd "$DIR/build"
         "$DIR/src/configure" $CONFIGURE

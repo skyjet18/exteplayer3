@@ -41,9 +41,7 @@ on:
         options: ['6.1', '9']
         default: '6.1'
 
-permissions:
-  contents: read
-  pull-requests: read
+# permissions: set for each job (read access only)
 
 # a newer push to the same branch / pull request cancels the older run
 concurrency:
@@ -55,6 +53,9 @@ jobs:
     name: Settings check
     runs-on: ubuntu-24.04
     timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read
     outputs:
       enabled: ${{ steps.check.outputs.enabled }}
     steps:
@@ -84,6 +85,9 @@ jobs:
     if: needs.check.outputs.enabled == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 60
+    permissions:
+      contents: read
+      pull-requests: read
     env:
       FFMPEG_VERSION: ${{ inputs.ffmpeg || '6.1' }}
       FFMPEG_REPO: skyjet18/FFmpeg
@@ -167,7 +171,7 @@ jobs:
       if: steps.cache.outputs.cache-hit != 'true'
       run: |
         mkdir -p "$FFMPEG_SOURCE" "$FFMPEG_BUILD"
-        curl -sSL --retry 5 --retry-all-errors "https://github.com/$FFMPEG_REPO/archive/$FFMPEG_SHA.tar.gz" -o "$RUNNER_TEMP/ffmpeg.tar.gz"
+        curl --proto '=https' -sSL --retry 5 --retry-all-errors "https://github.com/$FFMPEG_REPO/archive/$FFMPEG_SHA.tar.gz" -o "$RUNNER_TEMP/ffmpeg.tar.gz"
         tar -xzf "$RUNNER_TEMP/ffmpeg.tar.gz" --strip-components=1 -C "$FFMPEG_SOURCE"
         cd "$FFMPEG_BUILD"
         "$FFMPEG_SOURCE/configure" $FFMPEG_CONFIGURE
