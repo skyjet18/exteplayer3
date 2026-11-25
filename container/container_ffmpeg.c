@@ -2146,6 +2146,8 @@ static char *json_escape_metadata(const char *text)
 {
     const uint8_t *p = (const uint8_t *)text, *end = p + strlen(text);
     char *result, *out;
+    /* an escaped character takes up to six bytes (\u00XX) */
+    size_t size = (size_t)(end - p) * 6 + 1;
     if ((size_t)(end - p) > (SIZE_MAX - 1) / 6 ||
         !(result = av_malloc((end - p) * 6 + 1)))
     {
@@ -2162,7 +2164,7 @@ static char *json_escape_metadata(const char *text)
         }
         else if (*p < 32)
         {
-            out += sprintf(out, "\\u%04x", *p++);
+            out += snprintf(out, size - (size_t)(out - result), "\\u%04x", *p++);
         }
         else if (*p >= 128)
         {
@@ -2175,7 +2177,7 @@ static char *json_escape_metadata(const char *text)
                 p = next;
             }
             else
-                out += sprintf(out, "\\u%04x", *p++);
+                out += snprintf(out, size - (size_t)(out - result), "\\u%04x", *p++);
         }
         else
             *out++ = *p++;
@@ -5132,7 +5134,7 @@ int32_t container_ffmpeg_init_av_context(Context_t *context, char *filename, uin
     {
     	char num[16];
 
-    	sprintf( num, "%u000", context->playback->httpTimeout );
+    	snprintf( num, sizeof(num), "%u000", context->playback->httpTimeout );
         av_dict_set(&avio_opts, "timeout", num, 0); // default is 10s
         av_dict_set(&avio_opts, "rw_timeout", num, 0);
         /* a read that returns nothing for 3x the timeout, at least 60 s, is

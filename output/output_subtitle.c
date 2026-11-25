@@ -205,7 +205,7 @@ static char *mov_get_text(const char *str, int len)
                     if ((unsigned char)p_str[i] < 0x20)
                     {
                         /* any other control character is not allowed raw in a JSON string */
-                        out_ptr += sprintf(out_ptr, "\\u%04x", (unsigned char)p_str[i]);
+                        out_ptr += snprintf(out_ptr, 6 * (size_t)len + 1 - (size_t)(out_ptr - result), "\\u%04x", (unsigned char)p_str[i]);
                     }
                     else
                     {
@@ -332,7 +332,7 @@ static char * json_string_escape(char *str)
             if ((unsigned char)*ptr2 < 0x20)
             {
                 /* any other control character is not allowed raw in a JSON string */
-                ptr1 += sprintf(ptr1, "\\u%04x", (unsigned char)*ptr2);
+                ptr1 += snprintf(ptr1, tmpSize - (size_t)(ptr1 - tmp), "\\u%04x", (unsigned char)*ptr2);
             }
             else
             {
