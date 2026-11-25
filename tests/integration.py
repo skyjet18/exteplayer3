@@ -2294,6 +2294,33 @@ def main():
                     player.stop()
             print("PASS stop signals: PLAYBACK_STOP and exit code 0 on SIGTERM, SIGINT, SIGHUP, also paused")
 
+            # A second signal during the stop ends the process at once, after
+            # the bounded DVB cleanup (nothing to stop with the host output).
+            # Two different signals: two equal ones pending at once are one.
+            player = Player(args.player, str(signal_media))
+            try:
+                assert player.wait("PLAYBACK_PLAY")["sts"] == 0
+                started = time.monotonic()
+                player.process.send_signal(signal.SIGTERM)
+                player.process.send_signal(signal.SIGINT)
+                player.process.wait(timeout=5)
+                assert time.monotonic() - started < 3
+                assert player.process.returncode in (128 + signal.SIGINT, 128 + signal.SIGTERM), (
+                    player.process.returncode)
+            finally:
+                if player.process.poll() is None:
+                    player.process.kill()
+                    player.process.wait()
+                player.reader.join(timeout=2)
+                player.process.stdin.close()
+                player.process.stderr.close()
+                player.log.seek(0)
+                second_log = player.log.read().decode(errors="replace")
+                player.log.close()
+            assert "Second signal" in second_log, second_log[-3000:]
+            assert "DVB cleanup before the exit: no device open" in second_log, second_log[-3000:]
+            print("PASS second stop signal: exit 128 + signal after the DVB cleanup")
+
             # A signal while the input is still being opened: a FIFO without a
             # writer blocks the open. The player ends as on "q" at that point.
             blocked = root / "blocked.ts"

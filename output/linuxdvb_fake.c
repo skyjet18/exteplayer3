@@ -416,6 +416,12 @@ int LinuxDvbEac3RestartState(void)
     return 0;
 }
 
+/* the stop before the exit of linuxdvb_mipsel.c: no decoder to stop here */
+int LinuxDvbFallbackStop(void)
+{
+    return LINUXDVB_FALLBACK_NOTHING;
+}
+
 static int Write(void  *_context, void *_out)
 {
     Context_t          *context  = (Context_t  *) _context;
