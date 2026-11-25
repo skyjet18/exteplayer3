@@ -134,6 +134,8 @@ void freeTrack(Track_t *track)
 void replaceTrack(Track_t *to, Track_t *from)
 {
     Track_t replacement;
+    if (NULL == to || NULL == from)
+        return;
     copyTrack(&replacement, from);
     if (to->aacbuf == replacement.aacbuf)
         to->aacbuf = NULL;
