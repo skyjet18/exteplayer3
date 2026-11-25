@@ -91,7 +91,7 @@ static int EncodeRGBAImage(const char *filename, const unsigned char *data, int 
     tmpname = malloc(strlen(filename) + sizeof(".tmp"));
     if (!tmpname)
         goto done;
-    sprintf(tmpname, "%s.tmp", filename);
+    snprintf(tmpname, strlen(filename) + sizeof(".tmp"), "%s.tmp", filename);
     file = fopen(tmpname, "wb");
     if (!file)
         goto done;

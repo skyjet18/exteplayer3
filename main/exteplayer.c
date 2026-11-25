@@ -1148,12 +1148,12 @@ static void FormatTracks(strbuffer_t *cache, const char *argvBuff, const TrackDe
     if (NULL == TrackList)
     {
         // not tracks
-        sprintf( tmp_str, "{\"%c_%c\": []}\n", argvBuff[0], argvBuff[1]);
+        snprintf( tmp_str, sizeof(tmp_str), "{\"%c_%c\": []}\n", argvBuff[0], argvBuff[1]);
         strbuffer_add( cache, tmp_str );
         return;
     }
 
-    sprintf( tmp_str, "{\"%c_%c\": [", argvBuff[0], argvBuff[1]);
+    snprintf( tmp_str, sizeof(tmp_str), "{\"%c_%c\": [", argvBuff[0], argvBuff[1]);
     strbuffer_add( cache, tmp_str );
 
     for (i = 0; TrackList[i].Id >= 0; ++i)
@@ -2261,7 +2261,7 @@ int main(int argc, char* argv[])
             if (audioTrackIdx >= 0)
             {
                 static char cmd[128] = ""; // static to not allocate on stack
-                sprintf(cmd, "ai%d\n", audioTrackIdx);
+                snprintf(cmd, sizeof(cmd), "ai%d\n", audioTrackIdx);
                 HandleTracks(g_player->manager->audio, PLAYBACK_SWITCH_AUDIO, cmd);
             }
             HandleTracks(g_player->manager->audio, (PlaybackCmd_t)-1, "ac");
@@ -2271,7 +2271,7 @@ int main(int argc, char* argv[])
             if (subtitleTrackIdx >= 0)
             {
                 static char cmd[128] = ""; // static to not allocate on stack
-                sprintf(cmd, "si%d\n", subtitleTrackIdx);
+                snprintf(cmd, sizeof(cmd), "si%d\n", subtitleTrackIdx);
                 HandleTracks(g_player->manager->subtitle, PLAYBACK_SWITCH_SUBTITLE, cmd);
             }
             HandleTracks(g_player->manager->subtitle, (PlaybackCmd_t)-1, "sc");
