@@ -37,6 +37,14 @@ $cc -g -fsanitize=undefined -ffunction-sections -fdata-sections \
     tests/close_order_test.c tools/debug.c -Wl,--gc-sections -pthread -o "$tmp/close_order"
 timeout 30 "$tmp/close_order"
 rm -f "$tmp/close_order"
+# The stop of the DVB decoders before the _exit() of the stop signal
+# fallbacks: bounded, against a driver that hangs, a lock that is kept, a
+# device closed already and the event thread in a poll.
+$cc -g -fsanitize=undefined -ffunction-sections -fdata-sections \
+    -Wno-deprecated-declarations -Iinclude -Iexternal -I"$FFMPEG_BUILD" -I"$FFMPEG_SOURCE" \
+    tests/fallback_stop_test.c tools/debug.c -Wl,--gc-sections -pthread -o "$tmp/fallback_stop"
+timeout 30 "$tmp/fallback_stop"
+rm -f "$tmp/fallback_stop"
 # The live start hold: the default of the box taken by the play thread, and
 # EP3_LIVE_SYNC, at the first video packet of a stream without a duration.
 # The play thread needs what the player links with the container: all of

@@ -1155,6 +1155,73 @@ int LinuxDvbPlay(Context_t  *context, char *type) {
     return context->playback->isDash ? ret : 0;
 }
 
+/* The stop of the video decoder, for LinuxDvbStop() and the stop before the
+ * exit (LinuxDvbFallbackStop()). The caller owns LinuxDVBmutex, videofd is
+ * open. A decoder that is stopped already is left alone, see videoRunning. */
+static int LinuxDvbStopVideoLocked(void)
+{
+    int ret = cERR_LINUXDVB_NO_ERROR;
+
+    if (videoRunning)
+    {
+        videoRunning = false;
+        if (ioctl(videofd, VIDEO_CLEAR_BUFFER) == -1)
+        {
+            linuxdvb_err("VIDEO_CLEAR_BUFFER: ERROR %d, %s\n", errno, strerror(errno));
+        }
+
+        if (ioctl(videofd, VIDEO_STOP) == -1)
+        {
+            linuxdvb_err("VIDEO_STOP: ERROR %d, %s\n", errno, strerror(errno));
+            ret = cERR_LINUXDVB_ERROR;
+        }
+
+        ioctl(videofd, VIDEO_SLOWMOTION, 0);
+        ioctl(videofd, VIDEO_FAST_FORWARD, 0);
+    }
+    if (videoOnMemory)
+    {
+        videoOnMemory = false;
+        ioctl(videofd, VIDEO_SELECT_SOURCE, VIDEO_SOURCE_DEMUX);
+    }
+    return ret;
+}
+
+/* The same for the audio decoder; the caller owns LinuxDVBmutex, audiofd is
+ * open. */
+static int LinuxDvbStopAudioLocked(void)
+{
+    int ret = cERR_LINUXDVB_NO_ERROR;
+
+    /* not left or right for what plays next, DVB services included;
+     * the selection itself stays for a start that follows */
+    if (OUTPUT_AUDIO_CHANNEL_STEREO != audioChannelApplied)
+        LinuxDvbSetAudioChannel(OUTPUT_AUDIO_CHANNEL_STEREO);
+
+    if (audioRunning)
+    {
+        audioRunning = false;
+        if (ioctl(audiofd, AUDIO_CLEAR_BUFFER) == -1)
+        {
+            linuxdvb_err("AUDIO_CLEAR_BUFFER: ERROR %d, %s\n", errno, strerror(errno));
+        }
+
+        if (ioctl(audiofd, AUDIO_STOP) == -1)
+        {
+            linuxdvb_err("AUDIO_STOP: ERROR %d, %s\n", errno, strerror(errno));
+            ret = cERR_LINUXDVB_ERROR;
+        }
+    }
+    if (audioOnMemory)
+    {
+        audioOnMemory = false;
+        ioctl(audiofd, AUDIO_SELECT_SOURCE, AUDIO_SOURCE_DEMUX);
+    }
+    eac3Restart = 0;
+    eac3BypassKept = 0;
+    return ret;
+}
+
 int LinuxDvbStop(Context_t  *context, char * type)
 {
     int ret = cERR_LINUXDVB_NO_ERROR;
@@ -1185,60 +1252,10 @@ int LinuxDvbStop(Context_t  *context, char * type)
 
     getLinuxDVBMutex();
 
-    /* a decoder that is stopped already is left alone, see videoRunning */
-    if (video && videofd != -1)
-    {
-        if (videoRunning)
-        {
-            videoRunning = false;
-            if (ioctl(videofd, VIDEO_CLEAR_BUFFER) == -1)
-            {
-                linuxdvb_err("VIDEO_CLEAR_BUFFER: ERROR %d, %s\n", errno, strerror(errno));
-            }
-
-            if (ioctl(videofd, VIDEO_STOP) == -1)
-            {
-                linuxdvb_err("VIDEO_STOP: ERROR %d, %s\n", errno, strerror(errno));
-                ret = cERR_LINUXDVB_ERROR;
-            }
-
-            ioctl(videofd, VIDEO_SLOWMOTION, 0);
-            ioctl(videofd, VIDEO_FAST_FORWARD, 0);
-        }
-        if (videoOnMemory)
-        {
-            videoOnMemory = false;
-            ioctl(videofd, VIDEO_SELECT_SOURCE, VIDEO_SOURCE_DEMUX);
-        }
-    }
-    if (audio && audiofd != -1) {
-        /* not left or right for what plays next, DVB services included;
-         * the selection itself stays for a start that follows */
-        if (OUTPUT_AUDIO_CHANNEL_STEREO != audioChannelApplied)
-            LinuxDvbSetAudioChannel(OUTPUT_AUDIO_CHANNEL_STEREO);
-
-        if (audioRunning)
-        {
-            audioRunning = false;
-            if (ioctl(audiofd, AUDIO_CLEAR_BUFFER) == -1)
-            {
-                linuxdvb_err("AUDIO_CLEAR_BUFFER: ERROR %d, %s\n", errno, strerror(errno));
-            }
-
-            if (ioctl(audiofd, AUDIO_STOP) == -1)
-            {
-                linuxdvb_err("AUDIO_STOP: ERROR %d, %s\n", errno, strerror(errno));
-                ret = cERR_LINUXDVB_ERROR;
-            }
-        }
-        if (audioOnMemory)
-        {
-            audioOnMemory = false;
-            ioctl(audiofd, AUDIO_SELECT_SOURCE, AUDIO_SOURCE_DEMUX);
-        }
-        eac3Restart = 0;
-        eac3BypassKept = 0;
-    }
+    if (video && videofd != -1 && LinuxDvbStopVideoLocked() < 0)
+        ret = cERR_LINUXDVB_ERROR;
+    if (audio && audiofd != -1 && LinuxDvbStopAudioLocked() < 0)
+        ret = cERR_LINUXDVB_ERROR;
 
     releaseLinuxDVBMutex();
 
@@ -2312,6 +2329,184 @@ static void LinuxDvbEventThreadStop(void)
     eventThreadPaused = false;
     eventThreadEnded = false;
     pthread_mutex_unlock(&eventThreadMutex);
+}
+
+/*
+ * The stop before the exit of a fallback of the stop signals in
+ * main/exteplayer.c (a second signal, or a stop after a signal that takes
+ * longer than STOP_SIGNAL_TIMEOUT): the process ends with _exit() right after
+ * it. The devices still open would be released by the end of the process,
+ * with their decoders running; on Broadcom boxes that path of the driver has
+ * crashed the kernel (a kill -9 during playback, an enigma2 ended by the OOM
+ * killer). So what LinuxDvbStop() and LinuxDvbClose() would do is done here,
+ * as far as it goes without waiting for a thread of the player:
+ *  - LinuxDVBmutex is only tried, every LINUXDVB_FALLBACK_RETRY_MS up to a
+ *    deadline per device; a device whose lock another thread keeps (a stop
+ *    that hangs in the driver) is left to the end of the process, as before;
+ *  - a device closed already (fd -1) is not touched; one that LinuxDvbStop()
+ *    has left open (a thread still in the driver) is stopped, not closed;
+ *  - the video device only after the event thread has ended, as in
+ *    LinuxDvbStop(); while it still polls, the device is left alone;
+ *  - the close is a dup2() of /dev/null onto the number: the device is
+ *    released, and a thread that uses the number afterwards (a write of the
+ *    play or buffering thread, a position request) reaches /dev/null, never
+ *    a file opened meanwhile under the same number. The fd is set to -1
+ *    under the lock: no close follows.
+ * The work runs in a thread of its own; LinuxDvbFallbackStop() waits for it
+ * at most LINUXDVB_FALLBACK_STOP_MS, also when an ioctl of it does not return.
+ */
+#ifndef LINUXDVB_FALLBACK_STOP_MS
+#define LINUXDVB_FALLBACK_STOP_MS 1000
+#endif
+#define LINUXDVB_FALLBACK_RETRY_MS 10
+/* deadlines of the lock from the start of the work: the audio device first,
+ * the video device after the end of the event thread (VIDEO_EVENT_END_MS) */
+#define LINUXDVB_FALLBACK_AUDIO_LOCK_MS 250
+#define LINUXDVB_FALLBACK_VIDEO_LOCK_MS 700
+
+static pthread_mutex_t fallbackMutex = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t fallbackCond;
+static pthread_once_t fallbackOnce = PTHREAD_ONCE_INIT;
+static bool fallbackStarted;
+static int fallbackResult = -1;
+
+static void LinuxDvbFallbackCondInit(void)
+{
+    pthread_condattr_t attr;
+
+    pthread_condattr_init(&attr);
+    pthread_condattr_setclock(&attr, CLOCK_MONOTONIC);
+    pthread_cond_init(&fallbackCond, &attr);
+    pthread_condattr_destroy(&attr);
+}
+
+static bool LinuxDvbFallbackLock(const struct timespec *start, long deadline_ms)
+{
+    for (;;)
+    {
+        if (!pthread_mutex_trylock(&LinuxDVBmutex))
+            return true;
+        if (LinuxDvbElapsedMs(start) >= deadline_ms)
+            return false;
+        usleep(LINUXDVB_FALLBACK_RETRY_MS * 1000);
+    }
+}
+
+/* The caller owns LinuxDVBmutex, *fd is open. */
+static bool LinuxDvbFallbackRelease(int *fd, bool leftOpen)
+{
+    int devnull;
+
+    if (leftOpen)
+        return false;
+    devnull = open("/dev/null", O_RDWR | O_CLOEXEC);
+    if (devnull < 0)
+        return false;
+    if (dup2(devnull, *fd) < 0)
+    {
+        close(devnull);
+        return false;
+    }
+    close(devnull);
+    *fd = -1;
+    return true;
+}
+
+static int LinuxDvbFallbackWork(void)
+{
+    struct timespec start;
+    int found = 0, skipped = 0;
+    bool videoOpen = false;
+
+    clock_gettime(CLOCK_MONOTONIC, &start);
+
+    if (LinuxDvbFallbackLock(&start, LINUXDVB_FALLBACK_AUDIO_LOCK_MS))
+    {
+        if (audiofd != -1)
+        {
+            found++;
+            LinuxDvbStopAudioLocked();
+            if (!LinuxDvbFallbackRelease(&audiofd, audioLeftOpen))
+                skipped++;
+        }
+        releaseLinuxDVBMutex();
+    }
+    else
+        skipped++;
+
+    if (LinuxDvbFallbackLock(&start, LINUXDVB_FALLBACK_VIDEO_LOCK_MS))
+    {
+        videoOpen = videofd != -1;
+        releaseLinuxDVBMutex();
+    }
+    else
+        skipped++;
+    if (videoOpen)
+    {
+        found++;
+        if (!LinuxDvbEventThreadEnd())
+            skipped++;
+        else if (LinuxDvbFallbackLock(&start, LINUXDVB_FALLBACK_VIDEO_LOCK_MS))
+        {
+            if (videofd != -1)
+            {
+                LinuxDvbStopVideoLocked();
+                if (!LinuxDvbFallbackRelease(&videofd, videoLeftOpen))
+                    skipped++;
+            }
+            releaseLinuxDVBMutex();
+        }
+        else
+            skipped++;
+    }
+
+    if (skipped)
+        return LINUXDVB_FALLBACK_PARTIAL;
+    return found ? LINUXDVB_FALLBACK_DONE : LINUXDVB_FALLBACK_NOTHING;
+}
+
+static void *LinuxDvbFallbackThread(void *arg)
+{
+    int result = LinuxDvbFallbackWork();
+
+    (void)arg;
+    pthread_mutex_lock(&fallbackMutex);
+    fallbackResult = result;
+    pthread_cond_broadcast(&fallbackCond);
+    pthread_mutex_unlock(&fallbackMutex);
+    return NULL;
+}
+
+/* Returns one of LINUXDVB_FALLBACK_*; the process is expected to end after
+ * it (the devices are not usable any more). */
+int LinuxDvbFallbackStop(void)
+{
+    struct timespec until;
+    int waited = 0, result;
+
+    pthread_once(&fallbackOnce, LinuxDvbFallbackCondInit);
+    pthread_mutex_lock(&fallbackMutex);
+    if (!fallbackStarted)
+    {
+        pthread_attr_t attr;
+        pthread_t thread;
+
+        pthread_attr_init(&attr);
+        pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
+        fallbackStarted = !pthread_create(&thread, &attr, LinuxDvbFallbackThread, NULL);
+        pthread_attr_destroy(&attr);
+        if (!fallbackStarted)
+        {
+            pthread_mutex_unlock(&fallbackMutex);
+            return LINUXDVB_FALLBACK_NOT_STARTED;
+        }
+    }
+    LinuxDvbEventThreadDeadline(&until, LINUXDVB_FALLBACK_STOP_MS);
+    while (fallbackResult < 0 && !waited)
+        waited = pthread_cond_timedwait(&fallbackCond, &fallbackMutex, &until);
+    result = fallbackResult < 0 ? LINUXDVB_FALLBACK_TIMEOUT : fallbackResult;
+    pthread_mutex_unlock(&fallbackMutex);
+    return result;
 }
 
 /*

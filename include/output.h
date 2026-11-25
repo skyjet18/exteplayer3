@@ -102,6 +102,15 @@ int subtitle_forced_only_get(void);
 extern Output_t DreamVideoOutput;
 #endif
 
+/* The stop of the DVB decoders right before the _exit() of a fallback of
+ * the stop signals (main/exteplayer.c): bounded, see linuxdvb_mipsel.c. */
+#define LINUXDVB_FALLBACK_NOTHING     0 /* no device open any more */
+#define LINUXDVB_FALLBACK_DONE        1 /* stopped and closed */
+#define LINUXDVB_FALLBACK_PARTIAL     2 /* a device left to the end of the process */
+#define LINUXDVB_FALLBACK_TIMEOUT     3 /* not done within the wait */
+#define LINUXDVB_FALLBACK_NOT_STARTED 4 /* no thread for it */
+int LinuxDvbFallbackStop(void);
+
 typedef struct OutputHandler_s 
 {
     char *Name;

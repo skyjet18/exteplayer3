@@ -1162,6 +1162,19 @@ phase as well (exit code 11). A second signal, or a stop that takes more than
 5 s, ends the process at once (exit code 128 + signal). `SIGPIPE` is ignored:
 a front end that is gone is found through the end of the command pipe.
 
+Before that exit the DVB decoders that still run are stopped and their
+devices closed (`AUDIO_STOP`/`VIDEO_STOP` with the buffer clear and the
+source back to the demux, as the normal stop does), so that the end of the
+process does not leave a running decoder to the driver: on Broadcom boxes that
+path has crashed the kernel. It waits for no thread of the player: the output
+lock is only tried, a device the normal stop has closed already is not
+touched, the video device only after the end of the event thread's poll, and
+the whole cleanup gets at most 1 s, then the process ends as before, also
+when an ioctl of the driver does not return. stdout shows the result,
+e.g. `DVB cleanup before the exit: decoders stopped, devices closed` (or
+`a device left to the end of the process`, `not done within the wait`).
+sh4 boxes leave the devices to the end of the process as before.
+
 `q` during the open of the input (also a server that accepts the connection
 and then stops answering, in `avformat_open_input()` or
 `avformat_find_stream_info()`, an HLS playlist or segment) is reported to the
@@ -1461,7 +1474,7 @@ The prebuilt packages in `ipk/` are of version 183 (see `ipk/README.md`).
 | `1` | usage text: missing uri, unknown option, invalid value, an `iptv://` file of the uri or of `-F` that cannot be read |
 | `10` | the open failed (`PLAYBACK_OPEN` with a negative `sts`) |
 | `11` | `q` during the open |
-| `128 + signal` | a second signal, or a stop after a signal that takes more than 5 s |
+| `128 + signal` | a second signal, or a stop after a signal that takes more than 5 s (after the DVB cleanup of at most 1 s) |
 
 ---
 

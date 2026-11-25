@@ -375,6 +375,29 @@ static void StopSignalsBlock(void)
     g_parentPid = getppid();
 }
 
+/* The exit of the two fallbacks: the DVB decoders still running are stopped
+ * and their devices closed first, as far as that goes within
+ * LINUXDVB_FALLBACK_STOP_MS (1 s), so that the end of the process does not
+ * release a running decoder in the driver; see LinuxDvbFallbackStop(). The
+ * line goes to stdout like the other lines here (stderr carries the JSON). */
+static void StopSignalExit(int code)
+{
+    static const char *const results[] = {
+        [LINUXDVB_FALLBACK_NOTHING] = "no device open",
+        [LINUXDVB_FALLBACK_DONE] = "decoders stopped, devices closed",
+        [LINUXDVB_FALLBACK_PARTIAL] = "a device left to the end of the process",
+        [LINUXDVB_FALLBACK_TIMEOUT] = "not done within the wait",
+        [LINUXDVB_FALLBACK_NOT_STARTED] = "not started",
+    };
+    int result = LinuxDvbFallbackStop();
+
+    if (result < 0 || result > LINUXDVB_FALLBACK_NOT_STARTED)
+        result = LINUXDVB_FALLBACK_NOT_STARTED;
+    printf("DVB cleanup before the exit: %s\n", results[result]);
+    fflush(stdout);
+    _exit(code);
+}
+
 static void *StopSignalThreadFun(void *arg)
 {
     struct timespec second = {1, 0};
@@ -393,7 +416,7 @@ static void *StopSignalThreadFun(void *arg)
                 if (++waited >= STOP_SIGNAL_TIMEOUT)
                 {
                     printf("Stop after signal %d takes too long, exit now\n", (int)g_stopSignal);
-                    _exit(128 + g_stopSignal);
+                    StopSignalExit(128 + g_stopSignal);
                 }
                 continue;
             }
@@ -412,7 +435,7 @@ static void *StopSignalThreadFun(void *arg)
         else if (g_stopSignal)
         {
             printf("Second signal %d, exit now\n", sig);
-            _exit(128 + sig);
+            StopSignalExit(128 + sig);
         }
         else
         {
