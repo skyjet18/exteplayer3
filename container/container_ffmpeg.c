@@ -4974,6 +4974,7 @@ int32_t container_ffmpeg_init_av_context(Context_t *context, char *filename, uin
         {
             char *baseUri = strdup(filename);
             char *token  = NULL;
+            char *tokenPos = NULL;
 
             if (!baseUri)
             {
@@ -4985,7 +4986,7 @@ int32_t container_ffmpeg_init_av_context(Context_t *context, char *filename, uin
             }
             
             // check if uri have additional params
-            if (strtok(baseUri, " ") != NULL )
+            if (strtok_r(baseUri, " ", &tokenPos) != NULL )
             {
                 char *conn = malloc(strlen(filename));
                 char *swfUrl = malloc(strlen(filename));
@@ -5007,7 +5008,7 @@ int32_t container_ffmpeg_init_av_context(Context_t *context, char *filename, uin
                 swfUrl[0] = '\0';
                 swfVfy[0] = '\0';
                 token = NULL;
-                while((token = strtok(token, " ")) != NULL)
+                while((token = strtok_r(token, " ", &tokenPos)) != NULL)
                 {
                     if ((poseq = strchr(token, '=')) != NULL)
                     {

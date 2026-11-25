@@ -165,6 +165,7 @@ static int writeData(void *_call)
             byte_rate = 32000;
             block_align = 1;
             /* fall through: no format tag */
+            FALLTHROUGH;
         default:
             format_tag = 0xFFFF;
             break;
