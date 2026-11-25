@@ -423,7 +423,7 @@ jobs:
       run: |
         set -eux
         mkdir -p src/ffmpeg
-        curl -sSL --retry 5 --retry-all-errors "https://github.com/$FFMPEG_REPO/archive/$FFMPEG_SHA.tar.gz" | tar -xz --strip-components=1 -C src/ffmpeg
+        curl --proto '=https' -sSL --retry 5 --retry-all-errors "https://github.com/$FFMPEG_REPO/archive/$FFMPEG_SHA.tar.gz" | tar -xz --strip-components=1 -C src/ffmpeg
         bash .github/ipk/chroot.sh "$PWD/rootfs.tar.zst"
         rc=0
         sudo chroot $R /usr/bin/env ARCH=$ARCH FFMPEG_VERSION=$FFMPEG_VERSION /bin/bash /w/.github/ipk/ffmpeg.sh || rc=$?

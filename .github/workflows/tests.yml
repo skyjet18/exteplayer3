@@ -116,7 +116,7 @@ jobs:
         SHA: ${{ steps.ffmpeg.outputs.sha }}
       run: |
         mkdir -p "$FFMPEG_SOURCE" "$FFMPEG_BUILD"
-        curl -sSL --retry 5 --retry-all-errors "https://github.com/$FFMPEG_REPO/archive/$SHA.tar.gz" -o "$RUNNER_TEMP/ffmpeg.tar.gz"
+        curl --proto '=https' -sSL --retry 5 --retry-all-errors "https://github.com/$FFMPEG_REPO/archive/$SHA.tar.gz" -o "$RUNNER_TEMP/ffmpeg.tar.gz"
         tar -xzf "$RUNNER_TEMP/ffmpeg.tar.gz" --strip-components=1 -C "$FFMPEG_SOURCE"
         cd "$FFMPEG_BUILD"
         "$FFMPEG_SOURCE/configure" $FFMPEG_CONFIGURE
