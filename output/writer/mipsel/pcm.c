@@ -146,6 +146,7 @@ static int32_t writeData(void *_call)
             case AV_CODEC_ID_PCM_U16LE:
                 LE = 1;
                 /* fall through */
+                FALLTHROUGH;
             case AV_CODEC_ID_PCM_S16BE:
             case AV_CODEC_ID_PCM_U16BE:
                 width = depth = 16;
@@ -154,6 +155,7 @@ static int32_t writeData(void *_call)
             case AV_CODEC_ID_PCM_U24LE:
                 LE = 1;
                 /* fall through */
+                FALLTHROUGH;
             case AV_CODEC_ID_PCM_S24BE:
             case AV_CODEC_ID_PCM_U24BE:
                 width = depth = 24;
@@ -162,6 +164,7 @@ static int32_t writeData(void *_call)
             case AV_CODEC_ID_PCM_U32LE:
                 LE = 1;
                 /* fall through */
+                FALLTHROUGH;
             case AV_CODEC_ID_PCM_S32BE:
             case AV_CODEC_ID_PCM_U32BE:
                 width = depth = 32;

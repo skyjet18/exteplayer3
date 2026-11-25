@@ -6,6 +6,17 @@
 #include <stdint.h>
 #include "common.h"
 
+/* marks an intended fall-through to the next case label; compilers
+ * without the attribute (GCC before 7) get an empty statement */
+#if defined(__has_attribute)
+#if __has_attribute(fallthrough)
+#define FALLTHROUGH __attribute__((fallthrough))
+#endif
+#endif
+#ifndef FALLTHROUGH
+#define FALLTHROUGH do {} while (0)
+#endif
+
 typedef enum { eNone, eAudio, eVideo} eWriterType_t;
 typedef ssize_t (* WriteV_t) (int, const struct iovec *, int);
 

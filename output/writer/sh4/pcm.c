@@ -157,6 +157,8 @@ static int32_t prepareClipPlay(int32_t uNoOfChannels, int32_t uSampleRate, int32
     {
         case 24:
             lpcm_prv[7] |= 0x20;
+            /* fall through */
+            FALLTHROUGH;
         case 16:
             break;
         default:
@@ -215,18 +217,24 @@ static int32_t writeData(void *_call)
             case AV_CODEC_ID_PCM_S16LE:
             case AV_CODEC_ID_PCM_U16LE:
                 LE = 1;
+                /* fall through */
+                FALLTHROUGH;
             case AV_CODEC_ID_PCM_S16BE:
             case AV_CODEC_ID_PCM_U16BE:
                 break;
             case AV_CODEC_ID_PCM_S24LE:
             case AV_CODEC_ID_PCM_U24LE:
                 LE = 1;
+                /* fall through */
+                FALLTHROUGH;
             case AV_CODEC_ID_PCM_S24BE:
             case AV_CODEC_ID_PCM_U24BE:
                 break;
             case AV_CODEC_ID_PCM_S32LE:
             case AV_CODEC_ID_PCM_U32LE:
                 LE = 1;
+                /* fall through */
+                FALLTHROUGH;
             case AV_CODEC_ID_PCM_S32BE:
             case AV_CODEC_ID_PCM_U32BE:
                 break;
