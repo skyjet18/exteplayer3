@@ -24,10 +24,10 @@ int test_clock_gettime(clockid_t clock, struct timespec *now);
 #undef fopen
 #undef clock_gettime
 
-/* The DD+ restart after the first passthrough start on VU+ Ultimo 4K / Duo 4K SE:
+/* The DD+ restart after every passthrough start on VU+ Ultimo 4K / Duo 4K SE:
  * the box is described by GetSTBType() and the two /proc files, time by a clock
  * that moves only when the test moves it. Every case runs in a child of its own,
- * as the arming is decided once per process. */
+ * with the state of the backend as at the start of a process. */
 
 static stb_type_t stb = STB_VUPLUS;
 static const char *model = "ultimo4k\n";
@@ -84,8 +84,9 @@ stb_type_t GetSTBType(void) { return stb; }
 int8_t PlaybackDieNow(int8_t value) { (void)value; return 0; }
 void E2iSendMsg(const char *format, ...) { (void)format; }
 
+static int resets;
 static int write_packet(void *call) { (void)call; writes++; return 100; }
-static int reset_writer(void) { return 0; }
+static int reset_writer(void) { resets++; return 0; }
 static WriterCaps_t eac3_caps = {.dvbStreamType = AUDIOTYPE_AC3_PLUS};
 static WriterCaps_t ac3_caps = {.dvbStreamType = AUDIOTYPE_AC3};
 static Writer_t eac3_writer = {.reset = reset_writer, .writeData = write_packet, .caps = &eac3_caps};
@@ -138,8 +139,9 @@ static void start(void)
     assert(!Command(&context, OUTPUT_PLAY, "audio"));
 }
 
-/* Armed: fast polling until the first DD+ packet and 100 ms after it, then the
- * restart is due exactly once. A second start of the file does not arm it again. */
+/* Armed: fast polling until a DD+ packet is written and 100 ms have passed
+ * since the audio start, then the restart is due exactly once. Every audio
+ * start (a second start of the file too) arms it again. */
 static void armed(void)
 {
     uint8_t data[4] = {0x0b, 0x77};
@@ -147,10 +149,10 @@ static void armed(void)
     clock_ms = 1000;
     start();
     assert(LinuxDvbEac3RestartState() == 1);
-    clock_ms += 300;
+    clock_ms += 30;
     assert(LinuxDvbEac3RestartState() == 1);
     assert(!LinuxDvbOutput.Write(&context, &out) && writes == 1);
-    clock_ms += 99;
+    clock_ms += 69;
     assert(LinuxDvbEac3RestartState() == 1);
     clock_ms += 1;
     assert(LinuxDvbEac3RestartState() == 2);
@@ -159,9 +161,21 @@ static void armed(void)
     clock_ms += 200;
     assert(LinuxDvbEac3RestartState() == 0);
     assert(!Command(&context, OUTPUT_PLAY, "audio"));
+    assert(LinuxDvbEac3RestartState() == 1);
+    clock_ms += 300;
+    assert(LinuxDvbEac3RestartState() == 1);
+    /* a packet later than 100 ms after the start: due right away */
     assert(!LinuxDvbOutput.Write(&context, &out));
-    clock_ms += 200;
+    assert(LinuxDvbEac3RestartState() == 2);
     assert(LinuxDvbEac3RestartState() == 0);
+}
+
+/* /proc/stb/info/vumodel and /proc/stb/audio/ac3 compared by prefix */
+static void prefixes(void)
+{
+    model = "ultimo4k \n";
+    mode = "passthrough \n";
+    armed();
 }
 
 static void duo4kse(void)
@@ -188,7 +202,7 @@ static void other_model(void) { model = "uno4kse\n"; never_due(); }
 static void not_passthrough(void) { mode = "downmix\n"; never_due(); }
 static void not_a_vuplus(void) { stb = STB_OTHER; never_due(); }
 static void plain_ac3(void) { encoding = "A_AC3"; never_due(); }
-static void dash(void) { playback.isDash = 1; never_due(); }
+static void dash(void) { playback.isDash = 1; armed(); }
 static void forced_off(void) { assert(!setenv("EP3_EAC3_RESTART", "0", 1)); never_due(); }
 
 static void forced_on(void)
@@ -229,9 +243,8 @@ static void late_first_packet(void)
     clock_ms += 5000;
     assert(LinuxDvbEac3RestartState() == 0);
     assert(!LinuxDvbOutput.Write(&context, &out));
-    assert(LinuxDvbEac3RestartState() == 1);
-    clock_ms += 100;
     assert(LinuxDvbEac3RestartState() == 2);
+    assert(LinuxDvbEac3RestartState() == 0);
 }
 
 /* One audio switch to a track written as `to`: whether it went the full way
@@ -326,7 +339,21 @@ static void full_other_model(void) { model = "uno4kse\n"; eac3_always_full(); }
 static void full_not_passthrough(void) { mode = "downmix\n"; eac3_always_full(); }
 static void full_not_a_vuplus(void) { stb = STB_OTHER; eac3_always_full(); }
 static void full_forced_off(void) { assert(!setenv("EP3_EAC3_RESTART", "0", 1)); eac3_always_full(); }
-static void full_dash(void) { playback.isDash = 1; eac3_always_full(); }
+static void full_dash_other_model(void) { playback.isDash = 1; model = "uno4kse\n"; eac3_always_full(); }
+
+/* DASH: the DD+ -> DD+ switch keeps the decoder running as well and resets
+ * the audio writer for the new representation. */
+static void dash_kept(void)
+{
+    playback.isDash = 1;
+    start_and_restart();
+    resets = 0;
+    assert(!full_switch("A_EAC3"));
+    assert(resets == 1);
+    assert(full_switch("A_AC3"));
+    assert(full_switch("A_EAC3"));
+    assert(!full_switch("A_EAC3"));
+}
 
 static int run(const char *name, void (*test)(void))
 {
@@ -351,6 +378,7 @@ int main(void)
     unsetenv("EP3_EAC3_RESTART");
     failed += run("armed on ultimo4k", armed);
     failed += run("armed on duo4kse", duo4kse);
+    failed += run("model and mode by prefix", prefixes);
     failed += run("other model", other_model);
     failed += run("no passthrough", not_passthrough);
     failed += run("not a VU+", not_a_vuplus);
@@ -368,6 +396,7 @@ int main(void)
     failed += run("DD+ switch without passthrough", full_not_passthrough);
     failed += run("DD+ switch not on a VU+", full_not_a_vuplus);
     failed += run("DD+ switch with EP3_EAC3_RESTART=0", full_forced_off);
-    failed += run("DD+ switch with DASH", full_dash);
+    failed += run("DD+ switch with DASH on another model", full_dash_other_model);
+    failed += run("DASH DD+ -> DD+ switch keeps the decoder", dash_kept);
     return failed ? 1 : 0;
 }

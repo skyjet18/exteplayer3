@@ -464,16 +464,15 @@ out:
 
 /* Vu+ Ultimo 4K / Duo 4K SE: the first DD+ passthrough start through the
  * playpump stays silent, while an audio track switch made after it gives
- * sound. So on these two models the start is followed once by the restart
- * a track switch does, see LinuxDvbEac3RestartState().
+ * sound. So on these two models every audio start in DD+ passthrough (also
+ * DASH) is followed once by the restart a track switch does, see
+ * LinuxDvbEac3RestartState().
  * 0 = none (always, on every other box), 1 = waiting for the first DD+
  * packet, 2 = packet written. */
 #define EAC3_RESTART_DELAY_MS 100
 #define EAC3_RESTART_FAST_POLL_MS 5000
 static volatile int eac3Restart = 0;
-static int eac3RestartChecked = 0;
 static struct timespec eac3PlayTime;   /* set before the state becomes 1 */
-static struct timespec eac3PacketTime; /* set before the state becomes 2 */
 
 /* Same two models: setting the DD+ bypass mode again while the decoder runs
  * DD+ passthrough reconfigures the HDMI output and leaves it silent. Set when
@@ -634,9 +633,10 @@ static bool LinuxDvbReadProcLine(const char *path, char *buf, size_t size)
     return ok;
 }
 
-/* Read once, at the first audio start: one of the two models, and the box
- * is set to hand DD+ on as a bitstream. EP3_EAC3_RESTART=1 / EP3_EAC3_RESTART=0
- * in the environment forces it on / off, e.g. to try it on another model. */
+/* Read at every audio start and switch (only on Vu+ boxes): one of the two
+ * models, and the box is set to hand DD+ on as a bitstream; compared by
+ * prefix, as OpenBH does. EP3_EAC3_RESTART=1 / EP3_EAC3_RESTART=0 in the
+ * environment forces it on / off, e.g. to try it on another model. */
 static bool LinuxDvbEac3NeedsRestart(void)
 {
     const char *env = getenv("EP3_EAC3_RESTART");
@@ -650,8 +650,8 @@ static bool LinuxDvbEac3NeedsRestart(void)
     if (!LinuxDvbReadProcLine("/proc/stb/info/vumodel", model, sizeof(model)) ||
         !LinuxDvbReadProcLine("/proc/stb/audio/ac3", mode, sizeof(mode)))
         return false;
-    return (!strcmp(model, "ultimo4k") || !strcmp(model, "duo4kse")) &&
-           !strcmp(mode, "passthrough");
+    return (!strncmp(model, "ultimo4k", 8) || !strncmp(model, "duo4kse", 7)) &&
+           !strncmp(mode, "passthrough", 11);
 }
 
 static long LinuxDvbElapsedMs(const struct timespec *since)
@@ -663,7 +663,9 @@ static long LinuxDvbElapsedMs(const struct timespec *since)
 }
 
 /* Polled by the command loop: 2 (once) when the restart is due, 1 while it
- * is expected within milliseconds, 0 otherwise. */
+ * is expected within milliseconds, 0 otherwise. Due once a DD+ packet has
+ * been written and 100 ms have passed since the audio start (the timing of
+ * OpenBH, which works on these boxes). */
 int LinuxDvbEac3RestartState(void)
 {
     int state = eac3Restart;
@@ -676,7 +678,7 @@ int LinuxDvbEac3RestartState(void)
          * polled fast for ever, the restart then comes with the next poll */
         return LinuxDvbElapsedMs(&eac3PlayTime) < EAC3_RESTART_FAST_POLL_MS ? 1 : 0;
     }
-    if (LinuxDvbElapsedMs(&eac3PacketTime) < EAC3_RESTART_DELAY_MS)
+    if (LinuxDvbElapsedMs(&eac3PlayTime) < EAC3_RESTART_DELAY_MS)
         return 1;
 
     return __sync_bool_compare_and_swap(&eac3Restart, 2, 0) ? 2 : 0;
@@ -1143,17 +1145,13 @@ int LinuxDvbPlay(Context_t  *context, char *type) {
             }
             timing_after_switch = 1;
         }
-        /* the first audio start only, a loop restart plays on */
-        if (!eac3RestartChecked)
+        /* every audio start, also DASH and a loop restart */
+        eac3Restart = 0;
+        if (writer && AUDIOTYPE_AC3_PLUS == writer->caps->dvbStreamType && LinuxDvbEac3NeedsRestart())
         {
-            eac3RestartChecked = 1;
-            if (writer && AUDIOTYPE_AC3_PLUS == writer->caps->dvbStreamType &&
-                !context->playback->isDash && LinuxDvbEac3NeedsRestart())
-            {
-                linuxdvb_printf(10, "DD+ passthrough start, audio restart armed\n");
-                clock_gettime(CLOCK_MONOTONIC, &eac3PlayTime);
-                eac3Restart = 1;
-            }
+            linuxdvb_printf(10, "DD+ passthrough start, audio restart armed\n");
+            clock_gettime(CLOCK_MONOTONIC, &eac3PlayTime);
+            eac3Restart = 1;
         }
         audioRunning = true;
         if (ioctl(audiofd, AUDIO_PLAY) < 0)
@@ -1613,7 +1611,7 @@ int LinuxDvbSwitch(Context_t  *context, char *type)
             }
         }
         /* reads /proc files: before the mutex is taken */
-        if (audio && audiofd != -1 && !context->playback->isDash)
+        if (audio && audiofd != -1)
             eac3Box = LinuxDvbEac3NeedsRestart();
         if (audio && audiofd != -1)
             (void)LinuxDvbDtsHdModeUsable();
@@ -1633,14 +1631,19 @@ int LinuxDvbSwitch(Context_t  *context, char *type)
                  * E-AC-3) on a Vu+ Ultimo 4K / Duo 4K SE whose decoder a switch
                  * has already started in DD+ bypass mode: no stop and no new
                  * bypass mode, which would silence the HDMI output, only the
-                 * old track is flushed. A paused decoder stays paused. */
-                if (eac3BypassKept && writer && AUDIOTYPE_AC3_PLUS == writer->caps->dvbStreamType &&
-                    !context->playback->isDash)
+                 * old track is flushed (DASH: and the writer reset). A paused
+                 * decoder stays paused. */
+                if (eac3BypassKept && writer && AUDIOTYPE_AC3_PLUS == writer->caps->dvbStreamType)
                 {
                     linuxdvb_printf(10, "DD+ -> DD+ switch, decoder kept running\n");
                     if (ioctl(audiofd, AUDIO_CLEAR_BUFFER) == -1)
                     {
                         linuxdvb_err("AUDIO_CLEAR_BUFFER: ERROR %d, %s\n", errno, strerror(errno));
+                    }
+                    if (context->playback->isDash && writer->reset && writer->reset() < 0)
+                    {
+                        linuxdvb_err("failed to reset DASH audio writer\n");
+                        ret = cERR_LINUXDVB_ERROR;
                     }
                     goto audio_switch_done;
                 }
@@ -2750,8 +2753,6 @@ static int Write(void  *_context, void *_out)
 
             if (1 == eac3Restart && res >= 0 && AUDIOTYPE_AC3_PLUS == writer->caps->dvbStreamType)
             {
-                /* the delay counts from the first DD+ packet */
-                clock_gettime(CLOCK_MONOTONIC, &eac3PacketTime);
                 __sync_bool_compare_and_swap(&eac3Restart, 1, 2);
             }
 

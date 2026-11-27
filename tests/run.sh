@@ -170,7 +170,7 @@ $cc -g -fsanitize=address,undefined -fno-sanitize-recover=undefined -ffunction-s
     -lm ${FFMPEG_EXTRA_LIBS:-} -o "$tmp/flv2mpeg4"
 ASAN_OPTIONS=detect_leaks=0 timeout 20 "$tmp/flv2mpeg4"
 export ASAN_OPTIONS=detect_leaks=0
-# The DD+ restart after the first passthrough start, with the model and the
+# The DD+ restart after every passthrough start, with the model and the
 # mode from stubbed /proc files and a clock moved by the test.
 $cc -g -fsanitize=undefined -ffunction-sections -fdata-sections \
     -Wno-deprecated-declarations -Iinclude -Iexternal -I"$FFMPEG_BUILD" -I"$FFMPEG_SOURCE" \
