@@ -12,6 +12,12 @@
 # exteplayer3 (it replaces the player of the image). Exit status 1 when a file needs a
 # newer glibc than MAX_GLIBC. Depends: libc6 of the highest GLIBC_ version
 # the files need (the result of that check), not more.
+# For armhf and mipsel also exteplayer3_<VERSION>_ffmpeg9_<armhf|mipsel>_dreamos.deb:
+# the same files as a Debian package for Dreamboxes with Dreambox OS (dpkg):
+# DM900/DM920 (armhf) and DM520/DM525 (mipsel). Not for the AArch64 Dreambox
+# One/Two: the DreamNextGen audio output of the aarch64 package needs the
+# dreamaudio driver and dreamaudiod of the OE-Alliance images, which Dreambox
+# OS does not have.
 set -eux
 P=$1
 mkdir -p "$2"
@@ -80,6 +86,53 @@ tar --owner=0 --group=0 --numeric-owner -C "$W/control" -czf "$W/control.tar.gz"
 tar --owner=0 --group=0 --numeric-owner -C "$W/data" -czf "$W/data.tar.gz" .
 rm -f "$DIST/$T.ipk"
 ( cd "$W" && ar -r "$DIST/$T.ipk" debian-binary control.tar.gz data.tar.gz 2> /dev/null )
+
+# Dreambox OS: the same files as a .deb (dpkg-deb of the runner)
+case $ARCH in
+    armhf|mipsel) DEB_ARCH=$ARCH ;;
+    *) DEB_ARCH="" ;;
+esac
+if [ -n "$DEB_ARCH" ]; then
+    DT=exteplayer3_${VERSION}_ffmpeg${FFMPEG_VERSION%%.*}_${DEB_ARCH}_dreamos
+    D=$W/deb
+    mkdir -p "$D/DEBIAN"
+    cp -a "$W/data/." "$D/"
+    cat > "$D/DEBIAN/control" <<EOF
+Package: exteplayer3
+Version: $VERSION
+Architecture: $DEB_ARCH
+Maintainer: OE-Core Developers <openembedded-core@lists.openembedded.org>
+Installed-Size: $(du -sk "$W/data" | cut -f1)
+Depends: libc6 (>= $DEPENDS_GLIBC)
+Provides: exteplayer3-dreamos, ffmpeg-exteplayer3-dreamos
+Conflicts: exteplayer3-dreamos, ffmpeg-exteplayer3-dreamos
+Replaces: exteplayer3-dreamos, ffmpeg-exteplayer3-dreamos
+Section: multimedia
+Priority: optional
+Homepage: https://github.com/$REPOSITORY
+Description: exteplayer3 - media player for E2 (FFmpeg $FFMPEG_RELEASE)
+ Core of movie player for E2 based on the libeplayer using the ffmpeg
+ solution. Built with FFmpeg $FFMPEG_RELEASE ($FFMPEG_REPO $FFMPEG_BRANCH),
+ for Dreambox OS. ffmpeg and the libraries are in /usr/lib/exteplayer3_deps,
+ the FFmpeg of the image is not touched.
+EOF
+    # Packages that had /usr/lib/exteplayer3_deps/ffmpeg before
+    # (ffmpeg-exteplayer3-dreamos) delete it in their postrm, which would
+    # remove the file of this package when dpkg replaces them: their postrm
+    # is made a no-op first.
+    cat > "$D/DEBIAN/preinst" <<'EOF'
+#!/bin/sh
+f="${DPKG_ADMINDIR:-/var/lib/dpkg}/info/ffmpeg-exteplayer3-dreamos.postrm"
+[ -f "$f" ] && printf '#!/bin/sh\nexit 0\n' > "$f"
+exit 0
+EOF
+    chmod 755 "$D/DEBIAN/preinst"
+    cat "$D/DEBIAN/control"
+    rm -f "$DIST/$DT.deb"
+    dpkg-deb -Zgzip --root-owner-group -b "$D" "$DIST/$DT.deb"
+    dpkg-deb -I "$DIST/$DT.deb"
+    dpkg-deb -c "$DIST/$DT.deb"
+fi
 rm -rf "$W"
 cp "$P/manifest.txt" "$DIST/$T.manifest.txt"
 cp "$P/buildinfo.txt" "$DIST/$T.buildinfo.txt"
