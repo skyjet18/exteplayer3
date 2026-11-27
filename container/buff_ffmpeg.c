@@ -52,6 +52,11 @@ static int ffmpeg_do_seek = 0;
 static int ffmpeg_buf_stop = 0;
 
 static Context_t *g_context = 0;
+/* The end of file wait of the read: playPts, finishTimeout and pauseTimeout
+ * are counted by the reading thread and reset by the pause and continue of
+ * main() (set_pause_timeout): under finishMutex, as playPts is 64 bits (two
+ * stores on ARM and MIPS32) and a reset must not be lost in an increment. */
+static pthread_mutex_t finishMutex = PTHREAD_MUTEX_INITIALIZER;
 static int64_t playPts = -1;
 static int32_t finishTimeout = 0;
 static int8_t pauseTimeout = 0;
@@ -86,38 +91,66 @@ static void seek_finish_timeout()
 
 int64_t get_play_pts()
 {
-    return playPts;
+    int64_t pts;
+    pthread_mutex_lock(&finishMutex);
+    pts = playPts;
+    pthread_mutex_unlock(&finishMutex);
+    return pts;
 }
 
 void reset_finish_timeout()
 {
+    pthread_mutex_lock(&finishMutex);
     playPts = -1;
     finishTimeout = 0;
+    pthread_mutex_unlock(&finishMutex);
 }
 
 void set_pause_timeout(uint8_t pause)
 {
-    reset_finish_timeout();
+    pthread_mutex_lock(&finishMutex);
+    playPts = -1;
+    finishTimeout = 0;
     pauseTimeout = pause;
+    pthread_mutex_unlock(&finishMutex);
 }
 
 static int8_t is_finish_timeout()
 {
-    if (finishTimeout > (seekRestart ? SEEK_TIMEOUT_MAX_ITERS : TIMEOUT_MAX_ITERS))
+    int32_t count;
+    pthread_mutex_lock(&finishMutex);
+    count = finishTimeout;
+    pthread_mutex_unlock(&finishMutex);
+    if (count > (seekRestart ? SEEK_TIMEOUT_MAX_ITERS : TIMEOUT_MAX_ITERS))
     {
         return 1;
     }
     return 0;
 }
 
+static void set_finish_timeout(int32_t count)
+{
+    pthread_mutex_lock(&finishMutex);
+    finishTimeout = count;
+    pthread_mutex_unlock(&finishMutex);
+}
+
 static void update_finish_timeout()
 {
-    if(0 == pauseTimeout)
+    int8_t paused;
+    pthread_mutex_lock(&finishMutex);
+    paused = pauseTimeout;
+    pthread_mutex_unlock(&finishMutex);
+    if(0 == paused)
     {
         int64_t maxInjectedPts = update_max_injected_pts(-1);
         int64_t currPts = -1;
+        int64_t lastPlayPts;
         int32_t ret = g_context->playback->Command(g_context, PLAYBACK_PTS, &currPts);
+        pthread_mutex_lock(&finishMutex);
         finishTimeout += 1;
+        lastPlayPts = playPts;
+        pthread_mutex_unlock(&finishMutex);
         
         if(maxInjectedPts < 0 || maxInjectedPts == INVALID_PTS_VALUE)
         {
@@ -145,14 +178,16 @@ static void update_finish_timeout()
         if( !progressive_playback && !seekRestart && 0 == ret && currPts >= maxInjectedPts && 
             ((currPts - maxInjectedPts) / 90000) < 2 )
         {
-            /* close immediately 
+            /* close immediately
              */
-            finishTimeout = TIMEOUT_MAX_ITERS + 1;
+            set_finish_timeout(TIMEOUT_MAX_ITERS + 1);
         }
-        else if (0 == ret && (playPts != currPts && maxInjectedPts > currPts))
+        else if (0 == ret && (lastPlayPts != currPts && maxInjectedPts > currPts))
         {
+            pthread_mutex_lock(&finishMutex);
             playPts = currPts;
             finishTimeout = 0;
+            pthread_mutex_unlock(&finishMutex);
         }
     }
 }
@@ -179,7 +214,7 @@ static int32_t ffmpeg_read_wrapper_base(void *opaque, uint8_t *buf, int32_t buf_
             if (partLen > 0)
             {
                 len += partLen;
-                finishTimeout = 0;
+                set_finish_timeout(0);
                 continue;
             }
             else if (is_finish_timeout())

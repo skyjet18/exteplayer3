@@ -141,7 +141,31 @@ static AVDictionary *g_avio_opts = NULL;
 
 static uint8_t isContainerRunning = 0;
 
+/* latestPts belongs to the play thread (and to the open before it starts).
+ * The position query and the seek of main() read latestPtsShared, which the
+ * writer publishes after each change (latest_pts_publish): a 64-bit load or
+ * store is two 32-bit ones on ARM and MIPS32, a plain read from the other
+ * thread could take half of an old and half of a new PTS. A mutex, as a
+ * lock-free 64-bit atomic is not there on MIPS32. */
 static int64_t latestPts = 0;
+static int64_t latestPtsShared = 0;
+static pthread_mutex_t latestPtsMutex = PTHREAD_MUTEX_INITIALIZER;
+
+static void latest_pts_publish(void)
+{
+    pthread_mutex_lock(&latestPtsMutex);
+    latestPtsShared = latestPts;
+    pthread_mutex_unlock(&latestPtsMutex);
+}
+
+static int64_t latest_pts_read(void)
+{
+    int64_t pts;
+    pthread_mutex_lock(&latestPtsMutex);
+    pts = latestPtsShared;
+    pthread_mutex_unlock(&latestPtsMutex);
+    return pts;
+}
 
 static int32_t restart_audio_resampling = 0;
 
@@ -3435,6 +3459,7 @@ static void FFMPEGThread(Context_t *context)
             currentVideoPts = -1;
             currentAudioPts = -1;
             latestPts = 0;
+            latest_pts_publish();
 #ifdef HAVE_DREAMNEXTGEN
             seekWaitVideoKey = true;
             seekVideoKeyPts = INVALID_PTS_VALUE;
@@ -3667,6 +3692,7 @@ static void FFMPEGThread(Context_t *context)
                     seekVideoKeyPts = INVALID_PTS_VALUE;
 #endif
                     mpeg4p2_write_packet(context, mpeg4p2_context, videoTrack, cAVIdx, &currentVideoPts, &latestPts, &packet);
+                    latest_pts_publish();
                     update_max_injected_pts(latestPts);
                 }
                 else
@@ -3680,6 +3706,7 @@ static void FFMPEGThread(Context_t *context)
                     seekVideoKeyPts = INVALID_PTS_VALUE;
 #endif
                     flv2mpeg4_write_packet(context, &flv2mpeg4_context, videoTrack, cAVIdx, &currentVideoPts, &latestPts, &packet);
+                    latest_pts_publish();
                     update_max_injected_pts(latestPts);
                 }
                 else
@@ -3731,6 +3758,7 @@ static void FFMPEGThread(Context_t *context)
                     if ((currentVideoPts != INVALID_PTS_VALUE) && (currentVideoPts > latestPts))
                     {
                         latestPts = currentVideoPts;
+                        latest_pts_publish();
                         update_max_injected_pts(latestPts);
                     }
 
@@ -3873,6 +3901,7 @@ static void FFMPEGThread(Context_t *context)
                 if ((currentAudioPts != INVALID_PTS_VALUE) && (currentAudioPts > latestPts) && (!videoTrack))
                 {
                     latestPts = currentAudioPts;
+                    latest_pts_publish();
                     update_max_injected_pts(latestPts);
                 }
 
@@ -5887,6 +5916,7 @@ int32_t container_ffmpeg_init(Context_t *context, PlayFiles_t *playFilesNames)
 
     terminating = 0;
     latestPts = 0;
+    latest_pts_publish();
     isContainerRunning = 1;
     /* with a separate audio input (-x) the first one is the video */
     chapters_take(avContextTab[0]);
@@ -6952,7 +6982,7 @@ static int32_t container_ffmpeg_seek_us(Context_t *context, int64_t offset_us, u
         !(avContextTab[0]->pb->seekable & AVIO_SEEKABLE_NORMAL) &&
         !is_hls_input(avContextTab[0]) && !context->playback->isDash)
     {
-        read_us = av_rescale(latestPts, AV_TIME_BASE, 90000);
+        read_us = av_rescale(latest_pts_read(), AV_TIME_BASE, 90000);
     }
     releaseMutex(__FILE__, __FUNCTION__,__LINE__);
     if (!absolute)
@@ -7452,7 +7482,7 @@ static int32_t Command(void  *_context, ContainerCmd_t command, void *argument)
     }
     case CONTAINER_LAST_PTS:
     {
-        *((int64_t*)argument) = latestPts;
+        *((int64_t*)argument) = latest_pts_read();
         break;
     }
     case CONTAINER_SET_BUFFER_SIZE:
