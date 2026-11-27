@@ -1713,7 +1713,7 @@ The number is `EXTEPLAYER3_VERSION` in `include/version.h`; a new version is tha
 | `EXTEPLAYER_VIDEO_SOCKET` | `v_c` datagram socket, default `/var/run/video.socket`, `""` off |
 | `EXTEPLAYER_TERM_SOCKET` | stop socket, default `/tmp/.exteplayerterm.socket`, `""` off |
 
-The prebuilt packages in `ipk/` are of version 187 (see `ipk/README.md`).
+Prebuilt packages (ipk, and deb for Dreambox OS) are on the [releases page](https://github.com/skyjet18/exteplayer3/releases).
 
 ---
 
