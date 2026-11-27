@@ -118,7 +118,22 @@ typedef int32_t (*UpdateTracksFn)(Context_t *context, char *filename, int32_t in
 static UpdateTracksFn tracksUpdatePending = NULL;
 
 static pthread_t PlayThread;
+/* 1 from before pthread_create() of the play thread until the thread clears
+ * it as its last statement. The stop waits for 0 and then closes and frees
+ * what the thread used: the clear is a release store and every test of the
+ * flag an acquire load, so whoever sees 0 also sees all the thread wrote
+ * before (a plain int gives no such order on ARM and MIPS). */
 static int32_t hasPlayThreadStarted = 0;
+
+static inline int32_t PlayThreadRunning(void)
+{
+    return __atomic_load_n(&hasPlayThreadStarted, __ATOMIC_ACQUIRE);
+}
+
+static inline void PlayThreadSetRunning(int32_t running)
+{
+    __atomic_store_n(&hasPlayThreadStarted, running, __ATOMIC_RELEASE);
+}
 
 static AVFormatContext *avContextTab[IPTV_AV_CONTEXT_MAX_NUM] = {NULL, NULL};
 static int32_t use_custom_io[IPTV_AV_CONTEXT_MAX_NUM] = {0, 0};
@@ -4607,7 +4622,7 @@ static void FFMPEGThread(Context_t *context)
     context->playback->isPlaying = 0;
     PlaybackDieNow(1);
     ffmpeg_printf(10, "terminating\n");
-    hasPlayThreadStarted = 0;
+    PlayThreadSetRunning(0);
 }
 
 /* **************************** */
@@ -6638,18 +6653,18 @@ static int32_t container_ffmpeg_play(Context_t *context)
         ffmpeg_printf(10, "is NOT Playing\n");
     }
 
-    if (hasPlayThreadStarted == 0)
+    if (PlayThreadRunning() == 0)
     {
         pthread_attr_init(&attr);
         pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
 
         /* before the thread exists: it clears the flag when it ends */
-        hasPlayThreadStarted = 1;
+        PlayThreadSetRunning(1);
         if((error = pthread_create(&PlayThread, &attr, (void *)&FFMPEGThread, context)) != 0)
         {
             ffmpeg_printf(10, "Error creating thread, error:%d:%s\n", error,strerror(error));
 
-            hasPlayThreadStarted = 0;
+            PlayThreadSetRunning(0);
             ret = cERR_CONTAINER_FFMPEG_ERR;
         }
         else
@@ -6685,8 +6700,13 @@ static int32_t container_ffmpeg_stop(Context_t *context)
         context->playback->isPlaying = 0;
     }
 
-    while ( (hasPlayThreadStarted != 0) && (--wait_time) > 0 )
+    while (PlayThreadRunning() != 0)
     {
+        --wait_time;
+        if (wait_time <= 0)
+        {
+            break;
+        }
         ffmpeg_printf(10, "Waiting for ffmpeg thread to terminate itself, will try another %d times\n", wait_time);
         usleep(5000);
     }
@@ -6702,7 +6722,7 @@ static int32_t container_ffmpeg_stop(Context_t *context)
         return ret;
     }
 
-    hasPlayThreadStarted = 0;
+    PlayThreadSetRunning(0);
     terminating = 1;
 
     getMutex_wr(__FILE__, __FUNCTION__,__LINE__);
@@ -7396,7 +7416,7 @@ static int32_t Command(void  *_context, ContainerCmd_t command, void *argument)
     }
     case CONTAINER_STATUS:
     {
-        *((int32_t*)argument) = hasPlayThreadStarted;
+        *((int32_t*)argument) = PlayThreadRunning();
         break;
     }
     case CONTAINER_LAST_PTS:
