@@ -20,8 +20,8 @@ BLURAY_SHA256=478ffd68a0f5dde8ef6ca989b7f035b5a0a22c599142e5cd3ff7b03bbebe5f2b
 # librtmp of rtmpdump 2.6 (OpenSSL 3 support), no release tarballs
 RTMPDUMP_GIT=https://git.ffmpeg.org/rtmpdump.git
 RTMPDUMP_COMMIT=138fdb258d9fc26f1843fd1b891180416c9dc575
-# libsrt for the FFmpeg 9 packages (OE-Alliance enables SRT in its FFmpeg 9
-# recipe only). 1.5.4 configures with the CMake 3.0 of jessie; the current
+# libsrt for the ARM and AArch64 packages (OE-Alliance enables SRT in its
+# FFmpeg 9 recipe). 1.5.4 configures with the CMake 3.0 of jessie; the current
 # release 1.5.7 needs CMake 3.5
 SRT_VERSION=1.5.4
 SRT_URL=https://github.com/Haivision/srt/archive/refs/tags/v1.5.4.tar.gz

@@ -24,7 +24,7 @@
 #     -march=mips32, no hash style)
 #     AArch64 (no package in ipk/): --arch=aarch64 with the options of
 #     OE-Alliance (--enable-armv8 --enable-vfp --enable-neon), -march=armv8-a
-#     --enable-libsrt (libsrt 1.5.4 from /opt/deps)
+#     --enable-libsrt (libsrt 1.5.4 from /opt/deps), not on MIPS
 #     --extra-ldflags: -L/-rpath-link of /opt/deps added
 #     OpenSSL 3.5 instead of 1.0.1j, librtmp 2.6, libbluray 1.3.4,
 #     libxml2 2.9.14 (all from /opt/deps)
@@ -59,9 +59,13 @@ case ${ARCH:-armhf} in
         LATEOPTS=()
         ;;
 esac
-# SRT (as OE-Alliance: srt in the PACKAGECONFIG of its FFmpeg 9 recipe)
-SRTOPT=--enable-libsrt
-SRTWANT=libsrt
+# SRT (as OE-Alliance: srt in the PACKAGECONFIG of its FFmpeg 9 recipe),
+# not on MIPS: libsrt is 1.1 MB (0.4 MB in the ipk) on receivers with little
+# flash, and SRT as a stream source is practically unused with Enigma2
+case ${ARCH:-armhf} in
+    mipsel) SRTOPT=--disable-libsrt; SRTWANT="" ;;
+    *) SRTOPT=--enable-libsrt; SRTWANT=libsrt ;;
+esac
 
 ARGS=(--disable-stripping --enable-pic --enable-shared --enable-pthreads --enable-nonfree
       --cc="gcc $ARCHFLAGS" --arch=$FFARCH --target-os=linux

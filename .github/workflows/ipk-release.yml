@@ -10,7 +10,8 @@ name: ipk release
 # workflow made FFmpeg 6.1 ones as well before). All three are the package
 # exteplayer3 (they replace the player of the image). The aarch64 one is built
 # with the DreamNextGen backend (HAVE_DREAMNEXTGEN) and is not tested on a
-# receiver yet. Each has /usr/bin/exteplayer3 and, in
+# receiver yet. SRT (libsrt) is in the ARM and AArch64 packages, not in the
+# MIPS one (size). Each has /usr/bin/exteplayer3 and, in
 # /usr/lib/exteplayer3_deps, FFmpeg from skyjet18/FFmpeg plus the libraries an
 # image may not have (OpenSSL 3.5, libxml2, librtmp, libbluray, ...); the
 # player and FFmpeg find them there through their RPATH.

@@ -25,7 +25,7 @@ Prebuilt packages of exteplayer3 based on this repository. They are built with t
 
 - **Architecture**: `armv7ahf` for ARM receivers (e.g. Vu+ 4K models, Zgemma H7, Octagon SF8008), `mips32el` for MIPS receivers (e.g. Vu+ Solo2, Duo2, Uno, Ultimo), `aarch64` for the 64-bit ARM Dreambox One and Two with an OpenEmbedded image (opkg, e.g. OE-Alliance images; not for Dreambox OS). `uname -m` on the box shows `armv7l` for ARM, `mips` for MIPS and `aarch64` for 64-bit ARM.
 - The `aarch64` package is built with the Dreambox One/Two video output (DreamNextGen) and has **not been tested on a receiver yet**; reports are welcome.
-- **FFmpeg 9** (`_ffmpeg9_` in the file name): the current FFmpeg series (everything from 7.0 to 9.0): newer decoders (e.g. VVC/H.266, xHE-AAC), the fixes of HLS, DASH and the network code since 6.1, SRT streams (`srt://`, libsrt), and TLS server certificates are verified by default (with the CA certificates of the image in `/etc/ssl`). The earlier prebuilt packages had FFmpeg 6.1.
+- **FFmpeg 9** (`_ffmpeg9_` in the file name): the current FFmpeg series (everything from 7.0 to 9.0): newer decoders (e.g. VVC/H.266, xHE-AAC), the fixes of HLS, DASH and the network code since 6.1, SRT streams (`srt://`, libsrt; not in the MIPS package, to keep it small), and TLS server certificates are verified by default (with the CA certificates of the image in `/etc/ssl`). The earlier prebuilt packages had FFmpeg 6.1.
 
 ## Install
 
@@ -46,11 +46,11 @@ If the image has a newer version of exteplayer3 installed, add `--force-downgrad
 ## What is in the package
 
 - `/usr/bin/exteplayer3`
-- `/usr/lib/exteplayer3_deps/`: FFmpeg (`libavcodec`, `libavformat`, `libavutil`, `libavfilter`, `libavdevice`, `libswresample`, `libswscale`, the `ffmpeg` and `ffprobe` tools) and the libraries an image may not have: OpenSSL 3.5, libxml2 2.9, libbluray 1.3 with libudfread, librtmp (rtmpdump 2.6), libsrt 1.5, libbz2, libatomic, and liblzma on MIPS. The player and FFmpeg find them there (RPATH); the FFmpeg and the libraries of the image are not touched.
+- `/usr/lib/exteplayer3_deps/`: FFmpeg (`libavcodec`, `libavformat`, `libavutil`, `libavfilter`, `libavdevice`, `libswresample`, `libswscale`, the `ffmpeg` and `ffprobe` tools) and the libraries an image may not have: OpenSSL 3.5, libxml2 2.9, libbluray 1.3 with libudfread, librtmp (rtmpdump 2.6), libsrt 1.5 (ARM and AArch64), libbz2, libatomic, and liblzma on MIPS. The player and FFmpeg find them there (RPATH); the FFmpeg and the libraries of the image are not touched.
 
 ## Requirements
 
 - glibc of the image at least the version in the table above (2.17 or 2.19; the images of the last ten years have 2.20 or newer); the package depends on `libc6` of that version, so opkg checks it;
-- from the image: libc, libm, libdl, libpthread, librt, libgcc_s, libz, libasound (ALSA), libfreetype, liblzma on ARM, and libstdc++ (SRT); every image with Enigma2 has them.
+- from the image: libc, libm, libdl, libpthread, librt, libgcc_s, libz, libasound (ALSA), libfreetype, liblzma on ARM, and libstdc++ (SRT, ARM and AArch64); every image with Enigma2 has them.
 
 {{CHANGES}}
