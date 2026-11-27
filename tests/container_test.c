@@ -234,9 +234,37 @@ static void ac4_pcm_case(void)
 #endif
 }
 
+/* The byte counters of "BR": -1 until a track had a packet, empty packets
+ * do not count, 32 bit wrap. */
+static void bitrate_bytes_case(void)
+{
+    int64_t v, a;
+
+    container_ffmpeg_get_bitrate_bytes(&v, &a);
+    assert(v == -1 && a == -1);
+    bitrate_bytes_add(&bitrate_audio_bytes, &bitrate_have_audio, 0);
+    bitrate_bytes_add(&bitrate_audio_bytes, &bitrate_have_audio, -5);
+    container_ffmpeg_get_bitrate_bytes(&v, &a);
+    assert(v == -1 && a == -1);
+    bitrate_bytes_add(&bitrate_audio_bytes, &bitrate_have_audio, 1000);
+    bitrate_bytes_add(&bitrate_audio_bytes, &bitrate_have_audio, 24);
+    container_ffmpeg_get_bitrate_bytes(&v, &a);
+    assert(v == -1 && a == 1024);
+    bitrate_video_bytes = UINT32_MAX - 99;
+    bitrate_bytes_add(&bitrate_video_bytes, &bitrate_have_video, 100);
+    container_ffmpeg_get_bitrate_bytes(&v, &a);
+    assert(v == 0 && a == 1024);
+    bitrate_bytes_add(&bitrate_video_bytes, &bitrate_have_video, 4096);
+    container_ffmpeg_get_bitrate_bytes(&v, &a);
+    assert(v == 4096 && a == 1024);
+    bitrate_video_bytes = bitrate_audio_bytes = 0;
+    bitrate_have_video = bitrate_have_audio = 0;
+}
+
 int main(void)
 {
     CustomIOCtx_t io = {0};
+    bitrate_bytes_case();
     ac4_pcm_case();
     uint8_t bytes[8];
     dts_dejitter_case(0, 48000, 13, 1);

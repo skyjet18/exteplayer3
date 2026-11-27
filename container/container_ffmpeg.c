@@ -697,6 +697,36 @@ static int packet_matches_track(const Track_t *track, unsigned int context_index
     return track && track->AVIdx == context_index && track->stream == stream;
 }
 
+/* Compressed bytes of the selected video and audio track, for a live bit
+ * rate in the front end (stdin "BR", from OpenBH, BlackHole/exteplayer3
+ * 3bc8790): every packet the demuxer reads for the track selected at that
+ * moment counts, for the whole process; a track switch or a seek does not
+ * reset them. 32 bit, wrapping at 4 GiB: the front end takes the difference
+ * of two readings modulo 2^32. Written by the demuxer thread only, read by
+ * the command thread: 32 bit atomic loads and stores, so a reading is never
+ * torn. */
+static uint32_t bitrate_video_bytes;
+static uint32_t bitrate_audio_bytes;
+static int      bitrate_have_video;
+static int      bitrate_have_audio;
+
+static void bitrate_bytes_add(uint32_t *bytes, int *have, int size)
+{
+    if (size <= 0)
+        return;
+    __atomic_store_n(bytes, __atomic_load_n(bytes, __ATOMIC_RELAXED) + (uint32_t)size, __ATOMIC_RELAXED);
+    __atomic_store_n(have, 1, __ATOMIC_RELAXED);
+}
+
+/* -1 for a track the stream has not had (yet) */
+void container_ffmpeg_get_bitrate_bytes(int64_t *video, int64_t *audio)
+{
+    *video = __atomic_load_n(&bitrate_have_video, __ATOMIC_RELAXED) ?
+             (int64_t)__atomic_load_n(&bitrate_video_bytes, __ATOMIC_RELAXED) : -1;
+    *audio = __atomic_load_n(&bitrate_have_audio, __ATOMIC_RELAXED) ?
+             (int64_t)__atomic_load_n(&bitrate_audio_bytes, __ATOMIC_RELAXED) : -1;
+}
+
 /* HDR type of the selected video stream, HEVC_HDR_*. The play thread finds it
  * in the parameter sets and SEI of the stream, the track info message reads
  * it from other threads. */
@@ -3611,6 +3641,7 @@ static void FFMPEGThread(Context_t *context)
             if (packet_matches_track(videoTrack, cAVIdx,
                                      avContextTab[cAVIdx]->streams[packet.stream_index]))
             {
+                bitrate_bytes_add(&bitrate_video_bytes, &bitrate_have_video, packet.size);
                 hevc_hdr_update(context, avContextTab[cAVIdx]->streams[packet.stream_index], &packet);
                 video_live_packet(context, videoTrack, avContextTab[cAVIdx]->streams[packet.stream_index]);
 #if LIBAVCODEC_VERSION_INT >= AV_VERSION_INT(56, 34, 100)
@@ -3817,6 +3848,7 @@ static void FFMPEGThread(Context_t *context)
                 uint8_t skipPacket = 0;
                 int64_t mapped_pts;
                 int first_packet = currentAudioPts == -1;
+                bitrate_bytes_add(&bitrate_audio_bytes, &bitrate_have_audio, packet.size);
                 currentAudioPts = audioTrack->pts = pts = calcPts(cAVIdx, stream, packet.pts);
                 mapped_pts = pts;
                 dts = calcDts(cAVIdx, stream, packet.dts);

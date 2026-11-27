@@ -1580,8 +1580,8 @@ stdout and ends the player with exit code 1.
 
 ## ⌨️ stdin commands
 
-One command per line. While the input opens, only `q` (exit code 11) and `dk`
-are read. A thread of its own reads stdin in whole lines of up to 16 kB
+One command per line. While the input opens, only `q` (exit code 11), `dk`
+and `BR` are read. A thread of its own reads stdin in whole lines of up to 16 kB
 (longer ones are dropped) and takes `dk` lines at once, also while a seek,
 track switch or list waits for the reading thread.
 
@@ -1605,6 +1605,7 @@ track switch or list waits for the reading thread.
 | `s<id>`, `si<index>`, `s-1` | switch subtitles, `-1` off | `{"s_s":{"id":...,"sts":...}}` |
 | `vl`, `vc` | video track list, current video track | `v_l`, `v_c` |
 | `cl` | chapters | `c_l` |
+| `BR` | byte counters for a live bit rate: the compressed bytes the demuxer has read so far for the selected video and audio track (whichever track was selected at the time, for the whole process; a track switch or a seek does not reset them). 32 bit, they wrap at 4 GiB: take the difference of two readings modulo 2^32. `-1` while the stream has had no such track, so also during the open. Only `BR` itself (upper case, nothing after it) | `{"BR":{"v":<bytes>,"a":<bytes>}}` |
 | `dk <kid>:<key>`, `dk <kid>:-` | CENC key of a KID, or none; several pairs per line, also keys that were not asked for | `{"DRM_KEY":{"kid":...,"sts":...}}` for an asked KID |
 
 The end of a command pipe acts as `q`, see the notes on stdin above. A
@@ -1645,7 +1646,7 @@ player version and what this build supports. The name dates from the first
 commit (v24) and stays, because front ends (E2iPlayer, ServiceApp) detect the
 player by it; the OE-A player sends `{"EPLAYER3_EXTENDED":{"version":185}}`.
 
-`{"EPLAYER3_EXTENDED":{"version":187,"start":1,"xcode":7,"achannel":1,"forcedonly":1,"hlsseg":3,"drmkey":3,"mpdopt":1,"c_l":1,"seekms":1}}`
+`{"EPLAYER3_EXTENDED":{"version":187,"start":1,"xcode":7,"achannel":1,"forcedonly":1,"hlsseg":3,"drmkey":3,"mpdopt":1,"c_l":1,"seekms":1,"br":1}}`
 
 A missing key means "not supported": front ends should read every key with a
 default of `0` (`.get(key, 0)`) and test the feature, not the version.
@@ -1664,6 +1665,7 @@ default of `0` (`.get(key, 0)`) and test the feature, not the version.
 | `cover` | `1` | `--cover <path>`: the embedded cover is written to path, message `cover`, see [Embedded cover](#-embedded-cover) | after 187 |
 | `c_l` | `1` | chapters: `c_l` after the track lists, stdin `cl`, see [Chapters](#-chapters) | 187 |
 | `seekms` | `1` | `gc`/`gf` take a fraction of a second (`gf754.321`), `ga<seconds>` lands on the first keyframe at or after the position | 187 |
+| `br` | `1` | stdin `BR` (byte counters of the selected video and audio track, answer `BR`), see [stdin commands](#-stdin-commands); ServiceApp uses it for its live bit rate | after 188 |
 
 The version number does not change with every feature: keys added after a release come in builds that still report the previous version (e.g. most keys above came in builds that reported 186 before the release of 187). A front end should therefore test the key, not the version.
 
@@ -1770,6 +1772,8 @@ also in OpenViX/exteplayer3)
   (#19): [528ef20](https://github.com/BlackHole/exteplayer3/commit/528ef20),
   [e9a449a](https://github.com/BlackHole/exteplayer3/commit/e9a449a),
   [cd9a8b7](https://github.com/BlackHole/exteplayer3/commit/cd9a8b7).
+- The `BR` byte counters for the live bit rate in ServiceApp:
+  [3bc8790](https://github.com/BlackHole/exteplayer3/commit/3bc8790).
 - HDR10/HLG detection of HEVC streams (#20):
   [5112b90](https://github.com/BlackHole/exteplayer3/commit/5112b90).
 - DTS core-frame padding (#21) and DTS-HD bypass mode (#22): the DTS driver

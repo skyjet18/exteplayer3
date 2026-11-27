@@ -348,11 +348,32 @@ def main():
         try:
             banner = player.wait("EPLAYER3_EXTENDED")
             assert banner.get("c_l") == 1 and banner.get("seekms") == 1, banner
+            assert banner.get("br") == 1, banner
             # q during the open ends with exit code 11
             assert player.wait("PLAYBACK_PLAY")["sts"] == 0
+            # BR: the byte counters of the selected tracks, in the format
+            # ServiceApp reads; they only grow while the file plays
+            counters = []
+            for _ in range(2):
+                time.sleep(0.5)
+                player.command("BR")
+                player.wait("BR")
+                line = player.raw("BR")[-1]
+                match = re.fullmatch(rb'\{"BR":\{"v":(\d+),"a":(\d+)\}\}\n', line)
+                assert match, line
+                counters.append((int(match.group(1)), int(match.group(2))))
+            assert all(v > 0 and a > 0 for v, a in counters), counters
+            assert counters[1][0] >= counters[0][0] and counters[1][1] >= counters[0][1], counters
+            # only "BR" itself: neither "BRx" nor "B" answers
+            player.command("BRx")
+            player.command("B")
+            player.command("BR")
+            player.wait("BR")
+            time.sleep(0.2)
+            assert len(player.raw("BR")) == 3, player.raw("BR")
         finally:
             player.stop()
-        print("PASS chapters: EPLAYER3_EXTENDED has c_l and seekms")
+        print("PASS chapters: EPLAYER3_EXTENDED has c_l, seekms and br; BR answers the byte counters")
 
         # Seeks: keyframes at 0, 4.2, 4.6, 8 and 12 s, no B-frames
         seek_mkv = root / "seek.mkv"
