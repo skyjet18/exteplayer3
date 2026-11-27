@@ -70,6 +70,16 @@ git -C $SRCS/rtmpdump checkout -q FETCH_HEAD
 test "$(git -C $SRCS/rtmpdump rev-parse HEAD)" = "$RTMPDUMP_COMMIT"
 sudo cp -r $SRCS/rtmpdump "$R/build/rtmpdump"
 sudo rm -rf "$R/build/rtmpdump/.git"
+git init -q $SRCS/x264
+for i in 1 2 3 4 5; do
+    git -C $SRCS/x264 fetch -q --depth 1 "$X264_GIT" "$X264_COMMIT" && break
+    [ $i = 5 ] && exit 1
+    sleep 30
+done
+git -C $SRCS/x264 checkout -q FETCH_HEAD
+test "$(git -C $SRCS/x264 rev-parse HEAD)" = "$X264_COMMIT"
+sudo cp -r $SRCS/x264 "$R/build/x264"
+sudo rm -rf "$R/build/x264/.git"
 
 sudo cp "$HERE/versions.sh" "$HERE/deps.sh" "$R/build/"
 sudo chroot "$R" /usr/bin/env ARCH=$ARCH /bin/bash /build/deps.sh

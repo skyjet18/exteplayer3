@@ -13,7 +13,7 @@ name: ipk release
 # receiver yet. SRT (libsrt) is in the ARM and AArch64 packages, not in the
 # MIPS one (size). Each has /usr/bin/exteplayer3 and, in
 # /usr/lib/exteplayer3_deps, FFmpeg from skyjet18/FFmpeg plus the libraries an
-# image may not have (OpenSSL 3.5, libxml2, librtmp, libbluray, ...); the
+# image may not have (OpenSSL 3.5, libxml2, librtmp, libbluray, libx264, ...); the
 # player and FFmpeg find them there through their RPATH.
 #
 # Build environment: a Debian 8 armhf / mipsel / arm64 userland under
@@ -23,7 +23,8 @@ name: ipk release
 # highest GLIBC_ version its files need (2.17 or 2.19), as found by that
 # check.
 # Before packaging, the player and ffmpeg/ffprobe are started under qemu-user
-# (local files, HLS over HTTPS). The scripts are in .github/ipk/; the text of
+# (local files, HLS over HTTPS, an H.264 clip encoded with libx264). The
+# scripts are in .github/ipk/; the text of
 # the releases is .github/ipk/release-notes.md.
 #
 # When it runs:

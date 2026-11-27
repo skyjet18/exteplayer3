@@ -26,6 +26,12 @@ RTMPDUMP_COMMIT=138fdb258d9fc26f1843fd1b891180416c9dc575
 SRT_VERSION=1.5.4
 SRT_URL=https://github.com/Haivision/srt/archive/refs/tags/v1.5.4.tar.gz
 SRT_SHA256=d0a8b600fe1b4eaaf6277530e3cfc8f15b8ce4035f16af4a5eb5d4b123640cdd
+# libx264 for the H.264 encoder of FFmpeg (libx264); FFmpeg 9 needs
+# X264_BUILD >= 155, jessie has 142. The stable branch (X264_BUILD 165), by
+# commit: the archive tarballs of code.videolan.org are made on request and
+# their checksum is not stable
+X264_GIT=https://code.videolan.org/videolan/x264.git
+X264_COMMIT=b35605ace3ddf7c1a5d67a2eb553f034aef41d55
 # target (ARCH: Debian architecture armhf, mipsel or arm64, armhf by default)
 case ${ARCH:-armhf} in
     armhf)

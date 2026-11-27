@@ -77,6 +77,27 @@ if [ "${ARCH:-armhf}" != mipsel ]; then
     echo "libsrt    $SRT_VERSION (OpenSSL EVP)" >> $P/VERSIONS
 fi
 
+# libx264 (shared, 8 bit, library only). Assembler code on AArch64 only,
+# where NEON is part of the baseline, and only if it builds with the GCC 4.9
+# and binutils of jessie; ARMv7 (the package targets VFP without NEON) and
+# MIPS without it. Speed hardly matters: the receivers encode only short
+# clips with it.
+cd /build/x264
+x264cfg() {
+    env -u CFLAGS -u LDFLAGS ./configure --prefix=$P --enable-shared --disable-cli --disable-opencl \
+        --disable-lavf --disable-swscale --disable-ffms --disable-gpac --disable-lsmash --enable-pic \
+        --bit-depth=8 --extra-cflags="$ARCHFLAGS" --extra-ldflags="$HASHSTYLE" "$@" || return 1
+    log x264-make make -j$J && log x264-install make install-lib-shared
+}
+X264_ASM="no assembler code"
+if [ "${ARCH:-armhf}" = arm64 ] && x264cfg > /build/x264-configure.log 2>&1; then
+    X264_ASM="with assembler code"
+else
+    make distclean > /dev/null 2>&1 || true
+    log x264-configure x264cfg --disable-asm
+fi
+echo "libx264   $X264_COMMIT (X264_BUILD $(sed -n 's/^#define X264_BUILD //p' x264.h), 8 bit, $X264_ASM)" >> $P/VERSIONS
+
 rm -rf $P/share/doc $P/share/man $P/share/gtk-doc
 ls -la $P/lib
 cat $P/VERSIONS
