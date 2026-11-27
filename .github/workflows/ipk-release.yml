@@ -11,6 +11,7 @@ name: ipk release
 #   exteplayer3_<version>_ffmpeg9_mipsel_dreamos.deb   DM520, DM525
 # (none for the One/Two: their DreamNextGen audio output needs the dreamaudio
 # driver of the OE-Alliance images). The file names keep "ffmpeg9", so a package shows which FFmpeg it has (the
+# The file names keep "ffmpeg9", so a package shows which FFmpeg it has (the
 # workflow made FFmpeg 6.1 ones as well before). All three are the package
 # exteplayer3 (they replace the player of the image). The aarch64 one is built
 # with the DreamNextGen backend (HAVE_DREAMNEXTGEN) and is not tested on a
