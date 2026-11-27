@@ -106,7 +106,17 @@ void PlaybackWaitChange(uint32_t serial, int32_t timeoutMs)
 extern void set_pause_timeout(uint8_t pause);
 static int32_t PlaybackTerminate(Context_t  *context);
 
-static int8_t dieNow = 0;
+/* Set once by the first PlaybackDieNow(1), from the stop of main() or the end
+ * of the play thread; the callbacks (wake-ups of threads that wait in a poll)
+ * are registered by the threads of the output while it may already be set.
+ * dieNow is a 32-bit int with __atomic access, the exchange decides which
+ * caller runs the callbacks. The slots and dieNow are sequentially consistent:
+ * a callback stored before the stop went through the slots is called by it,
+ * and a thread that stores its callback later sees dieNow set at its next
+ * PlaybackDieNow(0), which every waiting loop asks before it waits. The
+ * registration does not call the callback itself: a wake-up may register on
+ * its first call (pthread_once in the writer), it would run inside itself. */
+static int32_t dieNow = 0;
 static PlaybackDieNowCallback playbackDieNowCallbacks[MAX_PLAYBACK_DIE_NOW_CALLBACKS] = {NULL};
 
 /* ***************************** */
@@ -114,22 +124,22 @@ static PlaybackDieNowCallback playbackDieNowCallbacks[MAX_PLAYBACK_DIE_NOW_CALLB
 /* ***************************** */
 int8_t PlaybackDieNow(int8_t val)
 {
-    if(val && dieNow == 0)
+    if(val && 0 == __atomic_exchange_n(&dieNow, 1, __ATOMIC_SEQ_CST))
     {
         uint32_t i = 0;
-        dieNow = 1;
         while (i < MAX_PLAYBACK_DIE_NOW_CALLBACKS)
         {
-            if (playbackDieNowCallbacks[i] == NULL)
+            PlaybackDieNowCallback callback = __atomic_load_n(&playbackDieNowCallbacks[i], __ATOMIC_SEQ_CST);
+            if (callback == NULL)
             {
                 break;
             }
-            playbackDieNowCallbacks[i]();
+            callback();
             i += 1;
         }
         PlaybackChanged();
     }
-    return dieNow;
+    return (int8_t)__atomic_load_n(&dieNow, __ATOMIC_SEQ_CST);
 }
 
 bool PlaybackDieNowRegisterCallback(PlaybackDieNowCallback callback)
@@ -140,17 +150,24 @@ bool PlaybackDieNowRegisterCallback(PlaybackDieNowCallback callback)
         uint32_t i = 0;
         while (i < MAX_PLAYBACK_DIE_NOW_CALLBACKS)
         {
-            if (playbackDieNowCallbacks[i] == callback)
+            PlaybackDieNowCallback slot = __atomic_load_n(&playbackDieNowCallbacks[i], __ATOMIC_SEQ_CST);
+            if (slot == callback)
             {
                 ret = true;
                 break;
             }
-            
-            if (playbackDieNowCallbacks[i] == NULL)
+
+            if (slot == NULL)
             {
-                playbackDieNowCallbacks[i] = callback;
-                ret = true;
-                break;
+                /* another thread may take the slot at the same time: then
+                 * the same slot is looked at again */
+                if (__atomic_compare_exchange_n(&playbackDieNowCallbacks[i], &slot, callback, false,
+                                                __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST))
+                {
+                    ret = true;
+                    break;
+                }
+                continue;
             }
             i += 1;
         }
