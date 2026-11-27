@@ -2056,7 +2056,7 @@ int main(int argc, char* argv[])
     /* The dreamaudiod service decodes or passes through what has a PES
      * writer (AC-3, E-AC-3, DTS, AAC, MPEG audio); the rest goes to it as
      * PCM. Must run after ParseParams, serviceapp's -a/-n would clear it.
-     * TrueHD has no PES writer in this tree, it is always decoded. */
+     * TrueHD is decoded, except on the GTX Combo (TrueHDPassthrough()). */
     wma_software_decoder_set(1);
     vorbis_software_decoder_set(1);
     opus_software_decoder_set(1);
@@ -2141,7 +2141,11 @@ int main(int argc, char* argv[])
         SelectAudioChannel(g_audio_channel);
 
     g_player->manager->video->Command(g_player, MANAGER_REGISTER_UPDATED_TRACK_INFO, UpdateVideoTrack);
-    if (strncmp(playbackFiles.szFirstFile, "rtmp", 4) && strncmp(playbackFiles.szFirstFile, "ffrtmp", 6))
+    /* UDP and RTP on the GTX Combo: the full stream probe, so the hardware
+     * decoder gets the video dimensions from the first packets */
+    if (strncmp(playbackFiles.szFirstFile, "rtmp", 4) && strncmp(playbackFiles.szFirstFile, "ffrtmp", 6) &&
+        !(STB_GTXCOMBO == GetSTBType() &&
+          (!strncmp(playbackFiles.szFirstFile, "udp://", 6) || !strncmp(playbackFiles.szFirstFile, "rtp://", 6))))
     {
         g_player->playback->noprobe = 1;
     }

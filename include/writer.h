@@ -61,6 +61,7 @@ extern Writer_t WriterAudioMP3;
 extern Writer_t WriterAudioMPEGL3;
 extern Writer_t WriterAudioAC3;
 extern Writer_t WriterAudioEAC3;
+extern Writer_t WriterAudioTrueHD;
 extern Writer_t WriterAudioAAC;
 extern Writer_t WriterAudioAACLATM;
 extern Writer_t WriterAudioAACPLUS;

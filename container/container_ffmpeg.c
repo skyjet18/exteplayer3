@@ -1024,6 +1024,8 @@ static char* VideoCodec2Encoding(int32_t codec_id, int32_t *version)
     return NULL;
 }
 
+static int TrueHDPassthrough(void);
+
 static char* Codec2Encoding(int32_t codec_id, int32_t media_type, uint8_t *extradata, int extradata_size, int profile, int32_t *version)
 {
     char *video = VideoCodec2Encoding(codec_id, version);
@@ -1082,8 +1084,12 @@ static char* Codec2Encoding(int32_t codec_id, int32_t media_type, uint8_t *extra
         return (wma_software_decode || STB_VUPLUS == GetSTBType()) ? "A_IPCM" : "A_WMA/PRO";
     case AV_CODEC_ID_WMALOSSLESS:
         return "A_IPCM";
+    /* decoded to PCM, except on the GTX Combo: its audio service plays
+     * TrueHD/MLP as PCM or HBR passthrough by the TrueHD setting of enigma2;
+     * still decoded there for -K and when it is to be transcoded */
+    case AV_CODEC_ID_TRUEHD:
     case AV_CODEC_ID_MLP:
-        return "A_IPCM";
+        return TrueHDPassthrough() ? "A_TRUEHD" : "A_IPCM";
 #if LIBAVCODEC_VERSION_INT >= AV_VERSION_INT(60, 21, 100)
     /* no receiver decodes AC-4: always the software decoder */
     case AV_CODEC_ID_AC4:
@@ -2557,6 +2563,13 @@ void dts_ac3_transcoder_set(const int32_t val)
 void truehd_ac3_transcoder_set(const int32_t val)
 {
     truehd_ac3_transcode = val;
+}
+
+/* TrueHD/MLP to the TrueHD writer instead of the decoder: GTX Combo only,
+ * not with -K (PCM export) and not when it is to be transcoded */
+static int TrueHDPassthrough(void)
+{
+    return STB_GTXCOMBO == GetSTBType() && !pcm_audio_export_enabled && !truehd_ac3_transcode;
 }
 
 /* the encoders of the linked FFmpeg: AUDIO_XCODE_AC3 | AUDIO_XCODE_AAC | AUDIO_XCODE_EAC3 */

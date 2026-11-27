@@ -419,6 +419,12 @@ Writer_t* getWriter(char* encoding)
         }
     }
 
+    /* not in the list: only the GTX Combo takes TrueHD/MLP as it is */
+    if (STB_GTXCOMBO == GetSTBType() && 0 == strcmp(encoding, WriterAudioTrueHD.caps->textEncoding))
+    {
+        return &WriterAudioTrueHD;
+    }
+
     writer_printf(1, "%s: no writer found for \"%s\"\n", __func__, encoding);
 
     return NULL;

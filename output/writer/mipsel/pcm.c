@@ -273,13 +273,16 @@ static int32_t writeData(void *_call)
         buffer += cpSize;
         size -= cpSize;
         
+        /* the GTX Combo takes the PCM header of the Dreambox */
+        const stb_type_t stb = GetSTBType();
+        const int dreamPcm = STB_DREAMBOX == stb || STB_GTXCOMBO == stb;
         uint32_t addHeaderSize = 0;
-        if( STB_DREAMBOX == GetSTBType() )
+        if (dreamPcm)
         {
             addHeaderSize = 4;
         }
         uint32_t headerSize = InsertPesHeader(PesHeader, fixed_buffersize + 4 + addHeaderSize + sizeof(codec_data), MPEG_AUDIO_PES_START_CODE, fixed_buffertimestamp, 0);
-        if( STB_DREAMBOX == GetSTBType() )
+        if (dreamPcm)
         {
             PesHeader[headerSize++] = 0x42; // B
             PesHeader[headerSize++] = 0x43; // C

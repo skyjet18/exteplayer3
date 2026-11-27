@@ -159,3 +159,23 @@ struct Writer_s WriterAudioEAC3 = {
     NULL,
     &caps_eac3
 };
+
+/* TrueHD and MLP in the same timed PES packets, for the GTX Combo only (see
+ * getWriter()): its audio service probes the bitstream and plays it as PCM
+ * (stereo downmix) or HBR passthrough, as the TrueHD setting of enigma2
+ * says. Every other receiver gets TrueHD decoded to PCM. */
+static WriterCaps_t caps_truehd = {
+    "truehd",
+    eAudio,
+    "A_TRUEHD",
+    AUDIO_ENCODING_MLP,
+    AUDIOTYPE_AC3,
+    -1
+};
+
+struct Writer_s WriterAudioTrueHD = {
+    &reset,
+    &writeData,
+    NULL,
+    &caps_truehd
+};

@@ -1809,6 +1809,13 @@ also in OpenViX/exteplayer3)
   Here the level rule follows the input channels and AC-4 7.1.4 goes out as
   7.1; the probe for a decoder that fills only the first channel is not
   needed with the AC-4 decoder of FFmpeg 9.
+- The GTX Combo (`/proc/stb/info/model` `gtxcombo`): TrueHD/MLP as they are
+  to its audio service, which plays them as PCM or HBR passthrough by the
+  TrueHD setting of enigma2 (decoded as before with `-K` and when
+  transcoded); the PCM header of the Dreambox; the full stream probe for
+  UDP and RTP, atvcaptain:
+  [d57e8e2](https://github.com/oe-alliance/exteplayer3/commit/d57e8e2).
+  Other receivers are not affected.
 
 **OpenVu** ([OpenVu/exteplayer3](https://github.com/OpenVu/exteplayer3))
 
