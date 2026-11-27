@@ -146,6 +146,19 @@ def main():
         rows.append('| [`%s`](%s) | %s | %s | %s |' % (f, url, images, info.get('ffmpeg', major),
                                                      info.get('glibc', '?')))
 
+    # the Dreambox OS debs: the files of the ipk of that architecture
+    debs = sorted(f for f in os.listdir(a.dist) if f.endswith('_dreamos.deb'))
+    for f in debs:
+        m = re.match(r'(exteplayer3_.*_ffmpeg([0-9]+))_(armhf|mipsel)_dreamos\.deb$', f)
+        if not m:
+            continue
+        label = {'armhf': 'armv7ahf', 'mipsel': 'mips32el'}[m.group(3)]
+        images = {'armhf': 'Dreambox OS: DM900, DM920', 'mipsel': 'Dreambox OS: DM520, DM525'}[m.group(3)]
+        info = buildinfo(os.path.join(a.dist, '%s_%s.buildinfo.txt' % (m.group(1), label)))
+        url = 'https://github.com/%s/releases/download/%s/%s' % (a.repo, a.tag, f)
+        rows.append('| [`%s`](%s) | %s, untested | %s | %s |' % (f, url, images, info.get('ffmpeg', m.group(2)),
+                                                               info.get('glibc', '?')))
+
     missing = [f for f in a.expected.split() if f not in ipks]
     note = ''
     if missing:

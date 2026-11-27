@@ -43,6 +43,16 @@ opkg install --force-reinstall https://github.com/{{REPOSITORY}}/releases/downlo
 
 If the image has a newer version of exteplayer3 installed, add `--force-downgrade`. Restart Enigma2 (or the plugin that uses exteplayer3) afterwards. To go back to the player of the image: `opkg remove exteplayer3` and install it again from the feed.
 
+### Dreambox OS
+
+For Dreamboxes with Dreambox OS (dpkg) the same files come as `.deb`: `_armhf_dreamos.deb` for the DM900 and DM920, `_mipsel_dreamos.deb` for the DM520 and DM525. They are **not tested on a receiver yet**. There is none for the Dreambox One and Two: their `aarch64` package needs the audio driver of the OE-Alliance images. Copy the file to `/tmp` and run:
+
+```
+dpkg -i /tmp/<file>.deb
+```
+
+The package replaces `exteplayer3-dreamos` and `ffmpeg-exteplayer3-dreamos` if one of them is installed. To remove it: `dpkg -r exteplayer3`.
+
 ## What is in the package
 
 - `/usr/bin/exteplayer3`
