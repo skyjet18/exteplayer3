@@ -1430,6 +1430,12 @@ are untested here; they are meant for testers of such receivers:
 - `EP3_HISI_NO_CLEAR=1`: no `VIDEO_CLEAR_BUFFER` / `AUDIO_CLEAR_BUFFER` when
   the devices are opened and when the video starts; the clears of a seek, a
   track switch or a stop stay.
+- `EP3_HISI_H265_TS=1`: H.265 in Annex B (TS and other Annex B sources) is
+  written as the H.264 writer does: the data right after the PES header,
+  without the zero byte in front of it, and the DTS in the PES header. On a
+  Hi3798MV200 (Amiko Viper 4K V20) the DVB layer rejected every HEVC packet
+  with the zero byte ("pes start byte = 0 0 0" in the kernel log, no
+  picture), H.264 played. Other receivers keep the layout with the zero byte.
 
 From the same fork, not tied to the receiver type and also untested:
 `EP3_LPCM_FRAMES=2..12` puts that many DVD LPCM frames (150 PTS ticks each)
@@ -1464,7 +1470,9 @@ provider/SSAI behavior. Before deployment, check on representative receivers:
   opt-in switches have not run on any receiver: `EP3_HISI_AV_SYNC` (lip sync
   of HLS, TS and MP4 with it, also after seeks and audio switches),
   `EP3_HISI_NO_CLEAR` (start of the picture and sound, no old picture of an
-  earlier playback), `EP3_LPCM_FRAMES` (LPCM with `-l`: sound without
+  earlier playback), `EP3_HISI_H265_TS` (HEVC from TS with picture; it comes
+  from an image for the Amiko Viper 4K V20, which tested it there),
+  `EP3_LPCM_FRAMES` (LPCM with `-l`: sound without
   crackles or gaps, lip sync, seeks).
 - A source whose audio and video count from different origins (first
   timestamps more than 60 seconds apart): audible audio and its lip sync.
@@ -1674,6 +1682,7 @@ The version number does not change with every feature: keys added after a releas
 | `EP3_OUTPUT_PACING_MS` | software playback clock, see [HiSilicon receivers](#-hisilicon-receivers) |
 | `EP3_HISI_AV_SYNC` | HiSilicon only, `1`: hardware A/V sync also for streams that are not DASH, see [HiSilicon receivers](#-hisilicon-receivers) |
 | `EP3_HISI_NO_CLEAR` | HiSilicon only, `1`: no decoder buffer clears at the open and the video start |
+| `EP3_HISI_H265_TS` | HiSilicon only, `1`: H.265 Annex B without the zero byte after the PES header, with the DTS, see [HiSilicon receivers](#-hisilicon-receivers) |
 | `EP3_LPCM_FRAMES` | `2`..`12`: LPCM frames per PES packet with `-l` (default one), see [HiSilicon receivers](#-hisilicon-receivers) |
 | `SSL_CERT_FILE`, `SSL_CERT_DIR`, `EP3_CA_FILES`, `EP3_CA_DEFAULT_FILE` | CA certificates, see [HTTPS](#-https-ca-certificates) |
 | `EP3_FAKE_AUDIO_CLOCK=<ms>` | host build (`tests/build.sh`) only: without video, the fake output reports the position of an audio decoder that plays in real time and stands for `<ms>` after a clear |
@@ -1865,6 +1874,14 @@ the DreamOS build; taken over here directly)
 
 - `/usr/bin/hihalt` as one more marker of a HiSilicon receiver:
   [1985757](https://github.com/OpenVisionE2/exteplayer3/commit/19857571).
+
+**HD Satelit** ([monea-software/hdsatelit-enigma2](https://github.com/monea-software/hdsatelit-enigma2),
+image for the Amiko Viper 4K V20)
+
+- HiSilicon, opt-in here: H.265 from TS without the zero byte after the PES
+  header, with the DTS (`EP3_HISI_H265_TS`), from the patch
+  `meta-local/recipes-local/exteplayer3/exteplayer3/0001-h265-ts-fara-octet-in-plus.patch`:
+  [8f8e166](https://github.com/monea-software/hdsatelit-enigma2/commit/8f8e166).
 
 **neutrino-images / ni-libstb-hal** ([neutrino-images/ni-libstb-hal](https://github.com/neutrino-images/ni-libstb-hal),
 `libeplayer3`)
