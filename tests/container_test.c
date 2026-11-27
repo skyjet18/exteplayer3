@@ -132,6 +132,117 @@ static void dts_dejitter_case(int little_endian, int stream_rate, uint8_t sfreq,
     avcodec_parameters_free(&stream.codecpar);
 }
 
+/* E-AC-3 syncframe header of 16 bytes (frmsiz 7), 48 kHz, 6 blocks, bsid 16:
+ * independent (strmtyp 0) or dependent (strmtyp 1) of substream 0. */
+static void eac3_header(uint8_t *f, unsigned int strmtyp, unsigned int acmod, unsigned int lfeon)
+{
+    memset(f, 0, 16);
+    f[0] = 0x0b;
+    f[1] = 0x77;
+    f[2] = (uint8_t)(strmtyp << 6);           /* substreamid 0, frmsiz high bits 0 */
+    f[3] = 7;                                 /* frmsiz: 16 bytes */
+    f[4] = (uint8_t)(0x30 | (acmod << 1) | lfeon); /* fscod 0, numblkscod 3 */
+    f[5] = 0x80;                              /* bsid 16, dialnorm 0 */
+}
+
+/* The channel count of passthrough audio from the frame headers: AC-3,
+ * E-AC-3 (7.1 with a dependent substream), ADTS AAC, and the three packets
+ * in a row before a new count is taken. */
+static void header_channels_case(void)
+{
+    uint8_t ac3_51[128] = {0x0b, 0x77, 0, 0, 0x00, 0x40, 0xE1}; /* 48 kHz 32 kbit/s, bsid 8, acmod 7, lfe */
+    uint8_t ac3_20[128] = {0x0b, 0x77, 0, 0, 0x00, 0x40, 0x40}; /* acmod 2, dsurmod 0, no lfe */
+    uint8_t eac3_51[16], eac3_71[32], core_71[144];
+    uint8_t adts[8] = {0xFF, 0xF1, 0x50, 0x80, 0, 0, 0};
+    AVStream stream = {0};
+    AudioStreamInfo_t info;
+    const char *description;
+    int channels, i;
+
+    assert(ac3_packet_channels(ac3_51, sizeof(ac3_51)) == 6);
+    assert(ac3_packet_channels(ac3_20, sizeof(ac3_20)) == 2);
+    eac3_header(eac3_51, 0, 7, 1);
+    assert(ac3_packet_channels(eac3_51, sizeof(eac3_51)) == 6);
+    eac3_header(eac3_51, 0, 2, 0);
+    assert(ac3_packet_channels(eac3_51, sizeof(eac3_51)) == 2);
+    /* 5.1 plus a dependent frame with chanmape and the chanmap Lrs/Rrs
+     * (location 6): dialnorm 31, compre 0, chanmape 1, chanmap 0x0200 */
+    eac3_header(eac3_71, 0, 7, 1);
+    eac3_header(eac3_71 + 16, 1, 2, 0);
+    eac3_71[16 + 5] = 0x87;
+    eac3_71[16 + 6] = 0xD0;
+    eac3_71[16 + 7] = 0x20;
+    assert(ac3_packet_channels(eac3_71, sizeof(eac3_71)) == 8);
+    /* the dependent frame alone gives no count */
+    assert(ac3_packet_channels(eac3_71 + 16, 16) == 0);
+    /* an AC-3 5.1 core in front of the same dependent frame */
+    memcpy(core_71, ac3_51, sizeof(ac3_51));
+    memcpy(core_71 + 128, eac3_71 + 16, 16);
+    assert(ac3_packet_channels(core_71, sizeof(core_71)) == 8);
+    /* a dependent frame without a chanmap adds nothing */
+    eac3_71[16 + 6] = 0xC0;
+    assert(ac3_packet_channels(eac3_71, sizeof(eac3_71)) == 6);
+    assert(ac3_packet_channels(eac3_71, 7) == 0);
+    assert(ac3_packet_channels(adts, sizeof(adts)) == 0);
+
+    assert(adts_packet_channels(adts, sizeof(adts)) == 2);
+    adts[2] = 0x51;                             /* channel_configuration 6 */
+    assert(adts_packet_channels(adts, sizeof(adts)) == 6);
+    adts[3] = 0xC0;                             /* 7: 8 channels */
+    assert(adts_packet_channels(adts, sizeof(adts)) == 8);
+    adts[2] = 0x50;
+    adts[3] = 0x00;                             /* 0: a program config element */
+    assert(adts_packet_channels(adts, sizeof(adts)) == 0);
+    assert(adts_packet_channels(ac3_51, sizeof(ac3_51)) == 0);
+
+    stream.codecpar = avcodec_parameters_alloc();
+    assert(stream.codecpar);
+    stream.codecpar->codec_type = AVMEDIA_TYPE_AUDIO;
+    stream.codecpar->codec_id = AV_CODEC_ID_EAC3;
+    audio_live_packet(7, &stream, eac3_71, sizeof(eac3_71));
+    eac3_71[16 + 6] = 0xD0;
+    for (i = 0; i < 3; i++) {
+        channels = -1;
+        assert(container_ffmpeg_audio_live_info(7, &channels, &description, &info));
+        assert(channels == 0);
+        audio_live_header_channels(7, &stream, eac3_71, sizeof(eac3_71));
+    }
+    assert(container_ffmpeg_audio_live_info(7, &channels, &description, &info) && channels == 8);
+    /* 2.0 in between: taken only after three packets in a row */
+    eac3_header(eac3_51, 0, 2, 0);
+    audio_live_header_channels(7, &stream, eac3_51, sizeof(eac3_51));
+    audio_live_header_channels(7, &stream, eac3_51, sizeof(eac3_51));
+    audio_live_header_channels(7, &stream, eac3_71, sizeof(eac3_71));
+    audio_live_header_channels(7, &stream, eac3_51, sizeof(eac3_51));
+    audio_live_header_channels(7, &stream, eac3_51, sizeof(eac3_51));
+    assert(container_ffmpeg_audio_live_info(7, &channels, &description, &info) && channels == 8);
+    audio_live_header_channels(7, &stream, eac3_51, sizeof(eac3_51));
+    assert(container_ffmpeg_audio_live_info(7, &channels, &description, &info) && channels == 2);
+    /* a packet without a header changes nothing */
+    audio_live_header_channels(7, &stream, adts, sizeof(adts));
+    assert(container_ffmpeg_audio_live_info(7, &channels, &description, &info) && channels == 2);
+    /* another track: the count starts again */
+    stream.codecpar->codec_id = AV_CODEC_ID_AAC;
+    adts[2] = 0x51;
+    adts[3] = 0x80;
+    audio_live_packet(8, &stream, adts, sizeof(adts));
+    assert(container_ffmpeg_audio_live_info(8, &channels, &description, &info) && channels == 0);
+    for (i = 0; i < 3; i++)
+        audio_live_header_channels(8, &stream, adts, sizeof(adts));
+    assert(container_ffmpeg_audio_live_info(8, &channels, &description, &info) && channels == 6);
+    assert(!container_ffmpeg_audio_live_info(7, &channels, &description, &info));
+    avcodec_parameters_free(&stream.codecpar);
+
+    /* DTS:X as eServiceMP3 names it */
+#ifdef AV_PROFILE_DTS_HD_MA_X
+    assert(!strcmp(Codec2AudioDescription(AV_CODEC_ID_DTS, AV_PROFILE_DTS_HD_MA_X), "DTS-HD MA + DTS:X"));
+#endif
+#ifdef AV_PROFILE_DTS_HD_MA_X_IMAX
+    assert(!strcmp(Codec2AudioDescription(AV_CODEC_ID_DTS, AV_PROFILE_DTS_HD_MA_X_IMAX), "DTS-HD MA + DTS:X IMAX"));
+#endif
+    assert(!strcmp(Codec2AudioDescription(AV_CODEC_ID_DTS, AV_PROFILE_DTS_HD_MA), "DTS-HD MA"));
+}
+
 #if HAVE_CH_LAYOUT && defined(AV_CHANNEL_LAYOUT_7POINT1POINT4_BACK)
 /* One 7.1.4 frame (the layout of the AC-4 decoder) through swresample the
  * way the PCM path sets it up: front left at value fl, or every channel at
@@ -237,6 +348,7 @@ static void ac4_pcm_case(void)
 int main(void)
 {
     CustomIOCtx_t io = {0};
+    header_channels_case();
     ac4_pcm_case();
     uint8_t bytes[8];
     dts_dejitter_case(0, 48000, 13, 1);

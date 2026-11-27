@@ -1052,7 +1052,8 @@ static void SetNice(int prio)
 
 /* The audio manager has the values of the codec parameters, read when the
  * tracks were listed. The track that plays can be more exact: channel count
- * of the decoded frames, Atmos found in the packets, the stream values of
+ * of the decoded frames or of the passthrough frame headers, Atmos found in
+ * the packets, the stream values of
  * codec parameters that changed after the list. */
 static void AudioLiveInfo(TrackDescription_t *track)
 {
