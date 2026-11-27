@@ -450,7 +450,7 @@ static int drm_key_get(AVFormatContext *s, const char *url, char *key)
         {
             struct timespec ts;
             uint64_t now = drm_now_ms();
-            if ((playback && playback->abortRequested) || PlaybackDieNow(0))
+            if ((playback && __atomic_load_n(&playback->abortRequested, __ATOMIC_ACQUIRE)) || PlaybackDieNow(0))
             {
                 ret = AVERROR_EXIT;
                 break;
@@ -650,10 +650,11 @@ int32_t ffmpeg_drm_key_stop(void)
     return __sync_bool_compare_and_swap(&drmFatal, 1, 2);
 }
 
-/* the read thread: whether it has to stop reading */
+/* the read thread: whether it has to stop reading (the command loop changes
+ * it with the compare and swap above, so every access is atomic) */
 static int32_t drm_key_fatal(void)
 {
-    return drmFatal != 0;
+    return __atomic_load_n(&drmFatal, __ATOMIC_ACQUIRE) != 0;
 }
 
 /* A packet of the read thread, with the mutex held: 0 to use it, 1 to drop
@@ -714,7 +715,7 @@ static int32_t drm_key_check_packet(Context_t *context, int32_t cAVIdx, AVPacket
     {
         ffmpeg_err("no key for KID %s of the video, playback stops\n", kid);
         E2iSendMsg("{\"FF_ERROR\":{\"msg\":\"No key for KID %s (video)\",\"code\":%d}}\n", kid, AVERROR(EACCES));
-        drmFatal = 1;
+        __atomic_store_n(&drmFatal, 1, __ATOMIC_RELEASE);
         return 1;
     }
 

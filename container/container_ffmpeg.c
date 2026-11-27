@@ -4718,7 +4718,8 @@ static int32_t interrupt_cb(void *ctx)
             return 1;
         }
     }
-    return p->abortRequested || PlaybackDieNow(0);
+    /* set by the stdin thread with __atomic_store_n (exteplayer.c) */
+    return __atomic_load_n(&p->abortRequested, __ATOMIC_ACQUIRE) || PlaybackDieNow(0);
 }
 
 #ifdef USE_CUSTOM_IO
@@ -5894,7 +5895,7 @@ int32_t container_ffmpeg_init(Context_t *context, PlayFiles_t *playFilesNames)
         av_log_set_callback( ffmpeg_silen_callback );
     }
 
-    context->playback->abortRequested = 0;
+    __atomic_store_n(&context->playback->abortRequested, 0, __ATOMIC_RELEASE);
     int32_t res = container_ffmpeg_init_av_context(context, playFilesNames->szFirstFile, playFilesNames->iFirstFileSize, \
                                                    playFilesNames->szFirstMoovAtomFile, playFilesNames->iFirstMoovAtomOffset, 0);
 
