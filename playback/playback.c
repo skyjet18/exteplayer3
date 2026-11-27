@@ -44,6 +44,27 @@ static pthread_mutex_t continue_mutex = PTHREAD_MUTEX_INITIALIZER;
 static int64_t last_continue_us;
 static uint32_t playback_stamp;
 
+/* The stamp of the read position (playback->stamp): the play thread takes it
+ * before it reads a packet, a seek (and the DASH audio switch) changes it
+ * before it queues the seek and clears the output, the stop sets it to -1.
+ * The buffered output (-b) drops the packets of an old stamp. Without it the
+ * play thread compares the stamp right before it writes a packet (Write() in
+ * container_ffmpeg.c) and drops the packet when it has changed. The command
+ * thread does not wait for a write: a packet that is already in the write
+ * when the clear comes can still get through (a short window, the write is
+ * short); the one read before the seek and written after the clear, which
+ * the container lock released for the write let through, is dropped. */
+static void PlaybackStampSet(Context_t *context, void *stamp)
+{
+    __atomic_store_n(&context->playback->stamp, stamp, __ATOMIC_SEQ_CST);
+}
+
+static void PlaybackStampNew(Context_t *context)
+{
+    playback_stamp += 1;
+    PlaybackStampSet(context, (void *)(uintptr_t)playback_stamp);
+}
+
 int64_t PlaybackLastContinue(void)
 {
     int64_t value;
@@ -518,8 +539,9 @@ static int32_t PlaybackStop(Context_t  *context)
     playback_printf(10, "\n");
     
     PlaybackDieNow(1);
+    /* no clear follows that a write would have to come before: no wait */
     if (context && context->playback)
-        context->playback->stamp = (void *)-1;
+        __atomic_store_n(&context->playback->stamp, (void *)-1, __ATOMIC_SEQ_CST);
 
     if (context && context->playback && context->playback->isPlaying) 
     {
@@ -605,16 +627,16 @@ static int32_t PlaybackSeekCmd(Context_t  *context, int64_t *pos, ContainerCmd_t
     if (context->playback->isPlaying && !context->playback->isForwarding && !context->playback->BackWard && !context->playback->SlowMotion && !context->playback->isPaused) 
     {
         uint8_t wasSeeking = context->playback->isSeeking;
-        void *old_stamp = context->playback->stamp;
+        void *old_stamp = __atomic_load_n(&context->playback->stamp, __ATOMIC_SEQ_CST);
         context->playback->isSeeking = 1;
         PlaybackChanged();
         /* We changing current stamp, so all frames with old stamps will be skipped
-         * Without this there could be situation when the ffmpeg thread is 
-         * in the av_read_frame(), so, even if we flushed data,  still 
-         * data from the old position were written
+         * Without this there could be situation when the ffmpeg thread is
+         * in the av_read_frame(), so, even if we flushed data,  still
+         * data from the old position were written (buffered output: the
+         * buffer drops them; without it the write, see PlaybackStampSet())
          */
-        playback_stamp += 1;
-        context->playback->stamp = (void *)(uintptr_t)playback_stamp;
+        PlaybackStampNew(context);
         ret = context->container->selectedContainer->Command(context, containerCmd, pos);
         if (ret == 0)
         {
@@ -624,7 +646,7 @@ static int32_t PlaybackSeekCmd(Context_t  *context, int64_t *pos, ContainerCmd_t
         }
         else
         {
-            context->playback->stamp = old_stamp;
+            PlaybackStampSet(context, old_stamp);
             playback_err("failed to queue seek\n");
         }
         context->playback->isSeeking = wasSeeking;
@@ -752,7 +774,7 @@ static int32_t PlaybackSwitchAudio(Context_t  *context, int32_t *track)
         if(ret == 0 && nextrackid != curtrackid)
         {
             /* a seek of the container for the switch changes it */
-            void *stamp = context->playback->stamp;
+            void *stamp = __atomic_load_n(&context->playback->stamp, __ATOMIC_SEQ_CST);
             if (context->container && context->container->selectedContainer)
             {
                 ret = context->container->selectedContainer->Command(context, CONTAINER_SWITCH_AUDIO, &nextrackid);
@@ -769,10 +791,10 @@ static int32_t PlaybackSwitchAudio(Context_t  *context, int32_t *track)
             {
                 /* DASH without that seek (live): the new representation starts
                  * at the read position, nothing read before it may play on */
-                if (context->playback->isDash && context->playback->stamp == stamp)
+                if (context->playback->isDash &&
+                    __atomic_load_n(&context->playback->stamp, __ATOMIC_SEQ_CST) == stamp)
                 {
-                    playback_stamp += 1;
-                    context->playback->stamp = (void *)(uintptr_t)playback_stamp;
+                    PlaybackStampNew(context);
                     ret = context->output->Command(context, OUTPUT_CLEAR, NULL);
                     if (ret < 0)
                         playback_err("failed to reset DASH A/V buffers\n");

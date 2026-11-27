@@ -210,5 +210,13 @@ int main(void)
         PlaybackWaitChange(serial, 5000);
         assert(mono_us() - start < 1000000);
     }
+    /* a seek changes the stamp before it clears the output (without -b:
+     * Write() of the container drops a packet read before the change) */
+    {
+        void *old = playback.stamp;
+        int old_clears = clears;
+        assert(!PlaybackSeek(&context, &zero, 0));
+        assert(playback.stamp != old && clears == old_clears + 1);
+    }
     return 0;
 }

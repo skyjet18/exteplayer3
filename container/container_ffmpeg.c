@@ -284,6 +284,13 @@ static void releaseSeekMutex()
 
 typedef int32_t (* Write_FN) (void  *, void *);
 
+/* Without the buffered output: the stamp the play thread took before it read
+ * the packet it writes (FFMPEGThread), checked in Write() right before the
+ * packet goes out, see PlaybackStampSet() in playback.c. Only the play thread
+ * uses these two. */
+static int g_checkStamp = 0;
+static void *g_readStamp = NULL;
+
 static int32_t Write(Write_FN WriteFun, void *context, void *privateData, int64_t pts)
 {
     /* Because Write is blocking we will release mutex which protect
@@ -325,6 +332,18 @@ static int32_t Write(Write_FN WriteFun, void *context, void *privateData, int64_
             OutputPacingWait(ctx, PACING_STREAM_VIDEO, pts);
         else if (ctx->output->audio && WriteFun == ctx->output->audio->Write)
             OutputPacingWait(ctx, PACING_STREAM_AUDIO, pts);
+    }
+    /* A seek may have come since the packet was read: its clear is done or
+     * follows, the packet of the old position must not go out after it.
+     * Checked right before the write, after the pacing wait. */
+    if (g_checkStamp && WriteFun != ctx->output->subtitle->Write &&
+        __atomic_load_n(&ctx->playback->stamp, __ATOMIC_SEQ_CST) != g_readStamp)
+    {
+        ffmpeg_printf(20, "packet of the position before a seek dropped\n");
+        getMutex(__FILE__, __FUNCTION__,__LINE__);
+        *extra = saved;
+        free(copy);
+        return 0;
     }
     ret = WriteFun(context, privateData);
     getMutex(__FILE__, __FUNCTION__,__LINE__);
@@ -3260,6 +3279,9 @@ static void FFMPEGThread(Context_t *context)
     uint32_t bufferSize = 0;
     context->output->Command(context, OUTPUT_GET_BUFFER_SIZE, &bufferSize);
     ffmpeg_printf(10, "bufferSize [%u]\n", bufferSize);
+    /* the buffered output drops the packets of an old stamp itself */
+    g_checkStamp = 0 == bufferSize;
+    g_readStamp = __atomic_load_n(&context->playback->stamp, __ATOMIC_SEQ_CST);
 
     /* The start position goes through the seek of the loop below before the
      * first packet is read, so nothing from 0 is written. Not for live
@@ -3325,6 +3347,16 @@ static void FFMPEGThread(Context_t *context)
         }
 
         getMutex(__FILE__, __FUNCTION__,__LINE__);
+
+        /* The stamp of what is read in this round, taken before the test of
+         * isSeeking below and before the queued seek is taken: a seek sets
+         * isSeeking, then changes the stamp, then queues and clears. Seen the
+         * new stamp, isSeeking is seen too; an old stamp makes Write() drop
+         * the packet once the stamp has changed (see PlaybackStampSet()). */
+        if (context->playback)
+        {
+            g_readStamp = __atomic_load_n(&context->playback->stamp, __ATOMIC_SEQ_CST);
+        }
 
         if (!context->playback || !context->playback->isPlaying ||
             context->playback->isSeeking || context->playback->isAudioSwitching)
