@@ -2388,8 +2388,26 @@ static void radio_metadata_update(AVFormatContext *av, AVStream *stream,
  * buffered (PTS gap + 800 ms). On by default on Dreambox only;
  * EP3_LIVE_SYNC=1 enables it on other boxes, EP3_LIVE_SYNC=0 disables it. */
 #include <time.h>
-static volatile int     ls_state  = 0;   /* 0 not started, 1 holding, 2 done/off */
+/* 0 not started, 1 holding, 2 done/off; written by the play thread and by
+ * ls_thread, so every access is atomic (ls_get_state/ls_put_state) */
+static int              ls_state  = 0;
 static int              ls_default = 0;  /* default of the box, set by FFMPEGThread() */
+/* ls_thread, started by the play thread in ls_on_video() and joined by it
+ * before it ends (ls_join): the stop frees the context only after the play
+ * thread has ended, so ls_thread never reads it after the free. Only the play
+ * thread touches these two. */
+static pthread_t        ls_tid;
+static int              ls_tid_valid = 0;
+
+static inline int ls_get_state(void)
+{
+    return __atomic_load_n(&ls_state, __ATOMIC_ACQUIRE);
+}
+
+static inline void ls_put_state(int state)
+{
+    __atomic_store_n(&ls_state, state, __ATOMIC_RELEASE);
+}
 /* written by the demuxer thread, read by ls_thread: under ls_pts_mutex,
  * a 64-bit load or store is not atomic on 32-bit ARM and MIPS */
 static pthread_mutex_t  ls_pts_mutex = PTHREAD_MUTEX_INITIALIZER;
@@ -2426,7 +2444,7 @@ static void *ls_thread(void *arg)
      * if it was not enough, so keep zapping fast. EP3_LIVE_SYNC_MARGIN=ms */
     const char *menv = getenv("EP3_LIVE_SYNC_MARGIN");
     int64_t margin = menv ? atoi(menv) : 400;
-    while (ls_state == 1 && context->playback && context->playback->isPlaying)
+    while (ls_get_state() == 1 && context->playback && context->playback->isPlaying)
     {
         int64_t el = ls_now_ms() - t0;
         int64_t last_v = ls_get_pts(&ls_last_v);
@@ -2445,9 +2463,9 @@ static void *ls_thread(void *arg)
             break;
         usleep(50000);
     }
-    if (ls_state == 1)
+    if (ls_get_state() == 1)
     {
-        ls_state = 2;
+        ls_put_state(2);
         if (context->playback && context->playback->isPlaying && !context->playback->isPaused)
             context->output->Command(context, OUTPUT_CONTINUE, NULL);
         printf("{\"log\":\"live sync: audio gap %lld ms, held %lld ms\"}\n", (long long)maxgap, (long long)(ls_now_ms() - t0));
@@ -2515,7 +2533,7 @@ static void *ls_thread(void *arg)
 static void ls_on_video(Context_t *context, int64_t pts)
 {
     if (pts != INVALID_PTS_VALUE) ls_set_pts(&ls_last_v, pts);
-    if (ls_state != 0) return;
+    if (ls_get_state() != 0) return;
     const char *env = getenv("EP3_LIVE_SYNC");
     int enabled = env ? env[0] != '0' : ls_default;
     if (!enabled || !avContextTab[0] ||
@@ -2524,20 +2542,31 @@ static void ls_on_video(Context_t *context, int64_t pts)
         ffmpeg_printf(10, "live sync bypass: enabled=%d duration_us=%"PRId64"\n",
                       enabled,
                       avContextTab[0] ? avContextTab[0]->duration : AV_NOPTS_VALUE);
-        ls_state = 2;
+        ls_put_state(2);
         return;
     }
-    ls_state = 1;
+    ls_put_state(1);
     context->output->Command(context, OUTPUT_PAUSE, NULL);
-    pthread_t th;
-    pthread_attr_t at; pthread_attr_init(&at);
-    pthread_attr_setdetachstate(&at, PTHREAD_CREATE_DETACHED);
-    if (pthread_create(&th, &at, ls_thread, context) != 0)
+    if (pthread_create(&ls_tid, NULL, ls_thread, context) != 0)
     {
-        ls_state = 2;
+        ls_put_state(2);
         context->output->Command(context, OUTPUT_CONTINUE, NULL);
     }
-    pthread_attr_destroy(&at);
+    else
+    {
+        ls_tid_valid = 1;
+    }
+}
+
+/* the play thread at its end, after isPlaying = 0: ls_thread leaves its
+ * loops within one sleep (at most 250 ms) */
+static void ls_join(void)
+{
+    if (ls_tid_valid)
+    {
+        pthread_join(ls_tid, NULL);
+        ls_tid_valid = 0;
+    }
 }
 
 /* ************************************************************************ */
@@ -4621,6 +4650,8 @@ static void FFMPEGThread(Context_t *context)
     }
     context->playback->isPlaying = 0;
     PlaybackDieNow(1);
+    /* before the stop may free the context: ls_thread uses it */
+    ls_join();
     ffmpeg_printf(10, "terminating\n");
     PlayThreadSetRunning(0);
 }
