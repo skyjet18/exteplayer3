@@ -23,8 +23,21 @@ def git(*args):
                           text=True, encoding='utf-8', errors='replace').stdout
 
 
+# where the version is: include/version.h; before that file existed, the
+# number after the format string of the EPLAYER3_EXTENDED message
+VERSION_FILES = ('include/version.h', 'main/exteplayer.c')
+
+
 def version_of(rev):
-    """The number after the format string of the EPLAYER3_EXTENDED message."""
+    """EXTEPLAYER3_VERSION of include/version.h, or for older commits the
+    number in the EPLAYER3_EXTENDED message of main/exteplayer.c."""
+    try:
+        src = git('show', rev + ':include/version.h').replace('\r', '')
+    except subprocess.CalledProcessError:
+        src = None
+    if src is not None:
+        m = re.search(r'^\s*#\s*define\s+EXTEPLAYER3_VERSION\s+([0-9]+)', src, re.M)
+        return m.group(1) if m else None
     try:
         src = git('show', rev + ':main/exteplayer.c').replace('\r', '')
     except subprocess.CalledProcessError:
@@ -38,8 +51,8 @@ def version_of(rev):
 
 def previous_version(sha, version):
     """(number, commit) of the previous version: the commit on the first-parent
-    history before which main/exteplayer.c last carried another number."""
-    commits = git('rev-list', '--first-parent', sha, '--', 'main/exteplayer.c').split()
+    history before which the version file last carried another number."""
+    commits = git('rev-list', '--first-parent', sha, '--', *VERSION_FILES).split()
     i = 0
     while i < len(commits) and version_of(commits[i]) == version:
         i += 1

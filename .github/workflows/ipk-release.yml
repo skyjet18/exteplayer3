@@ -28,8 +28,8 @@ name: ipk release
 # the releases is .github/ipk/release-notes.md.
 #
 # When it runs:
-#   - a push to master that changes the version of the player (the number
-#     in the EPLAYER3_EXTENDED message in main/exteplayer.c): if there is no
+#   - a push to master that changes the version of the player
+#     (EXTEPLAYER3_VERSION in include/version.h): if there is no
 #     tag v<version> yet, builds the six ipks and then creates the tag
 #     v<version> on the pushed commit and the release "exteplayer3 <version>"
 #     with the text of release-notes.md, the changes since the previous
@@ -56,8 +56,10 @@ name: ipk release
 #   - once a week on master: keeps the caches below alive and up to date
 #     (GitHub drops caches unused for 7 days), so a release is built in
 #     minutes. The packages of that run are attached to it as well.
-# Version: the number in main/exteplayer.c; for a release or tag made by
-# hand, the number of the tag (v187 -> 187).
+# Version: EXTEPLAYER3_VERSION in include/version.h (in commits from before
+# that file, the number in the EPLAYER3_EXTENDED message of
+# main/exteplayer.c); for a release or tag made by hand, the number of the
+# tag (v187 -> 187).
 # FFmpeg: release/6.1-patched (as the packages in ipk/) and
 # release/9.0-patched; the branches are followed by name, their current
 # commits are built.
@@ -71,7 +73,7 @@ name: ipk release
 on:
   push:
     branches: [master]
-    paths: ['main/exteplayer.c']
+    paths: ['include/version.h']
     tags: ['v*']
   release:
     types: [published]
@@ -89,7 +91,7 @@ on:
         options: ['all', 'both', 'armhf', 'mipsel', 'aarch64']
         default: 'all'
       release:
-        description: 'Create the tag and release of the version in main/exteplayer.c if there is none (master only)'
+        description: 'Create the tag and release of the version in include/version.h if there is none (master only)'
         type: boolean
         default: false
       version:
@@ -158,10 +160,17 @@ jobs:
         RUN_ATTEMPT: ${{ github.run_attempt }}
       run: |
         set -eu
-        # the number after the format string of the EPLAYER3_EXTENDED message
+        # EXTEPLAYER3_VERSION of include/version.h; commits from before that
+        # file: the number after the format string of the EPLAYER3_EXTENDED
+        # message in main/exteplayer.c
         version_of() {
-          git show "$1:main/exteplayer.c" 2> /dev/null | tr -d '\r' | sed -n '/EPLAYER3_EXTENDED.*version/,/;/p' |
-            tr -d '\n' | sed -n 's/.*", *\([0-9][0-9]*\)[,)].*/\1/p' | head -1
+          if git cat-file -e "$1:include/version.h" 2> /dev/null; then
+            git show "$1:include/version.h" | tr -d '\r' |
+              sed -n 's/^[[:space:]]*#[[:space:]]*define[[:space:]][[:space:]]*EXTEPLAYER3_VERSION[[:space:]][[:space:]]*\([0-9][0-9]*\).*/\1/p' | head -1
+          else
+            git show "$1:main/exteplayer.c" 2> /dev/null | tr -d '\r' | sed -n '/EPLAYER3_EXTENDED.*version/,/;/p' |
+              tr -d '\n' | sed -n 's/.*", *\([0-9][0-9]*\)[,)].*/\1/p' | head -1
+          fi
         }
         tag_exists() {
           [ -n "$(git ls-remote --tags origin "refs/tags/$1")" ]
@@ -197,7 +206,7 @@ jobs:
               before=$(version_of HEAD^)
             fi
             if [ -z "$player" ]; then
-              echo "::error::no version in main/exteplayer.c (EPLAYER3_EXTENDED)"
+              echo "::error::no version in include/version.h (EXTEPLAYER3_VERSION)"
               exit 1
             elif [ "$player" = "$before" ]; then
               echo "::notice title=No new version::The player version is still $player; nothing to build."
@@ -228,7 +237,7 @@ jobs:
                 # another number (the most recent such change)
                 sha=""
                 prev=""
-                for c in $(git rev-list --reverse --first-parent HEAD -- main/exteplayer.c); do
+                for c in $(git rev-list --reverse --first-parent HEAD -- include/version.h main/exteplayer.c); do
                   v=$(version_of "$c")
                   if [ "$v" = "$version" ] && [ "$prev" != "$version" ]; then sha=$c; fi
                   prev=$v
@@ -253,7 +262,7 @@ jobs:
             elif [ "$INPUT_RELEASE" = true ]; then
               only_default_branch '"release"'
               if tag_exists "v$player"; then
-                echo "::error::the tag v$player exists already; raise the version in main/exteplayer.c"
+                echo "::error::the tag v$player exists already; raise the version in include/version.h"
                 exit 1
               fi
               tag=v$player
@@ -266,11 +275,11 @@ jobs:
         if [ "$mode" = attach ] && [[ $tag =~ ^v?([0-9]+(\.[0-9]+)*)$ ]]; then
           version=${BASH_REMATCH[1]}
           if [ "$version" != "$player" ]; then
-            echo "::warning::tag $tag, but the player reports version ${player:-?} (main/exteplayer.c)"
+            echo "::warning::tag $tag, but the player reports version ${player:-?} (include/version.h)"
           fi
         fi
         if [ -z "$version" ]; then
-          echo "::error::no version: neither a tag like v187 nor the version in main/exteplayer.c"
+          echo "::error::no version: neither a tag like v187 nor the version in include/version.h"
           exit 1
         fi
 
