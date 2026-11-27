@@ -4670,7 +4670,11 @@ static void FFMPEGThread(Context_t *context)
     hevcHdrStream = NULL;
     video_live_reset();
 #ifdef HAVE_CLOSED_CAPTIONS
+    /* update_tracks() of main() reads ccEmbedded (cc_add_track) under the
+     * container mutex: cleared under it too */
+    getMutex_wr(__FILE__, __FUNCTION__,__LINE__);
     cc_close();
+    releaseMutex(__FILE__, __FUNCTION__,__LINE__);
 #endif
     if (pcm_audio_export_enabled)
     {

@@ -189,7 +189,11 @@ void E2iSendMsg(const char *format, ...)
 
 static void SendExternalVideo(const char *msg)
 {
-    static int fd = -1;
+    /* the socket, made at the first message; main() and the play thread
+     * both send, so it is taken with a compare and swap: the thread that
+     * comes second closes its own socket and uses the first one */
+    static int sock = -1;
+    int fd;
     struct sockaddr_un addr;
 
     memset(&addr, 0, sizeof(addr));
@@ -199,14 +203,24 @@ static void SendExternalVideo(const char *msg)
     {
         return;
     }
+    fd = __atomic_load_n(&sock, __ATOMIC_ACQUIRE);
     if (fd < 0)
     {
-        fd = socket(AF_UNIX, SOCK_DGRAM, 0);
-        if (fd < 0)
+        int created = socket(AF_UNIX, SOCK_DGRAM, 0);
+        if (created < 0)
         {
             return;
         }
-        fcntl(fd, F_SETFD, FD_CLOEXEC);
+        fcntl(created, F_SETFD, FD_CLOEXEC);
+        fd = -1;
+        if (__atomic_compare_exchange_n(&sock, &fd, created, 0, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE))
+        {
+            fd = created;
+        }
+        else
+        {
+            close(created);
+        }
     }
     /* without enigma2 listening it goes nowhere */
     (void)sendto(fd, msg, strlen(msg), MSG_DONTWAIT, (struct sockaddr *)&addr, sizeof(addr));
@@ -500,7 +514,8 @@ static void *StopSignalThreadFun(void *arg)
         }
         if (!g_stopSignal)
         {
-            g_stopSignal = sig;
+            /* main() reads it in ReadCommand() */
+            __atomic_store_n(&g_stopSignal, sig, __ATOMIC_RELEASE);
             TerminateWakeUp();
         }
     }
@@ -1000,7 +1015,8 @@ static char *ReadCommand(char *buff, int size)
     struct stat st;
     FILE *in = g_cmdFile ? g_cmdFile : stdin;
 
-    if (g_stopSignal)
+    /* set by the stop signal thread */
+    if (__atomic_load_n(&g_stopSignal, __ATOMIC_ACQUIRE))
     {
         strcpy(buff, "q\n");
         return buff;
@@ -2657,11 +2673,12 @@ int main(int argc, char* argv[])
     {
         pthread_join(termThread, NULL);
     }
-    
-    pthread_mutex_destroy(&playbackStartMtx);
-    
-    close(g_pfd[0]);
-    close(g_pfd[1]);
-    
+
+    /* No pthread_mutex_destroy(&playbackStartMtx) and no close of g_pfd
+     * here: the stdin thread, which is not joined, may still lock the mutex
+     * for a line that comes in now, and the stop signal thread may still
+     * write its wake-up to the pipe; a destroyed mutex or a closed (or
+     * reused) descriptor would be undefined. exit() ends the process and
+     * closes the descriptors after the exit handlers. */
     exit(0);
 }
