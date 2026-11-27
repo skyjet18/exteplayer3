@@ -78,6 +78,23 @@ static unsigned int            last_private_size;
 /* Prototypes                    */
 /* ***************************** */
 
+/* EP3_HISI_H265_TS=1, on a HiSilicon receiver only: the Annex B data right
+ * after the PES header, without the zero byte in front, and the DTS in the
+ * PES header, as the H.264 writer does. The DVB layer of a HiSilicon
+ * Hi3798MV200 (Amiko Viper 4K V20) rejected every HEVC packet from a TS
+ * source with the zero byte ("pes start byte = 0 0 0" in the kernel log, no
+ * picture). Off by default: the layout of the other receivers stays. */
+static int HisiAnnexBLayout(void)
+{
+    static int layout = -1;
+    if (layout < 0)
+    {
+        const char *env = getenv("EP3_HISI_H265_TS");
+        layout = env && env[0] == '1' && env[1] == '\0' && STB_HISILICON == GetSTBType();
+    }
+    return layout;
+}
+
 /* ***************************** */
 /* MISC Functions                */
 /* ***************************** */
@@ -299,11 +316,15 @@ static int writeData(void* _call)
     {
         h265_printf(10, "H265 simple inject method!\n");
         uint32_t FakeStartCode = (call->Version << 8) | PES_VERSION_FAKE_START_CODE;
-        
+        const int hisi = HisiAnnexBLayout();
+
         iov[ic++].iov_base = PesHeader;
 
-        iov[ic].iov_base = "";
-        iov[ic++].iov_len = 1;
+        if (!hisi)
+        {
+            iov[ic].iov_base = "";
+            iov[ic++].iov_len = 1;
+        }
 
         /* Outside TS the parameter sets can be in the extradata only (the
          * sprop sets of RTSP): send them once, unless the packet has its own. */
@@ -318,8 +339,10 @@ static int writeData(void* _call)
         iov[ic].iov_base  = call->data;
         iov[ic++].iov_len = call->len;
         
-        iov[0].iov_len = InsertPesHeader(PesHeader, -1, MPEG_VIDEO_PES_START_CODE, VideoPts, FakeStartCode);
-        
+        iov[0].iov_len = hisi
+            ? InsertPesHeaderWithDts(PesHeader, -1, MPEG_VIDEO_PES_START_CODE, VideoPts, call->Dts, FakeStartCode)
+            : InsertPesHeader(PesHeader, -1, MPEG_VIDEO_PES_START_CODE, VideoPts, FakeStartCode);
+
         return call->WriteV(call->fd, iov, ic);
     }
 
