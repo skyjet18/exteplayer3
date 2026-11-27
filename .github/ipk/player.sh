@@ -23,7 +23,7 @@ L=$BD/lib/exteplayer3_deps
 # NEEDED libraries the image has to provide (the packages in ipk/ take the
 # same ones from the image); everything else is bundled. The MIPS
 # package bundles liblzma itself, so does this one. libstdc++ (needed by
-# libsrt of the FFmpeg 9 packages): every Enigma2 image has it (Enigma2 is
+# libsrt, ARM and AArch64): every Enigma2 image has it (Enigma2 is
 # C++); the one of jessie (GCC 4.9) sets the highest GLIBCXX_ version used.
 # Player sources and defines per architecture: the AArch64 receivers with
 # Enigma2 are the Dreambox One/Two, their video output is the DreamNextGen
@@ -233,6 +233,13 @@ run protocols 'https' sh -c "$FFM -hide_banner -protocols 2>/dev/null | tr -d ' 
 if grep -q -- '--enable-libsrt' $FF/FFMPEG_OPTIONS 2> /dev/null; then
     run protocol_srt '^srt$' sh -c "$FFM -hide_banner -protocols 2>/dev/null | tr -d ' ' | grep -x srt"
 fi
+# H.264 encoding with libx264 (ArchivCZSK renders short clips with it): ten
+# frames to MPEG-TS, read back as H.264
+rm -f /tmp/x264.ts
+run encode_libx264 '' $FFM -v error -f rawvideo -pix_fmt yuv420p -s 64x64 -r 25 -i /dev/zero -frames:v 10 \
+    -c:v libx264 -preset veryfast -f mpegts -y /tmp/x264.ts
+run encode_libx264_check '^h264$' $FFP -v error -select_streams v -show_entries stream=codec_name -of csv=p=0 /tmp/x264.ts
+rm -f /tmp/x264.ts
 U=https://127.0.0.1:${HTTPS_PORT:-8443}
 run https_noverify '^h264' $FFP -v error -tls_verify 0 -show_entries stream=codec_name -of csv=p=0 $U/hls/master.m3u8
 # default verification with the CA file of OPENSSLDIR (/etc/ssl/cert.pem),

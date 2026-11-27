@@ -13,11 +13,11 @@
 #     --sysroot and -g in --extra-cflags (the package is stripped anyway)
 #   left out as unknown to FFmpeg 9:
 #     --disable-yasm, --enable-postproc (libpostproc was removed in FFmpeg 8)
-#   left out on purpose:
-#     --enable-libx264: FFmpeg 9 needs X264_BUILD >= 155 (jessie: 142), and
-#     the line disables the libx264 encoder, the only user of the library
-#     (libavcodec of the package does not even link it)
 #   changed:
+#     --enable-libx264 with libx264 of /opt/deps (FFmpeg 9 needs X264_BUILD
+#     >= 155, jessie has 142) and its encoder enabled, as in the packages of
+#     version 187 in ipk/ (ArchivCZSK encodes short H.264 clips with it; the
+#     line of the older packages had the encoder off)
 #     ARM --cc / --extra-cflags: -marm -mfpu=vfp added, the code generation
 #     of the package (Debian's GCC defaults to Thumb-2 and VFPv3-D16);
 #     MIPS: the flags of the package unchanged (-mel -mabi=32 -mhard-float
@@ -81,7 +81,7 @@ ARGS=(--disable-stripping --enable-pic --enable-shared --enable-pthreads --enabl
       --enable-muxer=image2 --enable-muxer=mjpeg --enable-muxer=rawvideo --enable-muxer=mpeg2video
       --enable-muxer=matroska --enable-muxer=m4v --enable-muxer=image2pipe --enable-muxer=apng
       --enable-muxer=mpegts --enable-muxer=asf --enable-muxer=spdif
-      --disable-encoders --disable-encoder=libx264 --enable-encoder=ac3 --enable-encoder=eac3 --enable-encoder=aac
+      --disable-encoders --enable-encoder=libx264 --enable-encoder=ac3 --enable-encoder=eac3 --enable-encoder=aac
       --enable-encoder=mpeg1video --enable-encoder=ljpeg --enable-encoder=mjpeg --enable-encoder=mpeg4
       --enable-encoder=jpeg2000 --enable-encoder=jpegls --enable-encoder=png --enable-encoder=rawvideo
       --enable-encoder=wmav2 --enable-decoder=truehd --enable-decoder=mlp
@@ -95,7 +95,8 @@ ARGS=(--disable-stripping --enable-pic --enable-shared --enable-pthreads --enabl
       --enable-librtmp --disable-libv4l2 --disable-libvorbis --enable-libxml2 --enable-lzma --disable-libmfx
       --disable-libmp3lame --enable-openssl --disable-sdl2 --disable-libspeex $SRTOPT
       --enable-swresample --enable-swscale --enable-libtheora --disable-libv4l2 --disable-vaapi
-      --disable-vdpau --disable-libvpx --disable-libx265 --disable-libxcb --disable-outdev=xv --enable-zlib)
+      --disable-vdpau --disable-libvpx --enable-libx264 --disable-libx265 --disable-libxcb --disable-outdev=xv
+      --enable-zlib)
 printf '%s\n' "${ARGS[@]}" > $OUT/options.txt
 
 echo "======== configure"
@@ -110,9 +111,10 @@ cp ffbuild/config.log config.h ffbuild/config.mak $OUT/
 grep -E '^(ARCH|C compiler|C library|runtime cpu detection|standalone assembly|inline assembly|ARMv|VFP|NEON|THUMB|MIPS|MMI|MSA|License|network support)' $OUT/configure.log
 sed -n '/^External libraries:/,/^$/p' $OUT/configure.log
 # what the line asks for and configure did not enable
-for want in alsa bzlib libbluray libfreetype librtmp libtheora libxml2 lzma openssl zlib $SRTWANT; do
+for want in alsa bzlib libbluray libfreetype librtmp libtheora libx264 libxml2 lzma openssl zlib $SRTWANT; do
     grep -q "^#define CONFIG_$(echo $want | tr a-z A-Z) 1" config.h || { echo "ERROR: $want not enabled"; exit 1; }
 done
+grep -q '^#define CONFIG_LIBX264_ENCODER 1' config_components.h || { echo "ERROR: libx264 encoder not enabled"; exit 1; }
 # libavformat/libsrt.c uses IN6_IS_ADDR_* (via srt.h); in glibc 2.19 these
 # macros need s6_addr32, which <netinet/in.h> only defines with __USE_MISC,
 # not with the _XOPEN_SOURCE=600 of FFmpeg: _GNU_SOURCE for this file only

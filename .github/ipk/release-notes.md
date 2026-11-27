@@ -46,7 +46,7 @@ If the image has a newer version of exteplayer3 installed, add `--force-downgrad
 ## What is in the package
 
 - `/usr/bin/exteplayer3`
-- `/usr/lib/exteplayer3_deps/`: FFmpeg (`libavcodec`, `libavformat`, `libavutil`, `libavfilter`, `libavdevice`, `libswresample`, `libswscale`, the `ffmpeg` and `ffprobe` tools) and the libraries an image may not have: OpenSSL 3.5, libxml2 2.9, libbluray 1.3 with libudfread, librtmp (rtmpdump 2.6), libsrt 1.5 (ARM and AArch64), libbz2, libatomic, and liblzma on MIPS. The player and FFmpeg find them there (RPATH); the FFmpeg and the libraries of the image are not touched.
+- `/usr/lib/exteplayer3_deps/`: FFmpeg (`libavcodec`, `libavformat`, `libavutil`, `libavfilter`, `libavdevice`, `libswresample`, `libswscale`, the `ffmpeg` and `ffprobe` tools) and the libraries an image may not have: OpenSSL 3.5, libxml2 2.9, libbluray 1.3 with libudfread, librtmp (rtmpdump 2.6), libx264 (the H.264 encoder of FFmpeg, `-c:v libx264`), libsrt 1.5 (ARM and AArch64), libbz2, libatomic, and liblzma on MIPS. The player and FFmpeg find them there (RPATH); the FFmpeg and the libraries of the image are not touched.
 
 ## Requirements
 
