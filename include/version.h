@@ -5,6 +5,6 @@
  * message. A new version is this one line; the ipk release workflow, its
  * release notes and the BitBake recipe read the number from here (the line
  * "#define EXTEPLAYER3_VERSION <number>"). */
-#define EXTEPLAYER3_VERSION 187
+#define EXTEPLAYER3_VERSION 188
 
 #endif
