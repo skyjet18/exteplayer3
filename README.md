@@ -1659,6 +1659,8 @@ default of `0` (`.get(key, 0)`) and test the feature, not the version.
 
 The version number does not change with every feature: keys added after a release come in builds that still report the previous version (e.g. most keys above came in builds that reported 186 before the release of 187). A front end should therefore test the key, not the version.
 
+The number is `EXTEPLAYER3_VERSION` in `include/version.h`; a new version is that one line. The ipk release workflow (a push to master that changes it builds the packages and makes the release), its release notes and the BitBake recipe (`PKGV`) read it from there.
+
 ---
 
 ## 🔌 Environment variables

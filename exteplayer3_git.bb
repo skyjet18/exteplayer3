@@ -14,25 +14,21 @@ inherit gitpkgv pkgconfig
 
 SRCREV = "${AUTOREV}"
 
-# The version of the package is the version of the player: the number of its
-# EPLAYER3_EXTENDED start message in main/exteplayer.c, read when the
-# package is made (as GITPKGV, the source is there then), with the same rule
-# as the ipk release workflow, so a new version needs no change here. While
-# the recipe is parsed the source is not there yet: 0.
+# The version of the package is the version of the player:
+# EXTEPLAYER3_VERSION in include/version.h, read when the package is made
+# (as GITPKGV, the source is there then), with the same rule as the ipk
+# release workflow, so a new version needs no change here. While the recipe
+# is parsed the source is not there yet: 0.
 def exteplayer3_version(d):
     import os
     import re
     try:
-        with open(os.path.join(d.getVar('S'), 'main', 'exteplayer.c'), encoding='utf-8', errors='replace') as f:
+        with open(os.path.join(d.getVar('S'), 'include', 'version.h'), encoding='utf-8', errors='replace') as f:
             src = f.read()
     except OSError:
         return '0'
-    m = re.search(r'EPLAYER3_EXTENDED[^\n]*version', src)
-    if not m:
-        return '0'
-    end = src.find(';', m.start())
-    v = re.search(r'",\s*(\d+)\s*[,)]', src[m.start():end if end >= 0 else len(src)])
-    return v.group(1) if v else '0'
+    m = re.search(r'^\s*#\s*define\s+EXTEPLAYER3_VERSION\s+(\d+)', src, re.M)
+    return m.group(1) if m else '0'
 
 EXTEPLAYER3_VERSION = "${@exteplayer3_version(d)}"
 # not part of the task signatures (it differs between parsing and packaging)

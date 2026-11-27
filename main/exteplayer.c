@@ -29,6 +29,7 @@
 #include <time.h>
 #include "pcm_export.h"
 #include "ca_bundle.h"
+#include "version.h"
 
 #include <sys/ioctl.h>
 #include <sys/prctl.h>
@@ -1970,7 +1971,7 @@ int main(int argc, char* argv[])
                ",\"cover\":1"
                ",\"c_l\":1"
                ",\"seekms\":1"
-               "}}\n", 187,
+               "}}\n", EXTEPLAYER3_VERSION,
                audio_transcode_caps(),
                hls_segment_caps(), ffmpeg_drm_key_caps());
 
