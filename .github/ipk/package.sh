@@ -6,11 +6,10 @@
 #                                the image does not provide
 # usage: package.sh <out/player> <dist directory>
 # environment: ARCH, VERSION, MAX_GLIBC, REPOSITORY, PLAYER_SHA, FFMPEG_REPO,
-#              FFMPEG_VERSION (6.1 or 9), FFMPEG_BRANCH, FFMPEG_SHA
-# Writes exteplayer3_<VERSION>_ffmpeg<6|9>_<armv7ahf|mips32el|aarch64>.ipk,
-# .manifest.txt and .buildinfo.txt into the dist directory. Both FFmpeg
-# variants are the package exteplayer3 (they replace the player of the image
-# and each other). Exit status 1 when a file needs a
+#              FFMPEG_VERSION (9), FFMPEG_BRANCH, FFMPEG_SHA
+# Writes exteplayer3_<VERSION>_ffmpeg9_<armv7ahf|mips32el|aarch64>.ipk,
+# .manifest.txt and .buildinfo.txt into the dist directory. The package is
+# exteplayer3 (it replaces the player of the image). Exit status 1 when a file needs a
 # newer glibc than MAX_GLIBC. Depends: libc6 of the highest GLIBC_ version
 # the files need (the result of that check), not more.
 set -eux

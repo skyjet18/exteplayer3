@@ -1,17 +1,17 @@
 #!/bin/bash
-# Runs inside the jessie userland: configures, compiles and installs FFmpeg
+# Runs inside the jessie userland: configures, compiles and installs FFmpeg 9
 # with the configure line of the packages in ipk/ (OpenPLi 4 build, FFmpeg
-# 6.1), adapted to a native build and, with FFMPEG_VERSION=9, to FFmpeg 9.
+# 6.1), adapted to a native build and to FFmpeg 9.
 #   /w/src/ffmpeg   source tree
 #   /opt/ffstage    installation (DESTDIR, prefix /usr)
 #   /w/out/ffmpeg   logs, config.h, the options used
-# environment: ARCH (armhf, mipsel or arm64), FFMPEG_VERSION (6.1 or 9)
+# environment: ARCH (armhf, mipsel or arm64)
 #
 # Differences to the line of the package:
 #   left out, cross compilation (this is a native build in the chroot):
 #     --cross-prefix --ld --cxx --enable-cross-compile --sysroot,
 #     --sysroot and -g in --extra-cflags (the package is stripped anyway)
-#   FFmpeg 9 only, left out as unknown to it:
+#   left out as unknown to FFmpeg 9:
 #     --disable-yasm, --enable-postproc (libpostproc was removed in FFmpeg 8)
 #   left out on purpose:
 #     --enable-libx264: FFmpeg 9 needs X264_BUILD >= 155 (jessie: 142), and
@@ -24,7 +24,7 @@
 #     -march=mips32, no hash style)
 #     AArch64 (no package in ipk/): --arch=aarch64 with the options of
 #     OE-Alliance (--enable-armv8 --enable-vfp --enable-neon), -march=armv8-a
-#     FFmpeg 9: --enable-libsrt (libsrt 1.5.4 from /opt/deps)
+#     --enable-libsrt (libsrt 1.5.4 from /opt/deps)
 #     --extra-ldflags: -L/-rpath-link of /opt/deps added
 #     OpenSSL 3.5 instead of 1.0.1j, librtmp 2.6, libbluray 1.3.4,
 #     libxml2 2.9.14 (all from /opt/deps)
@@ -59,13 +59,9 @@ case ${ARCH:-armhf} in
         LATEOPTS=()
         ;;
 esac
-# the two options of the 6.1 line that FFmpeg 9 does not know any more;
-# SRT in the FFmpeg 9 packages only (as OE-Alliance: srt in the PACKAGECONFIG
-# of its FFmpeg 9 recipe, not of ffmpeg-ext 6.1)
-case ${FFMPEG_VERSION:-6.1} in
-    6.1) YASMOPTS=(--disable-yasm); POSTPROCOPTS=(--enable-postproc); SRTOPT=--disable-libsrt; SRTWANT="" ;;
-    *) YASMOPTS=(); POSTPROCOPTS=(); SRTOPT=--enable-libsrt; SRTWANT=libsrt ;;
-esac
+# SRT (as OE-Alliance: srt in the PACKAGECONFIG of its FFmpeg 9 recipe)
+SRTOPT=--enable-libsrt
+SRTWANT=libsrt
 
 ARGS=(--disable-stripping --enable-pic --enable-shared --enable-pthreads --enable-nonfree
       --cc="gcc $ARCHFLAGS" --arch=$FFARCH --target-os=linux
@@ -75,7 +71,7 @@ ARGS=(--disable-stripping --enable-pic --enable-shared --enable-pthreads --enabl
       --disable-altivec --disable-amd3dnow --disable-amd3dnowext --disable-mmx --disable-mmxext
       --disable-sse --disable-sse2 --disable-sse3 --disable-ssse3 --disable-sse4 --disable-sse42
       --disable-avx --disable-xop --disable-fma3 --disable-fma4 --disable-avx2
-      --disable-inline-asm ${YASMOPTS[@]+"${YASMOPTS[@]}"} --disable-x86asm --disable-fast-unaligned
+      --disable-inline-asm --disable-x86asm --disable-fast-unaligned
       --enable-protocol=http --enable-demuxer=dash --disable-muxers
       --enable-muxer=adts --enable-muxer=mpeg1video --enable-muxer=h264 --enable-muxer=mp4
       --enable-muxer=image2 --enable-muxer=mjpeg --enable-muxer=rawvideo --enable-muxer=mpeg2video
@@ -93,7 +89,7 @@ ARGS=(--disable-stripping --enable-pic --enable-shared --enable-pthreads --enabl
       --enable-avformat --enable-bzlib --disable-libdav1d --disable-libfdk-aac --enable-gpl --disable-libgsm
       --disable-indev=jack --enable-libbluray --enable-protocol=bluray --enable-libfreetype --disable-libopus
       --enable-librtmp --disable-libv4l2 --disable-libvorbis --enable-libxml2 --enable-lzma --disable-libmfx
-      --disable-libmp3lame --enable-openssl ${POSTPROCOPTS[@]+"${POSTPROCOPTS[@]}"} --disable-sdl2 --disable-libspeex $SRTOPT
+      --disable-libmp3lame --enable-openssl --disable-sdl2 --disable-libspeex $SRTOPT
       --enable-swresample --enable-swscale --enable-libtheora --disable-libv4l2 --disable-vaapi
       --disable-vdpau --disable-libvpx --disable-libx265 --disable-libxcb --disable-outdev=xv --enable-zlib)
 printf '%s\n' "${ARGS[@]}" > $OUT/options.txt
