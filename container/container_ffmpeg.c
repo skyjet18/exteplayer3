@@ -4660,6 +4660,9 @@ static void FFMPEGThread(Context_t *context)
 #if LIBAVCODEC_VERSION_INT >= AV_VERSION_INT(56, 34, 100)
     mpeg4p2_context_close(mpeg4p2_context);
 #endif
+#ifdef HAVE_FLV2MPEG4_CONVERTER
+    flv2mpeg4_context_close(&flv2mpeg4_context);
+#endif
 
     {
         unsigned int i;

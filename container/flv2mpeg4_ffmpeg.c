@@ -69,6 +69,18 @@ static int flv2mpeg4_context_write_extradata_cb(void *usr_data, int width, int h
     return 0;
 }
 
+/* the end of the play thread: the converter and the codec data it made */
+static void flv2mpeg4_context_close(Flv2Mpeg4Context *context)
+{
+    if (context == NULL)
+        return;
+    if (context->ctx)
+        flv2mpeg4_release_ctx(&context->ctx);
+    free(context->extradata);
+    context->extradata = NULL;
+    context->extradatasize = 0;
+}
+
 static void flv2mpeg4_context_reset(Flv2Mpeg4Context *context)
 {
     if (context == NULL || context->ctx == NULL)
