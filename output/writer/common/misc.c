@@ -126,6 +126,27 @@ void FlushBits(BitPacker_t * ld)
     ld->BitBuffer = 0;
 }
 
+/* true when /proc/stb/info/model is "gtxcombo" (the GTX Combo, recognised
+ * by its model name as in the OE-Alliance tree) */
+static bool IsGtxComboSTB(void)
+{
+    char model[32];
+    bool gtx = false;
+    FILE *f = fopen("/proc/stb/info/model", "r");
+
+    if (NULL == f)
+    {
+        return false;
+    }
+    if (NULL != fgets(model, (int)sizeof(model), f))
+    {
+        model[strcspn(model, "\r\n")] = '\0';
+        gtx = 0 == strcmp(model, "gtxcombo");
+    }
+    fclose(f);
+    return gtx;
+}
+
 /* true when the first line of the file names a HiSilicon SoC,
  * e.g. "hi3798mv200" or "Hi3716MV430" in /proc/stb/info/chipset */
 static bool IsHiSiliconChipsetFile(const char *path)
@@ -198,6 +219,9 @@ stb_type_t GetSTBType()
         }
         else if (IsHiSiliconSTB()) {
             type = STB_HISILICON;
+        }
+        else if (IsGtxComboSTB()) {
+            type = STB_GTXCOMBO;
         }
         else {
             type = STB_OTHER;

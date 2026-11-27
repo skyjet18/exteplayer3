@@ -25,6 +25,7 @@ typedef enum {
     STB_DREAMBOX,
     STB_VUPLUS,
     STB_HISILICON,
+    STB_GTXCOMBO,
     STB_OTHER=999,
 } stb_type_t;
 
