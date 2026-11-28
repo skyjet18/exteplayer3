@@ -20,6 +20,8 @@ static int test_pthread_create(pthread_t *thread, const pthread_attr_t *attribut
 
 static int threads_started, pauses, continues;
 static stb_type_t stb = STB_OTHER;
+/* 0: the thread runs on, the caller joins it (ls_join) */
+static int join_at_create = 1;
 
 /* A real thread that has run to its end when the caller goes on. */
 static int test_pthread_create(pthread_t *thread, const pthread_attr_t *attributes,
@@ -28,7 +30,8 @@ static int test_pthread_create(pthread_t *thread, const pthread_attr_t *attribut
     (void)attributes;
     threads_started++;
     assert(!pthread_create(thread, NULL, start, argument));
-    assert(!pthread_join(*thread, NULL));
+    if (join_at_create)
+        assert(!pthread_join(*thread, NULL));
     return 0;
 }
 
@@ -128,6 +131,30 @@ static void disabled_on_dreambox(void)
     assert(!first_video_packet_holds());
 }
 
+/* The play thread joins the hold thread before it ends (the stop frees the
+ * context after that): the hold thread is still holding while the stream
+ * plays and has ended when ls_join() returns. */
+static void stop_joins_hold_thread(void)
+{
+    AVFormatContext live = {.duration = AV_NOPTS_VALUE};
+    stb = STB_DREAMBOX;
+    assert(!container_ffmpeg_play(&context));
+    join_at_create = 0;
+    playback.isPlaying = 1;
+    avContextTab[0] = &live;
+    ls_on_video(&context, 90000);
+    avContextTab[0] = NULL;
+    assert(threads_started == 2 && pauses == 1 && ls_tid_valid);
+    usleep(100000);
+    assert(ls_get_state() == 1);
+    playback.isPlaying = 0;
+    ls_join();
+    assert(!ls_tid_valid && ls_get_state() == 2);
+    /* stopped: no OUTPUT_CONTINUE */
+    assert(!continues);
+    ls_join();
+}
+
 static int run(const char *name, void (*test)(void))
 {
     int status;
@@ -153,5 +180,6 @@ int main(void)
     failed += run("hold by default on a Dreambox", dreambox);
     failed += run("EP3_LIVE_SYNC=1 on another box", enabled_on_other_box);
     failed += run("EP3_LIVE_SYNC=0 on a Dreambox", disabled_on_dreambox);
+    failed += run("the play thread joins the hold thread", stop_joins_hold_thread);
     return failed ? 1 : 0;
 }

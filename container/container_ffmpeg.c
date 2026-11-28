@@ -118,7 +118,22 @@ typedef int32_t (*UpdateTracksFn)(Context_t *context, char *filename, int32_t in
 static UpdateTracksFn tracksUpdatePending = NULL;
 
 static pthread_t PlayThread;
+/* 1 from before pthread_create() of the play thread until the thread clears
+ * it as its last statement. The stop waits for 0 and then closes and frees
+ * what the thread used: the clear is a release store and every test of the
+ * flag an acquire load, so whoever sees 0 also sees all the thread wrote
+ * before (a plain int gives no such order on ARM and MIPS). */
 static int32_t hasPlayThreadStarted = 0;
+
+static inline int32_t PlayThreadRunning(void)
+{
+    return __atomic_load_n(&hasPlayThreadStarted, __ATOMIC_ACQUIRE);
+}
+
+static inline void PlayThreadSetRunning(int32_t running)
+{
+    __atomic_store_n(&hasPlayThreadStarted, running, __ATOMIC_RELEASE);
+}
 
 static AVFormatContext *avContextTab[IPTV_AV_CONTEXT_MAX_NUM] = {NULL, NULL};
 static int32_t use_custom_io[IPTV_AV_CONTEXT_MAX_NUM] = {0, 0};
@@ -126,7 +141,31 @@ static AVDictionary *g_avio_opts = NULL;
 
 static uint8_t isContainerRunning = 0;
 
+/* latestPts belongs to the play thread (and to the open before it starts).
+ * The position query and the seek of main() read latestPtsShared, which the
+ * writer publishes after each change (latest_pts_publish): a 64-bit load or
+ * store is two 32-bit ones on ARM and MIPS32, a plain read from the other
+ * thread could take half of an old and half of a new PTS. A mutex, as a
+ * lock-free 64-bit atomic is not there on MIPS32. */
 static int64_t latestPts = 0;
+static int64_t latestPtsShared = 0;
+static pthread_mutex_t latestPtsMutex = PTHREAD_MUTEX_INITIALIZER;
+
+static void latest_pts_publish(void)
+{
+    pthread_mutex_lock(&latestPtsMutex);
+    latestPtsShared = latestPts;
+    pthread_mutex_unlock(&latestPtsMutex);
+}
+
+static int64_t latest_pts_read(void)
+{
+    int64_t pts;
+    pthread_mutex_lock(&latestPtsMutex);
+    pts = latestPtsShared;
+    pthread_mutex_unlock(&latestPtsMutex);
+    return pts;
+}
 
 static int32_t restart_audio_resampling = 0;
 
@@ -245,6 +284,13 @@ static void releaseSeekMutex()
 
 typedef int32_t (* Write_FN) (void  *, void *);
 
+/* Without the buffered output: the stamp the play thread took before it read
+ * the packet it writes (FFMPEGThread), checked in Write() right before the
+ * packet goes out, see PlaybackStampSet() in playback.c. Only the play thread
+ * uses these two. */
+static int g_checkStamp = 0;
+static void *g_readStamp = NULL;
+
 static int32_t Write(Write_FN WriteFun, void *context, void *privateData, int64_t pts)
 {
     /* Because Write is blocking we will release mutex which protect
@@ -286,6 +332,18 @@ static int32_t Write(Write_FN WriteFun, void *context, void *privateData, int64_
             OutputPacingWait(ctx, PACING_STREAM_VIDEO, pts);
         else if (ctx->output->audio && WriteFun == ctx->output->audio->Write)
             OutputPacingWait(ctx, PACING_STREAM_AUDIO, pts);
+    }
+    /* A seek may have come since the packet was read: its clear is done or
+     * follows, the packet of the old position must not go out after it.
+     * Checked right before the write, after the pacing wait. */
+    if (g_checkStamp && WriteFun != ctx->output->subtitle->Write &&
+        __atomic_load_n(&ctx->playback->stamp, __ATOMIC_SEQ_CST) != g_readStamp)
+    {
+        ffmpeg_printf(20, "packet of the position before a seek dropped\n");
+        getMutex(__FILE__, __FUNCTION__,__LINE__);
+        *extra = saved;
+        free(copy);
+        return 0;
     }
     ret = WriteFun(context, privateData);
     getMutex(__FILE__, __FUNCTION__,__LINE__);
@@ -2373,8 +2431,26 @@ static void radio_metadata_update(AVFormatContext *av, AVStream *stream,
  * buffered (PTS gap + 800 ms). On by default on Dreambox only;
  * EP3_LIVE_SYNC=1 enables it on other boxes, EP3_LIVE_SYNC=0 disables it. */
 #include <time.h>
-static volatile int     ls_state  = 0;   /* 0 not started, 1 holding, 2 done/off */
+/* 0 not started, 1 holding, 2 done/off; written by the play thread and by
+ * ls_thread, so every access is atomic (ls_get_state/ls_put_state) */
+static int              ls_state  = 0;
 static int              ls_default = 0;  /* default of the box, set by FFMPEGThread() */
+/* ls_thread, started by the play thread in ls_on_video() and joined by it
+ * before it ends (ls_join): the stop frees the context only after the play
+ * thread has ended, so ls_thread never reads it after the free. Only the play
+ * thread touches these two. */
+static pthread_t        ls_tid;
+static int              ls_tid_valid = 0;
+
+static inline int ls_get_state(void)
+{
+    return __atomic_load_n(&ls_state, __ATOMIC_ACQUIRE);
+}
+
+static inline void ls_put_state(int state)
+{
+    __atomic_store_n(&ls_state, state, __ATOMIC_RELEASE);
+}
 /* written by the demuxer thread, read by ls_thread: under ls_pts_mutex,
  * a 64-bit load or store is not atomic on 32-bit ARM and MIPS */
 static pthread_mutex_t  ls_pts_mutex = PTHREAD_MUTEX_INITIALIZER;
@@ -2411,7 +2487,7 @@ static void *ls_thread(void *arg)
      * if it was not enough, so keep zapping fast. EP3_LIVE_SYNC_MARGIN=ms */
     const char *menv = getenv("EP3_LIVE_SYNC_MARGIN");
     int64_t margin = menv ? atoi(menv) : 400;
-    while (ls_state == 1 && context->playback && context->playback->isPlaying)
+    while (ls_get_state() == 1 && context->playback && context->playback->isPlaying)
     {
         int64_t el = ls_now_ms() - t0;
         int64_t last_v = ls_get_pts(&ls_last_v);
@@ -2430,9 +2506,9 @@ static void *ls_thread(void *arg)
             break;
         usleep(50000);
     }
-    if (ls_state == 1)
+    if (ls_get_state() == 1)
     {
-        ls_state = 2;
+        ls_put_state(2);
         if (context->playback && context->playback->isPlaying && !context->playback->isPaused)
             context->output->Command(context, OUTPUT_CONTINUE, NULL);
         printf("{\"log\":\"live sync: audio gap %lld ms, held %lld ms\"}\n", (long long)maxgap, (long long)(ls_now_ms() - t0));
@@ -2500,7 +2576,7 @@ static void *ls_thread(void *arg)
 static void ls_on_video(Context_t *context, int64_t pts)
 {
     if (pts != INVALID_PTS_VALUE) ls_set_pts(&ls_last_v, pts);
-    if (ls_state != 0) return;
+    if (ls_get_state() != 0) return;
     const char *env = getenv("EP3_LIVE_SYNC");
     int enabled = env ? env[0] != '0' : ls_default;
     if (!enabled || !avContextTab[0] ||
@@ -2509,20 +2585,31 @@ static void ls_on_video(Context_t *context, int64_t pts)
         ffmpeg_printf(10, "live sync bypass: enabled=%d duration_us=%"PRId64"\n",
                       enabled,
                       avContextTab[0] ? avContextTab[0]->duration : AV_NOPTS_VALUE);
-        ls_state = 2;
+        ls_put_state(2);
         return;
     }
-    ls_state = 1;
+    ls_put_state(1);
     context->output->Command(context, OUTPUT_PAUSE, NULL);
-    pthread_t th;
-    pthread_attr_t at; pthread_attr_init(&at);
-    pthread_attr_setdetachstate(&at, PTHREAD_CREATE_DETACHED);
-    if (pthread_create(&th, &at, ls_thread, context) != 0)
+    if (pthread_create(&ls_tid, NULL, ls_thread, context) != 0)
     {
-        ls_state = 2;
+        ls_put_state(2);
         context->output->Command(context, OUTPUT_CONTINUE, NULL);
     }
-    pthread_attr_destroy(&at);
+    else
+    {
+        ls_tid_valid = 1;
+    }
+}
+
+/* the play thread at its end, after isPlaying = 0: ls_thread leaves its
+ * loops within one sleep (at most 250 ms) */
+static void ls_join(void)
+{
+    if (ls_tid_valid)
+    {
+        pthread_join(ls_tid, NULL);
+        ls_tid_valid = 0;
+    }
 }
 
 /* ************************************************************************ */
@@ -3192,6 +3279,9 @@ static void FFMPEGThread(Context_t *context)
     uint32_t bufferSize = 0;
     context->output->Command(context, OUTPUT_GET_BUFFER_SIZE, &bufferSize);
     ffmpeg_printf(10, "bufferSize [%u]\n", bufferSize);
+    /* the buffered output drops the packets of an old stamp itself */
+    g_checkStamp = 0 == bufferSize;
+    g_readStamp = __atomic_load_n(&context->playback->stamp, __ATOMIC_SEQ_CST);
 
     /* The start position goes through the seek of the loop below before the
      * first packet is read, so nothing from 0 is written. Not for live
@@ -3257,6 +3347,16 @@ static void FFMPEGThread(Context_t *context)
         }
 
         getMutex(__FILE__, __FUNCTION__,__LINE__);
+
+        /* The stamp of what is read in this round, taken before the test of
+         * isSeeking below and before the queued seek is taken: a seek sets
+         * isSeeking, then changes the stamp, then queues and clears. Seen the
+         * new stamp, isSeeking is seen too; an old stamp makes Write() drop
+         * the packet once the stamp has changed (see PlaybackStampSet()). */
+        if (context->playback)
+        {
+            g_readStamp = __atomic_load_n(&context->playback->stamp, __ATOMIC_SEQ_CST);
+        }
 
         if (!context->playback || !context->playback->isPlaying ||
             context->playback->isSeeking || context->playback->isAudioSwitching)
@@ -3391,6 +3491,7 @@ static void FFMPEGThread(Context_t *context)
             currentVideoPts = -1;
             currentAudioPts = -1;
             latestPts = 0;
+            latest_pts_publish();
 #ifdef HAVE_DREAMNEXTGEN
             seekWaitVideoKey = true;
             seekVideoKeyPts = INVALID_PTS_VALUE;
@@ -3623,6 +3724,7 @@ static void FFMPEGThread(Context_t *context)
                     seekVideoKeyPts = INVALID_PTS_VALUE;
 #endif
                     mpeg4p2_write_packet(context, mpeg4p2_context, videoTrack, cAVIdx, &currentVideoPts, &latestPts, &packet);
+                    latest_pts_publish();
                     update_max_injected_pts(latestPts);
                 }
                 else
@@ -3636,6 +3738,7 @@ static void FFMPEGThread(Context_t *context)
                     seekVideoKeyPts = INVALID_PTS_VALUE;
 #endif
                     flv2mpeg4_write_packet(context, &flv2mpeg4_context, videoTrack, cAVIdx, &currentVideoPts, &latestPts, &packet);
+                    latest_pts_publish();
                     update_max_injected_pts(latestPts);
                 }
                 else
@@ -3687,6 +3790,7 @@ static void FFMPEGThread(Context_t *context)
                     if ((currentVideoPts != INVALID_PTS_VALUE) && (currentVideoPts > latestPts))
                     {
                         latestPts = currentVideoPts;
+                        latest_pts_publish();
                         update_max_injected_pts(latestPts);
                     }
 
@@ -3829,6 +3933,7 @@ static void FFMPEGThread(Context_t *context)
                 if ((currentAudioPts != INVALID_PTS_VALUE) && (currentAudioPts > latestPts) && (!videoTrack))
                 {
                     latestPts = currentAudioPts;
+                    latest_pts_publish();
                     update_max_injected_pts(latestPts);
                 }
 
@@ -4587,6 +4692,9 @@ static void FFMPEGThread(Context_t *context)
 #if LIBAVCODEC_VERSION_INT >= AV_VERSION_INT(56, 34, 100)
     mpeg4p2_context_close(mpeg4p2_context);
 #endif
+#ifdef HAVE_FLV2MPEG4_CONVERTER
+    flv2mpeg4_context_close(&flv2mpeg4_context);
+#endif
 
     {
         unsigned int i;
@@ -4597,7 +4705,11 @@ static void FFMPEGThread(Context_t *context)
     hevcHdrStream = NULL;
     video_live_reset();
 #ifdef HAVE_CLOSED_CAPTIONS
+    /* update_tracks() of main() reads ccEmbedded (cc_add_track) under the
+     * container mutex: cleared under it too */
+    getMutex_wr(__FILE__, __FUNCTION__,__LINE__);
     cc_close();
+    releaseMutex(__FILE__, __FUNCTION__,__LINE__);
 #endif
     if (pcm_audio_export_enabled)
     {
@@ -4606,8 +4718,10 @@ static void FFMPEGThread(Context_t *context)
     }
     context->playback->isPlaying = 0;
     PlaybackDieNow(1);
+    /* before the stop may free the context: ls_thread uses it */
+    ls_join();
     ffmpeg_printf(10, "terminating\n");
-    hasPlayThreadStarted = 0;
+    PlayThreadSetRunning(0);
 }
 
 /* **************************** */
@@ -4643,7 +4757,8 @@ static int32_t interrupt_cb(void *ctx)
             return 1;
         }
     }
-    return p->abortRequested || PlaybackDieNow(0);
+    /* set by the stdin thread with __atomic_store_n (exteplayer.c) */
+    return __atomic_load_n(&p->abortRequested, __ATOMIC_ACQUIRE) || PlaybackDieNow(0);
 }
 
 #ifdef USE_CUSTOM_IO
@@ -5819,7 +5934,7 @@ int32_t container_ffmpeg_init(Context_t *context, PlayFiles_t *playFilesNames)
         av_log_set_callback( ffmpeg_silen_callback );
     }
 
-    context->playback->abortRequested = 0;
+    __atomic_store_n(&context->playback->abortRequested, 0, __ATOMIC_RELEASE);
     int32_t res = container_ffmpeg_init_av_context(context, playFilesNames->szFirstFile, playFilesNames->iFirstFileSize, \
                                                    playFilesNames->szFirstMoovAtomFile, playFilesNames->iFirstMoovAtomOffset, 0);
 
@@ -5841,6 +5956,7 @@ int32_t container_ffmpeg_init(Context_t *context, PlayFiles_t *playFilesNames)
 
     terminating = 0;
     latestPts = 0;
+    latest_pts_publish();
     isContainerRunning = 1;
     /* with a separate audio input (-x) the first one is the video */
     chapters_take(avContextTab[0]);
@@ -6638,18 +6754,18 @@ static int32_t container_ffmpeg_play(Context_t *context)
         ffmpeg_printf(10, "is NOT Playing\n");
     }
 
-    if (hasPlayThreadStarted == 0)
+    if (PlayThreadRunning() == 0)
     {
         pthread_attr_init(&attr);
         pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
 
         /* before the thread exists: it clears the flag when it ends */
-        hasPlayThreadStarted = 1;
+        PlayThreadSetRunning(1);
         if((error = pthread_create(&PlayThread, &attr, (void *)&FFMPEGThread, context)) != 0)
         {
             ffmpeg_printf(10, "Error creating thread, error:%d:%s\n", error,strerror(error));
 
-            hasPlayThreadStarted = 0;
+            PlayThreadSetRunning(0);
             ret = cERR_CONTAINER_FFMPEG_ERR;
         }
         else
@@ -6685,8 +6801,13 @@ static int32_t container_ffmpeg_stop(Context_t *context)
         context->playback->isPlaying = 0;
     }
 
-    while ( (hasPlayThreadStarted != 0) && (--wait_time) > 0 )
+    while (PlayThreadRunning() != 0)
     {
+        --wait_time;
+        if (wait_time <= 0)
+        {
+            break;
+        }
         ffmpeg_printf(10, "Waiting for ffmpeg thread to terminate itself, will try another %d times\n", wait_time);
         usleep(5000);
     }
@@ -6702,7 +6823,7 @@ static int32_t container_ffmpeg_stop(Context_t *context)
         return ret;
     }
 
-    hasPlayThreadStarted = 0;
+    PlayThreadSetRunning(0);
     terminating = 1;
 
     getMutex_wr(__FILE__, __FUNCTION__,__LINE__);
@@ -6901,7 +7022,7 @@ static int32_t container_ffmpeg_seek_us(Context_t *context, int64_t offset_us, u
         !(avContextTab[0]->pb->seekable & AVIO_SEEKABLE_NORMAL) &&
         !is_hls_input(avContextTab[0]) && !context->playback->isDash)
     {
-        read_us = av_rescale(latestPts, AV_TIME_BASE, 90000);
+        read_us = av_rescale(latest_pts_read(), AV_TIME_BASE, 90000);
     }
     releaseMutex(__FILE__, __FUNCTION__,__LINE__);
     if (!absolute)
@@ -7396,12 +7517,12 @@ static int32_t Command(void  *_context, ContainerCmd_t command, void *argument)
     }
     case CONTAINER_STATUS:
     {
-        *((int32_t*)argument) = hasPlayThreadStarted;
+        *((int32_t*)argument) = PlayThreadRunning();
         break;
     }
     case CONTAINER_LAST_PTS:
     {
-        *((int64_t*)argument) = latestPts;
+        *((int64_t*)argument) = latest_pts_read();
         break;
     }
     case CONTAINER_SET_BUFFER_SIZE:

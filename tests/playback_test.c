@@ -78,9 +78,27 @@ static void *wait_change(void *arg)
     return NULL;
 }
 
+/* wake-ups registered for the stop (PlaybackDieNowRegisterCallback) */
+static int woken_before, woken_after;
+static void wake_before(void)
+{
+    woken_before++;
+}
+/* registers itself on its first call, as WriterWakeUp() does through
+ * pthread_once */
+static void wake_after(void)
+{
+    woken_after++;
+    assert(PlaybackDieNowRegisterCallback(wake_after));
+}
+
 int main(void)
 {
     PlaybackHandler_t playback = {.isPlaying = 1};
+    /* registered before the stop: called once by it */
+    assert(PlaybackDieNowRegisterCallback(wake_before));
+    assert(PlaybackDieNowRegisterCallback(wake_before));
+    assert(!woken_before && !PlaybackDieNow(0));
     Output_t audio = {.Command = output_command};
     OutputHandler_t output = {.Command = output_command, .audio = &audio};
     Manager_t audio_manager = {.Command = manager_command};
@@ -156,6 +174,18 @@ int main(void)
         assert(PlaybackTerminate(&empty) == 0);
         PLAYBACK_SILENT = 1;
     }
+    /* the stop ran the wake-up once (Stop and Terminate both die); a thread
+     * that registers after it sees the die-now at its next check, the
+     * registration itself calls nothing (a wake-up that registers on its
+     * first call, as the writer's, must not run inside itself), and a later
+     * die-now calls nothing again */
+    assert(woken_before == 1 && PlaybackDieNow(0));
+    assert(PlaybackDieNowRegisterCallback(wake_after));
+    assert(!woken_after && PlaybackDieNow(0));
+    wake_after();
+    assert(woken_after == 1);
+    assert(PlaybackDieNow(1));
+    assert(woken_before == 1 && woken_after == 1);
     /* a change of the play state (here a seek) wakes a thread that waits for
      * one; without a change the wait ends at its timeout, after a change since
      * the serial was taken it does not wait */
@@ -179,6 +209,14 @@ int main(void)
         start = mono_us();
         PlaybackWaitChange(serial, 5000);
         assert(mono_us() - start < 1000000);
+    }
+    /* a seek changes the stamp before it clears the output (without -b:
+     * Write() of the container drops a packet read before the change) */
+    {
+        void *old = playback.stamp;
+        int old_clears = clears;
+        assert(!PlaybackSeek(&context, &zero, 0));
+        assert(playback.stamp != old && clears == old_clears + 1);
     }
     return 0;
 }
