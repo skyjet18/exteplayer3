@@ -970,24 +970,22 @@ static int kbhit(int ms)
 
 extern int LinuxDvbEac3RestartState(void);
 
-/* What an audio track switch does, without a change of track: the 0 s seek
- * of the container where it does one for a switch, then the restart of the
- * audio decoder. Done once after a DD+ passthrough start on Vu+ Ultimo 4K /
- * Duo 4K SE, which stays silent without it. isSeeking keeps the demuxer
- * thread out of the output meanwhile, as it does for a switch. */
+/* The restart of the audio decoder that an audio track switch does, without
+ * a change of track, then a 0 s seek that feeds the audio again. Done once
+ * after every DD+ passthrough start on Vu+ Ultimo 4K / Duo 4K SE, which
+ * stays silent without it. The decoder is restarted in any case: right
+ * after the start a file has no decoder position yet and the seek can be
+ * refused (the order of OpenBH). isSeeking keeps the demuxer thread out of
+ * the output during the restart, as it does for a switch. */
 static void Eac3PassthroughRestart(void)
 {
     uint8_t wasSeeking = g_player->playback->isSeeking;
-    int32_t id = -1;
+    int64_t sec = 0;
 
     g_player->playback->isSeeking = 1;
-    if (0 == g_player->manager->audio->Command(g_player, MANAGER_GET, &id) && id >= 0 &&
-        g_player->container && g_player->container->selectedContainer &&
-        0 == g_player->container->selectedContainer->Command(g_player, CONTAINER_SWITCH_AUDIO, &id))
-    {
-        g_player->output->audio->Command(g_player, OUTPUT_SWITCH, (void*)"audio");
-    }
+    g_player->output->audio->Command(g_player, OUTPUT_SWITCH, (void*)"audio");
     g_player->playback->isSeeking = wasSeeking;
+    g_player->playback->Command(g_player, PLAYBACK_SEEK, (void*)&sec);
 }
 
 /* Non-blocking read of a command. The end of a command pipe (or socket)

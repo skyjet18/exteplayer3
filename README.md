@@ -1238,32 +1238,36 @@ behavior.
 On these two models the first E-AC-3 start through the playpump stays silent
 when the receiver passes DD+ on as a bitstream, while an audio switch made
 afterwards gives sound. The non-SH4 DVB backend therefore follows that start
-once by what an audio switch does, without changing the track: 100 ms after
-the first DD+ packet, the command loop seeks the input by 0 s where a switch
-would (with `isSeeking` set) and restarts the audio decoder (`OUTPUT_SWITCH`).
-It is armed only at the first audio start of the process, for the E-AC-3
-bitstream writer (software-decoded DD+ uses the PCM writer), outside DASH,
-on a VU+ whose `/proc/stb/info/vumodel` is `ultimo4k` or `duo4kse` and whose
-`/proc/stb/audio/ac3` is `passthrough`. Everywhere else nothing changes: the
-command loop keeps its 1 s idle wait. While the restart is due it polls every
-20 ms; a first DD+ packet later than 5 s gets its restart with the next 1 s
-poll. An audio switch or stop before that point cancels it; a loop restart of
-the file does not arm it again.
+once by the restart an audio switch does, without changing the track: once
+the first DD+ packet is written and 100 ms after the audio start, the command
+loop restarts the audio decoder (`OUTPUT_SWITCH`, with `isSeeking` set) and
+then seeks by 0 s, which feeds the audio again. The decoder is restarted in
+any case: right after the start a file has no decoder position yet and that
+seek can be refused. It is armed at every audio start (a loop restart of the
+file and DASH included), for the E-AC-3 bitstream writer (software-decoded
+DD+ uses the PCM writer), on a VU+ whose `/proc/stb/info/vumodel` starts with
+`ultimo4k` or `duo4kse` and whose `/proc/stb/audio/ac3` starts with
+`passthrough`. Everywhere else nothing changes: the command loop keeps its
+1 s idle wait. While the restart is due it polls every 20 ms; a first DD+
+packet later than 5 s gets its restart with the next 1 s poll. An audio
+switch or stop before that point cancels it. This is the restart, timing and
+model test of OpenBH, which has it running on these two models.
 
 `EP3_EAC3_RESTART=1` arms it on any receiver and `EP3_EAC3_RESTART=0` never;
 only these exact values are honored, anything else keeps the model and mode
-test. Known limitation: a seek sent within about 100 ms after the first DD+
-packet can be overtaken by the restart's own 0 s seek and lose its target.
+test. Known limitation: a seek sent within about 100 ms after the audio start
+can be overtaken by the restart's own 0 s seek and lose its target.
 `-L LINUXDVB_DEBUG_LEVEL:10 -L LINUXDVB_SILENT:0` logs
 `DD+ passthrough start, audio restart armed`.
 
-Under the same conditions (model and mode, or `EP3_EAC3_RESTART=1`, outside
-DASH), setting the DD+ bypass mode again while the decoder runs DD+
+Under the same conditions (model and mode, or `EP3_EAC3_RESTART=1`, DASH
+included), setting the DD+ bypass mode again while the decoder runs DD+
 passthrough silences the HDMI output. So once an audio switch (the restart
 above included) has started the decoder in DD+ bypass mode, a later switch to
 another track written as E-AC-3 (native E-AC-3, or DTS/TrueHD transcoded with
 `-E`, `--dts-eac3`, `--truehd-eac3`) does not stop the decoder or set the
-mode again: only its buffer is cleared, a paused decoder stays paused, and the
+mode again: only its buffer is cleared (DASH: and the audio writer reset), a
+paused decoder stays paused, and the
 debug log shows `DD+ -> DD+ switch, decoder kept running`. A switch to any
 other codec, and the first switch after an audio start or stop, still restart
 the decoder in full.
@@ -1782,7 +1786,12 @@ also in OpenViX/exteplayer3)
   [853bc07](https://github.com/BlackHole/exteplayer3/commit/853bc07),
   [a8529b0](https://github.com/BlackHole/exteplayer3/commit/a8529b0).
 - DD+ passthrough restart on VU+ Ultimo 4K / Duo 4K SE (#24):
-  [4ad6f5a](https://github.com/BlackHole/exteplayer3/commit/4ad6f5a).
+  [4ad6f5a](https://github.com/BlackHole/exteplayer3/commit/4ad6f5a);
+  restart at every audio start (DASH too), restart before the 0 s seek, the
+  timing from the audio start, the model test by prefix and the DD+ -> DD+
+  switch also for DASH:
+  [dfb325b](https://github.com/BlackHole/exteplayer3/commit/dfb325b),
+  [b513cca](https://github.com/BlackHole/exteplayer3/commit/b513cca).
 - The idea of the Dolby Atmos (JOC) detection in the track messages (#19):
   [7e399e8](https://github.com/BlackHole/exteplayer3/commit/7e399e8)
   (OpenViX c319e03).
