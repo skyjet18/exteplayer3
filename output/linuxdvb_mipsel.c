@@ -629,7 +629,14 @@ static bool LinuxDvbReadProcLine(const char *path, char *buf, size_t size)
         ok = (NULL != fgets(buf, size, f));
         fclose(f);
         if (ok)
-            buf[strcspn(buf, "\r\n")] = '\0';
+        {
+            /* cut the line end; the index stays below size */
+            size_t i = 0;
+            while (i < size && buf[i] && buf[i] != '\r' && buf[i] != '\n')
+                i++;
+            if (i < size)
+                buf[i] = '\0';
+        }
     }
     return ok;
 }

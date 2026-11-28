@@ -109,12 +109,12 @@ int main(void)
         assert(!setenv("EP3_CA_DEFAULT_FILE", at("cert.pem"), 1));
         unsetenv("SSL_CERT_FILE");
         assert(ca_bundle_setup(at("other.pem")) == 1);
-        assert(!strcmp(getenv("SSL_CERT_FILE"), at("other.pem")));
+        assert(getenv("SSL_CERT_FILE") && !strcmp(getenv("SSL_CERT_FILE"), at("other.pem")));
         assert(ca_bundle_setup(at("bundle.crt")) == 0);  /* now set: it wins */
-        assert(!strcmp(getenv("SSL_CERT_FILE"), at("other.pem")));
+        assert(getenv("SSL_CERT_FILE") && !strcmp(getenv("SSL_CERT_FILE"), at("other.pem")));
         unsetenv("SSL_CERT_FILE");
         assert(ca_bundle_setup(NULL) == 1);
-        assert(!strcmp(getenv("SSL_CERT_FILE"), at("bundle.crt")));
+        assert(getenv("SSL_CERT_FILE") && !strcmp(getenv("SSL_CERT_FILE"), at("bundle.crt")));
         unsetenv("SSL_CERT_FILE");
         assert(!setenv("EP3_CA_DEFAULT_FILE", at("other.pem"), 1));
         assert(ca_bundle_setup(NULL) == 0);

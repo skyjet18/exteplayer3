@@ -62,12 +62,12 @@ static int any_hashed_directory(const char *list)
 {
     while (list && *list)
     {
-        size_t length = strcspn(list, ":");
-        if (hashed_directory(list, length))
+        const char *end = list;
+        while (*end && *end != ':')
+            end++;
+        if (hashed_directory(list, (size_t)(end - list)))
             return 1;
-        list += length;
-        if (*list == ':')
-            list++;
+        list = *end ? end + 1 : end;
     }
     return 0;
 }
@@ -90,15 +90,15 @@ const char *ca_bundle_choose(const char *cert_file_env, const char *cert_dir_env
         return NULL;
     while (candidates && *candidates)
     {
-        size_t size = strcspn(candidates, ":");
-        if (readable_file(candidates, size))
+        const char *end = candidates;
+        while (*end && *end != ':')
+            end++;
+        if (readable_file(candidates, (size_t)(end - candidates)))
         {
-            *length = size;
+            *length = (size_t)(end - candidates);
             return candidates;
         }
-        candidates += size;
-        if (*candidates == ':')
-            candidates++;
+        candidates = *end ? end + 1 : end;
     }
     return NULL;
 }

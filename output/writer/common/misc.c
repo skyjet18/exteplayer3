@@ -140,8 +140,9 @@ static bool IsGtxComboSTB(void)
     }
     if (NULL != fgets(model, (int)sizeof(model), f))
     {
-        model[strcspn(model, "\r\n")] = '\0';
-        gtx = 0 == strcmp(model, "gtxcombo");
+        /* the name and then the end of the line (or of the file) */
+        gtx = 0 == strncmp(model, "gtxcombo", 8) &&
+              ('\0' == model[8] || '\n' == model[8] || '\r' == model[8]);
     }
     fclose(f);
     return gtx;

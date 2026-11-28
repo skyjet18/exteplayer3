@@ -38,8 +38,11 @@ static ssize_t capture(int fd, const struct iovec *iov, int count)
 /* 16 bit big endian, 512 samples, no CRC, FSIZE = size; the payload counts up. */
 static uint8_t *core_frame(size_t size)
 {
-    uint8_t *frame = malloc(size);
-    size_t i, field = size - 1;
+    uint8_t *frame;
+    size_t i, field;
+    assert(size >= 16); /* the header below writes bytes 0..10 */
+    frame = malloc(size);
+    field = size - 1;
     assert(frame);
     for (i = 0; i < size; i++)
         frame[i] = (uint8_t)(i * 7 + 1);

@@ -147,7 +147,7 @@ static int writeData(void* _call)
                 {
                     pos += 1;
                     ++sheader_data_len;
-                    if (pos + 2 > data_len)
+                    if (pos + 3 > data_len) /* memcmp below reads 3 bytes */
                     {
                         ok = false;
                         break;
@@ -165,7 +165,7 @@ static int writeData(void* _call)
                 {
                     pos += 1;
                     ++sheader_data_len;
-                    if (pos + 2 > data_len)
+                    if (pos + 3 > data_len) /* memcmp below reads 3 bytes */
                     {
                         ok = false;
                         break;

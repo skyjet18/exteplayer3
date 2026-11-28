@@ -133,7 +133,13 @@ static int last_index(unsigned long request)
 
 static void start(void)
 {
-    assert(!pthread_mutex_init(&LinuxDVBmutex, NULL));
+    static int mutex_ready;
+    if (!mutex_ready)
+    {
+        /* once: initialising a mutex that is already initialised is undefined */
+        assert(!pthread_mutex_init(&LinuxDVBmutex, NULL));
+        mutex_ready = 1;
+    }
     audiofd = 1;
     assert(!Command(&context, OUTPUT_PLAY, "audio"));
 }

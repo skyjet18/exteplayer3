@@ -30,6 +30,9 @@ static Container_t * AvailableContainer[] = {
     NULL
 };
 
+/* the entries before the NULL that ends the list */
+#define CONTAINER_COUNT ((int32_t)(sizeof(AvailableContainer) / sizeof(AvailableContainer[0])) - 1)
+
 static void printContainerCapabilities() 
 {
     int32_t i = 0;
@@ -38,7 +41,7 @@ static void printContainerCapabilities()
     container_printf(10, "%s::%s\n", __FILE__, __FUNCTION__);
     container_printf(10, "Capabilities: ");
 
-    for (i = 0; AvailableContainer[i] != NULL; i++)
+    for (i = 0; i < CONTAINER_COUNT && AvailableContainer[i] != NULL; i++)
     {
         for (j = 0; AvailableContainer[i]->Capabilities[j] != NULL; j++)
         {
@@ -56,7 +59,7 @@ static int32_t selectContainer(Context_t  *context, char *extension)
 
     container_printf(10, "%s::%s\n", __FILE__, __FUNCTION__);
 
-    for (i = 0; AvailableContainer[i] != NULL; i++)
+    for (i = 0; i < CONTAINER_COUNT && AvailableContainer[i] != NULL; i++)
     {
         for (j = 0; AvailableContainer[i]->Capabilities[j] != NULL; j++)
         {
