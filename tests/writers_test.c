@@ -28,7 +28,7 @@ static ssize_t record(int fd, const struct iovec *iov, int count)
     (void)fd;
     for (i = 0; i < count; i++)
     {
-        if (part_count < PARTS)
+        if (part_count >= 0 && part_count < PARTS)
             parts[part_count] = iov[i];
         part_count++;
         size += iov[i].iov_len;
