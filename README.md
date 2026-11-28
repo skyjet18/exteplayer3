@@ -338,7 +338,8 @@ are unchanged; `e` remains the codec ID that selects the writer. The
 `a_s`/`s_s` switch results are unchanged.
 
 `d` is derived from codec ID and profile: `DTS`, `DTS-ES`, `DTS 96/24`,
-`DTS Express`, `DTS-HD HRA`, `DTS-HD MA`, `DTS:X`, `DTS:X IMAX`,
+`DTS Express`, `DTS-HD HRA`, `DTS-HD MA`, `DTS-HD MA + DTS:X`,
+`DTS-HD MA + DTS:X IMAX` (the names of eServiceMP3),
 `Dolby Digital`, `Dolby Digital +`, `Dolby Atmos`, `Dolby TrueHD`, `MLP`,
 `AAC`, `AAC-LC`, `HE-AAC`, `HE-AAC v2`, `AAC-LD`, `AAC-ELD`, `xHE-AAC`, `MP2`,
 `MP3`, `FLAC`, `Opus`, `Vorbis`, `PCM`, `LPCM` and similar names; codecs
@@ -354,7 +355,15 @@ selected track they follow changes of the codec parameters during playback,
 such as an HLS variant with other audio.
 
 Two values follow the selected audio track during playback. When that track
-is decoded in software, `c` is the channel count of the decoded frames. For
+is decoded in software, `c` is the channel count of the decoded frames. When
+it is passed on to the receiver (not transcoded), `c` comes from the frame
+headers of AC-3, E-AC-3 and ADTS AAC, as eServiceMP3 counts it, once three
+packets in a row give the same count: AC-3 `acmod` + `lfeon`; E-AC-3 the
+independent substream 0 (or the AC-3 core in front of it) with the speaker
+locations of the `chanmap` of a dependent substream, so 7.1 (5.1 plus
+Lrs/Rrs) is `8`; ADTS the `channel_configuration` (`7` is 8 channels, `0`,
+a program config element, is not counted). So a change such as 5.1
+programme audio and 2.0 commercials shows in `c`. For
 E-AC-3, `d` becomes `Dolby Atmos` after three packets signalling JOC in the
 syncframe header and returns to `Dolby Digital +` after 48 consecutive
 packets without it; only headers of packets that are played anyway are
@@ -1704,7 +1713,7 @@ The number is `EXTEPLAYER3_VERSION` in `include/version.h`; a new version is tha
 | `EXTEPLAYER_VIDEO_SOCKET` | `v_c` datagram socket, default `/var/run/video.socket`, `""` off |
 | `EXTEPLAYER_TERM_SOCKET` | stop socket, default `/tmp/.exteplayerterm.socket`, `""` off |
 
-The prebuilt packages in `ipk/` are of version 187 (see `ipk/README.md`).
+Prebuilt packages (ipk, and deb for Dreambox OS) are on the [releases page](https://github.com/skyjet18/exteplayer3/releases).
 
 ---
 
@@ -1769,7 +1778,12 @@ also in OpenViX/exteplayer3)
 - Audio codec description and live channel count in the track messages
   (#19): [528ef20](https://github.com/BlackHole/exteplayer3/commit/528ef20),
   [e9a449a](https://github.com/BlackHole/exteplayer3/commit/e9a449a),
-  [cd9a8b7](https://github.com/BlackHole/exteplayer3/commit/cd9a8b7).
+  [cd9a8b7](https://github.com/BlackHole/exteplayer3/commit/cd9a8b7);
+  live channel count of passthrough AC-3 / E-AC-3 / ADTS AAC from the frame
+  headers (7.1 E-AC-3 with its dependent substream) and the DTS:X names of
+  eServiceMP3:
+  [8e743eb](https://github.com/BlackHole/exteplayer3/commit/8e743eb),
+  [5540ba2](https://github.com/BlackHole/exteplayer3/commit/5540ba2).
 - HDR10/HLG detection of HEVC streams (#20):
   [5112b90](https://github.com/BlackHole/exteplayer3/commit/5112b90).
 - DTS core-frame padding (#21) and DTS-HD bypass mode (#22): the DTS driver

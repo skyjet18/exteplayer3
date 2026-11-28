@@ -1199,13 +1199,14 @@ static const char *Codec2AudioDescription(int32_t codec_id, int profile)
     switch (codec_id)
     {
     case AV_CODEC_ID_DTS:
+        /* the names of eServiceMP3: DTS:X is carried in DTS-HD MA */
 #ifdef AV_PROFILE_DTS_HD_MA_X_IMAX
         if (profile == AV_PROFILE_DTS_HD_MA_X_IMAX)
-            return "DTS:X IMAX";
+            return "DTS-HD MA + DTS:X IMAX";
 #endif
 #ifdef AV_PROFILE_DTS_HD_MA_X
         if (profile == AV_PROFILE_DTS_HD_MA_X)
-            return "DTS:X";
+            return "DTS-HD MA + DTS:X";
 #endif
         if (profile == AV_PROFILE_DTS_HD_MA)
             return "DTS-HD MA";
@@ -1782,7 +1783,7 @@ static void video_live_reset(void)
  * under audio_live_mutex. No other lock is taken while it is held. */
 static pthread_mutex_t audio_live_mutex    = PTHREAD_MUTEX_INITIALIZER;
 static int32_t         audio_live_track_id = -1;
-static int             audio_live_channels = 0;   /* of the decoded frames, 0 = not decoded here */
+static int             audio_live_channels = 0;   /* of the decoded frames or the passthrough frame headers, 0 = unknown */
 static int             audio_live_atmos    = -1;  /* E-AC-3: -1 unknown, 0 no, 1 yes */
 static AudioStreamInfo_t audio_live_stream;       /* of the stream now */
 static int             audio_live_gen      = 0;   /* counts the changes of the values above */
@@ -1802,8 +1803,8 @@ int container_ffmpeg_audio_info_gen(void)
 }
 
 /* For the audio manager. Returns 0 if track_id is not the track that plays.
- * *channels: channel count of the decoded frames, 0 if the track is not
- * decoded here. *description: a constant string if the packets say more than
+ * *channels: channel count of the decoded frames or, for passthrough audio,
+ * of the frame headers; 0 if unknown. *description: a constant string if the packets say more than
  * the codec parameters did, else NULL. *info: the values of the stream
  * while it plays (the codec parameters change with an HLS variant of another
  * audio format). */
@@ -1823,6 +1824,223 @@ int container_ffmpeg_audio_live_info(int32_t track_id, int *channels, const char
     }
     pthread_mutex_unlock(&audio_live_mutex);
     return ret;
+}
+
+/* Channel count of passthrough audio from the frame headers, as eServiceMP3
+ * counts it (from OpenBH, BlackHole/exteplayer3 8e743eb and 5540ba2). A track
+ * that is not decoded here had only the channels of the codec parameters, so
+ * a change such as 5.1 programme audio to 2.0 in an ad break was not seen. */
+
+/* AC-3 (bsid <= 10) syncframe: acmod and lfeon from the bsi, 1 if valid */
+static int ac3_frame_acmod(const uint8_t *data, size_t size, unsigned int *acmod, unsigned int *lfeon)
+{
+    eac3_bits_t br = { data, size, 0, 1 };
+    unsigned int bsid;
+
+    if (!data || size < 8 || data[0] != 0x0b || data[1] != 0x77)
+        return 0;
+    eac3_bits_skip(&br, 16 + 16 + 2 + 6);       /* syncword, crc1, fscod, frmsizecod */
+    bsid   = eac3_bits_read(&br, 5);
+    eac3_bits_skip(&br, 3);                     /* bsmod */
+    *acmod = eac3_bits_read(&br, 3);
+    if (!br.ok || bsid > 10)
+        return 0;
+    if ((*acmod & 1) && *acmod != 1)
+        eac3_bits_skip(&br, 2);                 /* cmixlev */
+    if (*acmod & 4)
+        eac3_bits_skip(&br, 2);                 /* surmixlev */
+    if (*acmod == 2)
+        eac3_bits_skip(&br, 2);                 /* dsurmod */
+    *lfeon = eac3_bits_read(&br, 1);
+    return br.ok;
+}
+
+/* E-AC-3 speaker locations as the 16 bit chanmap of a dependent substream
+ * numbers them (location 0 in the most significant bit), and which of them
+ * are pairs (ETSI TS 102 366 E.1.3.1.8): L C R Ls Rs Lc/Rc Lrs/Rrs Cs Ts
+ * Lsd/Rsd Lw/Rw Vhl/Vhr Vhc Lts/Rts LFE2 LFE. */
+#define EAC3_LOC(n) (1u << (15 - (n)))
+#define EAC3_LOC_PAIRS (EAC3_LOC(5) | EAC3_LOC(6) | EAC3_LOC(9) | EAC3_LOC(10) | EAC3_LOC(11) | EAC3_LOC(13))
+
+/* the locations of acmod / lfeon, as chanmap bits */
+static unsigned int eac3_acmod_locations(unsigned int acmod, unsigned int lfeon)
+{
+    static const unsigned int loc[8] = {
+        EAC3_LOC(0) | EAC3_LOC(2),                                            /* 1+1 */
+        EAC3_LOC(1),                                                          /* 1/0 */
+        EAC3_LOC(0) | EAC3_LOC(2),                                            /* 2/0 */
+        EAC3_LOC(0) | EAC3_LOC(1) | EAC3_LOC(2),                              /* 3/0 */
+        EAC3_LOC(0) | EAC3_LOC(2) | EAC3_LOC(7),                              /* 2/1 */
+        EAC3_LOC(0) | EAC3_LOC(1) | EAC3_LOC(2) | EAC3_LOC(7),                /* 3/1 */
+        EAC3_LOC(0) | EAC3_LOC(2) | EAC3_LOC(3) | EAC3_LOC(4),                /* 2/2 */
+        EAC3_LOC(0) | EAC3_LOC(1) | EAC3_LOC(2) | EAC3_LOC(3) | EAC3_LOC(4),  /* 3/2 */
+    };
+    return loc[acmod & 7] | (lfeon ? EAC3_LOC(15) : 0);
+}
+
+static unsigned int eac3_locations_channels(unsigned int locations)
+{
+    unsigned int n = 0, bit;
+
+    for (bit = 0; bit < 16; bit++)
+        if (locations & (1u << bit))
+            n += (EAC3_LOC_PAIRS & (1u << bit)) ? 2 : 1;
+    return n;
+}
+
+/* E-AC-3 syncframe header. *frame_size is set when the header is valid.
+ * Returns 1 for an independent frame of substream 0 with its locations in
+ * *locations, 2 for a dependent frame of substream 0 with a chanmap in
+ * *locations, 0 for any other frame. */
+static int eac3_frame_locations(const uint8_t *data, size_t size, unsigned int *frame_size, unsigned int *locations)
+{
+    eac3_bits_t br = { data, size, 0, 1 };
+    unsigned int frame_type, substreamid, sr_code, rate_or_blocks, acmod, lfeon, bsid, i;
+
+    *frame_size = 0;
+    *locations = 0;
+    if (!data || size < 7 || eac3_bits_read(&br, 16) != 0x0b77)
+        return 0;
+    frame_type     = eac3_bits_read(&br, 2);
+    substreamid    = eac3_bits_read(&br, 3);
+    *frame_size    = (eac3_bits_read(&br, 11) + 1) << 1;
+    sr_code        = eac3_bits_read(&br, 2);
+    rate_or_blocks = eac3_bits_read(&br, 2);    /* fscod2 or numblkscod */
+    acmod          = eac3_bits_read(&br, 3);
+    lfeon          = eac3_bits_read(&br, 1);
+    bsid           = eac3_bits_read(&br, 5);
+    if (!br.ok || frame_type == 3 || bsid <= 10 || bsid > 16 || (sr_code == 3 && rate_or_blocks == 3))
+    {
+        *frame_size = 0;
+        return 0;
+    }
+    if (substreamid != 0)
+        return 0;
+    if (frame_type != 1)
+    {
+        *locations = eac3_acmod_locations(acmod, lfeon);
+        return 1;
+    }
+    /* dependent: dialnorm and compr (twice for 1+1), then the chanmap */
+    for (i = 0; i < (acmod ? 1U : 2U); ++i)
+    {
+        eac3_bits_skip(&br, 5);                 /* dialnorm */
+        if (eac3_bits_read(&br, 1))
+            eac3_bits_skip(&br, 8);             /* compr */
+    }
+    if (eac3_bits_read(&br, 1) && br.ok)        /* chanmape */
+    {
+        *locations = eac3_bits_read(&br, 16);
+        if (br.ok)
+            return 2;
+    }
+    *locations = 0;
+    return 0;
+}
+
+/* Channels of an AC-3 / E-AC-3 packet: the independent frame of substream 0
+ * (or the AC-3 core in front of E-AC-3) with the locations a dependent frame
+ * adds, so 7.1 (5.1 + Lrs/Rrs) counts 8. 0 if the packet has no such frame. */
+static unsigned int ac3_packet_channels(const uint8_t *data, size_t size)
+{
+    size_t offset = 0;
+    unsigned int frame, locations = 0;
+    int have_independent = 0;
+
+    for (frame = 0; frame < 8 && offset + 8 <= size; ++frame)
+    {
+        const uint8_t *d = data + offset;
+        unsigned int frame_size = 0, loc = 0, acmod = 0, lfeon = 0;
+        int type;
+
+        if (d[0] != 0x0b || d[1] != 0x77)
+            break;
+        if ((d[5] >> 3) <= 10)
+        {
+            /* AC-3, or the AC-3 core of an E-AC-3 stream */
+            if (!have_independent && ac3_frame_acmod(d, size - offset, &acmod, &lfeon))
+            {
+                locations = eac3_acmod_locations(acmod, lfeon);
+                have_independent = 1;
+            }
+            frame_size = ac3_core_frame_size(d, size - offset);
+        }
+        else
+        {
+            type = eac3_frame_locations(d, size - offset, &frame_size, &loc);
+            if (type == 1 && !have_independent)
+            {
+                locations = loc;
+                have_independent = 1;
+            }
+            else if (type == 2 && have_independent)
+            {
+                locations |= loc;
+            }
+        }
+        if (!frame_size || frame_size > size - offset)
+            break;
+        offset += frame_size;
+    }
+    return have_independent ? eac3_locations_channels(locations) : 0;
+}
+
+/* ADTS AAC: channel_configuration; 0 (a program config element) is unknown */
+static unsigned int adts_packet_channels(const uint8_t *data, size_t size)
+{
+    unsigned int config;
+
+    if (!data || size < 7 || data[0] != 0xFF || (data[1] & 0xF6) != 0xF0)
+        return 0;
+    config = ((data[2] & 0x01) << 2) | (data[3] >> 6);
+    if (config >= 1 && config <= 6)
+        return config;
+    return config == 7 ? 8 : 0;
+}
+
+/* a change is taken after this many packets in a row with the new count */
+#define AUDIO_HEADER_CHANNELS_CONFIRM 3
+
+/* demuxer thread only */
+static int32_t      audio_header_track_id  = -1;
+static unsigned int audio_header_candidate = 0;
+static unsigned int audio_header_count     = 0;
+
+static void audio_live_frame(int32_t track_id, int channels);
+
+/* Called for every packet of the audio track that plays when it is passed
+ * on to the receiver (not decoded or transcoded here). */
+static void audio_live_header_channels(int32_t track_id, AVStream *stream, const uint8_t *data, size_t size)
+{
+    const int codec_id = (int)get_codecpar(stream)->codec_id;
+    unsigned int channels = 0;
+
+    if (codec_id == AV_CODEC_ID_AC3 || codec_id == AV_CODEC_ID_EAC3)
+        channels = ac3_packet_channels(data, size);
+    else if (codec_id == AV_CODEC_ID_AAC)
+        channels = adts_packet_channels(data, size);
+
+    if (track_id != audio_header_track_id)
+    {
+        audio_header_track_id  = track_id;
+        audio_header_candidate = 0;
+        audio_header_count     = 0;
+    }
+    if (!channels)
+        return;
+
+    if (channels == audio_header_candidate)
+    {
+        if (audio_header_count < AUDIO_HEADER_CHANNELS_CONFIRM)
+            ++audio_header_count;
+    }
+    else
+    {
+        audio_header_candidate = channels;
+        audio_header_count     = 1;
+    }
+    if (audio_header_count >= AUDIO_HEADER_CHANNELS_CONFIRM)
+        audio_live_frame(track_id, (int)channels);
 }
 
 /* Called for every packet of the audio track that plays. */
@@ -1907,7 +2125,7 @@ static void audio_live_frame(int32_t track_id, int channels)
     pthread_mutex_unlock(&audio_live_mutex);
 
     if (channels)
-        ffmpeg_printf(10, "audio track %d: %d channels decoded (before: %d)\n", (int)track_id, channels, old);
+        ffmpeg_printf(10, "audio track %d: %d channels (before: %d)\n", (int)track_id, channels, old);
 }
 
 static int64_t doCalcPts(int64_t start_time, const AVRational time_base, int64_t pts)
@@ -3879,6 +4097,9 @@ static void FFMPEGThread(Context_t *context)
                 if (packet.data && packet.size > 0)
                 {
                     audio_live_packet(audioTrack->Id, audioTrack->stream, packet.data, (size_t)packet.size);
+                    /* a decoded or transcoded track takes its channels from the frames */
+                    if (audioTrack->inject_as_pcm != 1 && audioTrack->inject_raw_pcm != 1 && !audioTrack->transcode)
+                        audio_live_header_channels(audioTrack->Id, audioTrack->stream, packet.data, (size_t)packet.size);
                 }
 
                 if (audioTrack->inject_raw_pcm != 1 && audioTrack->inject_as_pcm != 1 &&
