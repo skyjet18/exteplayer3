@@ -64,6 +64,7 @@ extern int32_t ffmpeg_drm_key_audio_switch(void);
 extern int32_t ffmpeg_drm_key_stop(void);
 extern int  container_ffmpeg_audio_info_gen(void);
 extern int  container_ffmpeg_subtitle_info_gen(void);
+extern void container_ffmpeg_get_bitrate_bytes(int64_t *video, int64_t *audio);
 extern int32_t container_ffmpeg_chapters(void (*fn)(void *opaque, int32_t id, const ContainerChapter_t *chapter), void *opaque);
 extern int  container_ffmpeg_audio_live_info(int32_t track_id, int *channels, const char **description,
                                               AudioStreamInfo_t *info);
@@ -966,6 +967,25 @@ static int kbhit_fd(int ms, int fd)
 static int kbhit(int ms)
 {
     return kbhit_fd(ms, -1);
+}
+
+/* "BR" and nothing else on the line (a line end may follow): 'B' is no other
+ * command, b<speed> (fast backward) is lower case. */
+static int IsByteCounterCommand(const char *cmd)
+{
+    return 'B' == cmd[0] && 'R' == cmd[1] &&
+           ('\0' == cmd[2] || '\n' == cmd[2] || '\r' == cmd[2]);
+}
+
+/* The answer to "BR": the compressed bytes of the selected video and audio
+ * track so far, 32 bit and wrapping, -1 for no such track. The format is the
+ * one of OpenBH, which ServiceApp reads. */
+static void SendByteCounters(void)
+{
+    int64_t vbytes = -1, abytes = -1;
+
+    container_ffmpeg_get_bitrate_bytes(&vbytes, &abytes);
+    E2iSendMsg("{\"BR\":{\"v\":%"PRId64",\"a\":%"PRId64"}}\n", vbytes, abytes);
 }
 
 extern int LinuxDvbEac3RestartState(void);
@@ -1956,6 +1976,7 @@ int main(int argc, char* argv[])
     /* cover: the option --cover <path> is known (embedded cover to path, "cover" message) */
     /* c_l: the chapters (c_l at the open, stdin command cl) */
     /* seekms: gf/gc take seconds with a fraction (gf123.456), ga<seconds> lands at or after */
+    /* br: the stdin command BR (byte counters of the selected video and audio track) */
     E2iSendMsg("{\"EPLAYER3_EXTENDED\":{\"version\":%d"
                ",\"start\":1"
                ",\"xcode\":%d"
@@ -1971,6 +1992,7 @@ int main(int argc, char* argv[])
                ",\"cover\":1"
                ",\"c_l\":1"
                ",\"seekms\":1"
+               ",\"br\":1"
                "}}\n", EXTEPLAYER3_VERSION,
                audio_transcode_caps(),
                hls_segment_caps(), ffmpeg_drm_key_caps());
@@ -2210,6 +2232,16 @@ int main(int argc, char* argv[])
 					}
 					exit(11);
 				}
+
+				case 'B':
+				{
+					/* BR during the open: no track yet, -1 and -1 */
+					if (IsByteCounterCommand(argvBuff))
+					{
+						SendByteCounters();
+					}
+				}
+				break;
 
 				case 'd':
 				{
@@ -2619,6 +2651,15 @@ int main(int argc, char* argv[])
                         ptrP->isLoopMode = '1' == argvBuff[1] ? 1 : 0;
                         E2iSendMsg("{\"N\":{ \"isLoop\":%s }}\n", DUMP_BOOL(ptrP->isLoopMode));
                     }
+                }
+                break;
+            }
+            case 'B':
+            {
+                /* BR: compressed bytes of the selected video and audio track */
+                if (IsByteCounterCommand(argvBuff))
+                {
+                    SendByteCounters();
                 }
                 break;
             }
