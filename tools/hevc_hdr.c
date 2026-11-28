@@ -254,8 +254,11 @@ static int sps_transfer(const uint8_t *rbsp, size_t length)
     }
     for (i = 0; i < 6; ++i)
         bit_reader_ue(&reader);
-    if (bit_reader_u(&reader, 1) && bit_reader_u(&reader, 1))
-        skip_scaling(&reader);
+    if (bit_reader_u(&reader, 1))       /* scaling_list_enabled_flag */
+    {
+        if (bit_reader_u(&reader, 1))   /* sps_scaling_list_data_present_flag */
+            skip_scaling(&reader);
+    }
     bit_reader_u(&reader, 1);
     bit_reader_u(&reader, 1);
     if (bit_reader_u(&reader, 1)) {

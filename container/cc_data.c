@@ -178,34 +178,36 @@ static int cc_nal(int codec, const uint8_t *nal, size_t size, CcData *out)
     return 0;
 }
 
-/* The next start code prefix 00 00 01 at or after p, end if there is none. */
-static const uint8_t *cc_start_code(const uint8_t *p, const uint8_t *end)
+/* The offset of the next start code prefix 00 00 01 at or after pos, size if
+ * there is none (then the prefix is complete in data[0..size)). */
+static size_t cc_start_code(const uint8_t *data, size_t pos, size_t size)
 {
-    while (end - p >= 3)
+    while (pos <= size && size - pos >= 3)
     {
-        const uint8_t *one = memchr(p + 2, 1, (size_t)(end - p - 2));
+        const uint8_t *one = memchr(data + pos + 2, 1, size - pos - 2);
+        size_t i;
 
         if (!one)
             break;
-        if (!one[-1] && !one[-2])
-            return one - 2;
-        p = one - 1;
+        i = (size_t)(one - data);
+        if (!data[i - 1] && !data[i - 2])
+            return i - 2;
+        pos = i - 1;
     }
-    return end;
+    return size;
 }
 
 static void cc_annexb(int codec, const uint8_t *data, size_t size, CcData *out)
 {
-    const uint8_t *end = data + size;
-    const uint8_t *nal = cc_start_code(data, end);
+    size_t nal = cc_start_code(data, 0, size);
 
-    while (nal < end)
+    while (nal < size)
     {
-        const uint8_t *next;
+        size_t next;
 
         nal += 3;
-        next = cc_start_code(nal, end);
-        if (cc_nal(codec, nal, (size_t)(next - nal), out))
+        next = cc_start_code(data, nal, size);
+        if (cc_nal(codec, data + nal, next - nal, out))
             return;
         nal = next;
     }
@@ -234,19 +236,18 @@ static void cc_length_prefixed(int codec, const uint8_t *data, size_t size,
 /* All user_data() of an MPEG-2 packet: two field pictures can share one. */
 static void cc_mpeg2(const uint8_t *data, size_t size, CcData *out)
 {
-    const uint8_t *end = data + size;
-    const uint8_t *code = cc_start_code(data, end);
+    size_t code = cc_start_code(data, 0, size);
 
-    while (code < end)
+    while (code < size)
     {
-        const uint8_t *next;
+        size_t next;
 
         code += 3;
-        if (code >= end)
+        if (code >= size)
             return;
-        next = cc_start_code(code, end);
-        if (*code == 0xB2)
-            cc_atsc_user_data(code + 1, (size_t)(next - code - 1), out);
+        next = cc_start_code(data, code, size);
+        if (data[code] == 0xB2)
+            cc_atsc_user_data(data + code + 1, next - code - 1, out);
         code = next;
     }
 }
